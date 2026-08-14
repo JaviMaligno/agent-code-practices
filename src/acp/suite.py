@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from acp.models import SuiteMetrics
+from acp.runners import DockerRunner, VenvRunner
 
 COUNT_PATTERN = re.compile(r"(\d+)\s+(passed|failed|errors|error|skipped)\b")
 
@@ -216,12 +217,6 @@ def _run(command: list[str], cwd: Path, timeout: int) -> tuple[int, str, bool]:
     return completed.returncode, completed.stdout + completed.stderr, False
 
 
-def _venv_python(env_dir: Path) -> Path:
-    if sys.platform == "win32":
-        return env_dir / "Scripts" / "python.exe"
-    return env_dir / "bin" / "python"
-
-
 def resolve_locations(repo: Path, env_dir: Path | None) -> tuple[Path, Path]:
     """Rutas absolutas del repo y de su entorno.
 
@@ -252,10 +247,25 @@ def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> Suite
         metrics.install_seconds = time.monotonic() - started
         return metrics
 
-    python = str(_venv_python(env_dir))
-    pip = [python, "-m", "pip", "install", "--disable-pip-version-check", "-q"]
+    return install_and_collect(repo, VenvRunner(repo, env_dir), timeout, metrics, started)
 
-    code, output, timed_out = _run([*pip, "-e", "."], repo, timeout)
+
+def install_and_collect(
+    repo: Path,
+    runner: VenvRunner | DockerRunner,
+    timeout: int,
+    metrics: SuiteMetrics,
+    started: float,
+) -> SuiteMetrics:
+    """Instala lo que el repo declara y comprueba que su suite se colecta.
+
+    Es la capa de decisión, y es idéntica en los dos ejecutores: qué se intenta
+    instalar, cómo se comprueba que funcionó y qué plugins faltan no dependen de
+    si esto corre en un entorno virtual o dentro de un contenedor.
+    """
+    pip = [runner.python, "-m", "pip", "install", "--disable-pip-version-check", "-q"]
+
+    code, output, timed_out = _run(runner.wrap([*pip, "-e", "."]), repo, timeout)
     if code != 0 or timed_out:
         metrics.install_error = f"install -e .: {output[-800:]}"
         metrics.timed_out = timed_out
@@ -263,9 +273,9 @@ def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> Suite
         return metrics
     metrics.install_ok = True
 
-    _run([*pip, "pytest"], repo, timeout)
+    _run(runner.wrap([*pip, "pytest"]), repo, timeout)
 
-    collect = [python, "-m", "pytest", "--collect-only", "-q"]
+    collect = runner.wrap([runner.python, "-m", "pytest", "--collect-only", "-q"])
 
     def try_collect() -> str:
         """Colecta, y si pytest rechaza flags de los addopts, instala los
@@ -273,7 +283,7 @@ def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> Suite
         _, output, _ = _run(collect, repo, timeout)
         plugins = plugins_for_unrecognised(output)
         if plugins:
-            _run([*pip, *plugins], repo, timeout)
+            _run(runner.wrap([*pip, *plugins]), repo, timeout)
             _, output, _ = _run(collect, repo, timeout)
         return output
 
@@ -286,7 +296,7 @@ def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> Suite
         return metrics
 
     for strategy in install_strategies(repo):
-        code, output, timed_out = _run([*pip, *strategy.args], repo, timeout)
+        code, output, timed_out = _run(runner.wrap([*pip, *strategy.args]), repo, timeout)
         if timed_out:
             metrics.timed_out = True
             break
@@ -319,22 +329,38 @@ def run_suite_in_venv(
     repo, env_dir = resolve_locations(repo, env_dir)
     try:
         metrics = prepare_environment(repo, env_dir, timeout=timeout)
-        if not metrics.collect_ok:
-            return metrics
-
-        python = str(_venv_python(env_dir))
-        _, output, timed_out = _run([python, "-m", "pytest", "-q"], repo, timeout)
-        if timed_out:
-            metrics.timed_out = True
-            return metrics
-
-        result = parse_pytest_summary(output)
-        result.attempted = True
-        result.install_ok = metrics.install_ok
-        result.install_strategy = metrics.install_strategy
-        result.install_seconds = metrics.install_seconds
-        result.collect_ok = True
-        return result
+        return run_prepared_suite(repo, VenvRunner(repo, env_dir), timeout, metrics)
     finally:
         if not keep_env and env_dir.exists():
             shutil.rmtree(env_dir, ignore_errors=True)
+
+
+def run_prepared_suite(
+    repo: Path,
+    runner: VenvRunner | DockerRunner,
+    timeout: int,
+    metrics: SuiteMetrics,
+) -> SuiteMetrics:
+    """Pasa la suite de un entorno ya preparado y conserva lo medido al prepararlo.
+
+    El coste de preparación viaja con el resultado porque es la mitad del
+    criterio de coste del spec §3.2, y se pierde si solo se devuelve el resumen
+    de pytest.
+    """
+    if not metrics.collect_ok:
+        return metrics
+
+    _, output, timed_out = _run(
+        runner.wrap([runner.python, "-m", "pytest", "-q"]), repo, timeout
+    )
+    if timed_out:
+        metrics.timed_out = True
+        return metrics
+
+    result = parse_pytest_summary(output)
+    result.attempted = True
+    result.install_ok = metrics.install_ok
+    result.install_strategy = metrics.install_strategy
+    result.install_seconds = metrics.install_seconds
+    result.collect_ok = True
+    return result
