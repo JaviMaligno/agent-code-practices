@@ -330,6 +330,7 @@ def install_and_collect(
     timeout: int,
     metrics: SuiteMetrics,
     started: float,
+    prepare: str | None = None,
 ) -> SuiteMetrics:
     """Instala lo que el repo declara y comprueba que su suite se colecta.
 
@@ -390,6 +391,23 @@ def install_and_collect(
             metrics.install_strategy = "base"
             metrics.collect_ok = True
 
+    if metrics.collect_ok and prepare:
+        # Después de instalar lo declarado, porque el script del repo puede
+        # usar una de esas dependencias: el de holidays importa polib, que
+        # viene en su grupo de tests.
+        metrics.prepare_command = prepare
+        code, output, timed_out = _run(
+            runner.wrap(["sh", "-lc", prepare]) if isinstance(runner, DockerRunner)
+            else ["sh", "-lc", prepare],
+            repo,
+            timeout,
+        )
+        metrics.prepare_ok = code == 0 and not timed_out
+        if not metrics.prepare_ok:
+            metrics.install_error = f"prepare: {output[-800:]}"
+            metrics.install_seconds = time.monotonic() - started
+            return metrics
+
     if metrics.collect_ok:
         metrics.tree_under_test = _restore_tree_under_test(repo, runner, pip, timeout)
         if not metrics.tree_under_test:
@@ -447,6 +465,7 @@ def run_suite_in_docker(
     repo: Path,
     image: str = DEFAULT_IMAGE,
     timeout: int = 3600,
+    prepare: str | None = None,
 ) -> SuiteMetrics:
     """Prepara y pasa la suite dentro de un contenedor, y lo destruye siempre.
 
@@ -478,7 +497,7 @@ def run_suite_in_docker(
             return metrics
 
         _run(runner.trust_command(), repo, timeout)
-        metrics = install_and_collect(repo, runner, timeout, metrics, started)
+        metrics = install_and_collect(repo, runner, timeout, metrics, started, prepare)
         return run_prepared_suite(repo, runner, timeout, metrics)
     finally:
         _run(runner.stop_command(), repo, timeout)
@@ -513,4 +532,6 @@ def run_prepared_suite(
     result.install_seconds = metrics.install_seconds
     result.collect_ok = True
     result.tree_under_test = metrics.tree_under_test
+    result.prepare_command = metrics.prepare_command
+    result.prepare_ok = metrics.prepare_ok
     return result

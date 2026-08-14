@@ -87,6 +87,31 @@ def test_a_repo_replaced_by_its_published_version_is_not_evaluable():
     assert any("árbol" in reason for reason in reasons)
 
 
+def test_a_failed_preparation_step_is_not_a_rejection():
+    """holidays genera sus traducciones en el build. Si ese paso falla, lo que
+    no se pudo es medir el repo — no es un defecto suyo."""
+    profile = make_profile()
+    profile.suite = healthy_suite(
+        prepare_command="python scripts/l10n/generate_mo_files.py", prepare_ok=False
+    )
+
+    verdict, reasons = admission_verdict(profile)
+
+    assert verdict == "NO EVALUABLE"
+    assert any("preparación" in reason for reason in reasons)
+
+
+def test_the_preparation_step_appears_in_the_profile():
+    """Cambia lo que hay que hacer para reproducir la corrida, así que no puede
+    quedarse fuera de la ficha."""
+    profile = make_profile()
+    profile.suite = healthy_suite(
+        prepare_command="python scripts/l10n/generate_mo_files.py", prepare_ok=True
+    )
+
+    assert "generate_mo_files.py" in render_profile(profile)
+
+
 def test_a_repo_that_tests_its_own_tree_passes_admission():
     profile = make_profile()
     profile.suite = healthy_suite(tree_under_test=True)

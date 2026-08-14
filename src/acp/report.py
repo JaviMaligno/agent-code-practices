@@ -31,6 +31,8 @@ def admission_verdict(profile: RepoProfile) -> tuple[str, list[str]]:
         blockers.append(f"no se pudo preparar el entorno{detail}")
     elif not suite.collect_ok:
         blockers.append("el entorno se instaló pero la suite no llegó a colectarse")
+    elif suite.prepare_command and not suite.prepare_ok:
+        blockers.append(f"falló el paso de preparación del repo: `{suite.prepare_command}`")
     elif not suite.tree_under_test:
         blockers.append(
             "la suite no se ejecutó contra el árbol del repo: una dependencia lo sustituyó "
@@ -128,6 +130,11 @@ def render_profile(profile: RepoProfile) -> str:
         f"- Coste de preparación: {profile.suite.install_seconds:.0f} s",
         f"- Colecta la suite: {'sí' if profile.suite.collect_ok else 'no'}",
     ]
+    if profile.suite.prepare_command:
+        lines += [
+            f"- Paso de preparación del repo: `{profile.suite.prepare_command}` "
+            f"({'ok' if profile.suite.prepare_ok else 'falló'})",
+        ]
     if profile.suite.install_error:
         lines += [f"- Error: `{profile.suite.install_error}`"]
     lines += [

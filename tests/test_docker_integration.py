@@ -189,6 +189,41 @@ def test_a_dependency_group_is_installable(tmp_path: Path):
     assert result.passed == 1
 
 
+def test_a_repo_can_declare_a_build_step_its_suite_needs(tmp_path: Path):
+    """El caso de holidays: su suite necesita ficheros que genera un script del
+    repo, y ese script usa una dependencia del grupo de tests — así que el paso
+    va después de instalar lo declarado, no antes."""
+    (tmp_path / "pyproject.toml").write_text(DECLARES_TEST_EXTRA, encoding="utf-8")
+    (tmp_path / "generate.py").write_text(
+        "import pytest_subtests  # noqa: F401  (viene con el extra de test)\n"
+        "from pathlib import Path\n"
+        "\n"
+        "Path('generated.txt').write_text('ok', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_ok.py").write_text(
+        "from pathlib import Path\n\n\n"
+        "def test_needs_generated_file():\n"
+        "    assert Path('generated.txt').read_text(encoding='utf-8') == 'ok'\n",
+        encoding="utf-8",
+    )
+
+    result = run_suite_in_docker(tmp_path, timeout=900, prepare="python generate.py")
+
+    assert result.prepare_ok is True
+    assert result.passed == 1
+
+
+def test_a_build_step_that_fails_is_recorded(tmp_path: Path):
+    build_repo(tmp_path)
+
+    result = run_suite_in_docker(tmp_path, timeout=900, prepare="python no_existe.py")
+
+    assert result.prepare_ok is False
+    assert result.prepare_command == "python no_existe.py"
+
+
 def test_a_repo_that_needs_git_to_install_still_installs(tmp_path: Path):
     """La razón por la que la imagen no puede ser `slim`: varios candidatos
     derivan su versión del repositorio en tiempo de instalación."""

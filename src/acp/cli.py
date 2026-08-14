@@ -24,7 +24,11 @@ def suite_runner(name: str | None):
 
 
 def profile_repo(
-    root: Path, name: str, run_suite: bool = True, runner: str | None = None
+    root: Path,
+    name: str,
+    run_suite: bool = True,
+    runner: str | None = None,
+    prepare: str | None = None,
 ) -> RepoProfile:
     profile = RepoProfile(
         name=name,
@@ -35,7 +39,8 @@ def profile_repo(
         domain=domain.measure(root),
     )
     if run_suite:
-        profile.suite = suite_runner(runner)(root)
+        run = suite_runner(runner)
+        profile.suite = run(root, prepare=prepare) if prepare else run(root)
     return profile
 
 
@@ -52,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
         "--runner", choices=sorted(RUNNERS), default=DEFAULT_RUNNER,
         help="dónde se ejecuta la suite del candidato",
     )
+    profile_parser.add_argument(
+        "--prepare", default=None,
+        help="paso de build propio del repo que su suite necesita, p. ej. generar traducciones",
+    )
 
     table_parser = subparsers.add_parser("table", help="tabla comparativa de las fichas existentes")
     table_parser.add_argument("--out", type=Path, default=Path("out"))
@@ -61,7 +70,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "profile":
         profile = profile_repo(
-            args.path, name=args.name, run_suite=not args.no_suite, runner=args.runner
+            args.path, name=args.name, run_suite=not args.no_suite, runner=args.runner,
+            prepare=args.prepare,
         )
         destination = args.out / f"{args.name}.md"
         destination.write_text(render_profile(profile), encoding="utf-8")

@@ -71,6 +71,12 @@ class SuiteMetrics:
     install_error: str = ""
     collect_ok: bool = False
     timed_out: bool = False
+    # Paso de preparación propio del repositorio: hay proyectos que generan en
+    # su build artefactos que su suite necesita (holidays compila traducciones,
+    # babel descarga el CLDR). No es una dependencia, así que no lo cubre
+    # ninguna estrategia de instalación, y sin él la suite se lee como rota.
+    prepare_command: str = ""
+    prepare_ok: bool = False
     # Que lo que se prueba sea el árbol del repo y no la versión publicada en
     # PyPI. Una dependencia de test puede desinstalar la instalación editable y
     # dejar la suya, y entonces la suite mide otro código sin decirlo.
