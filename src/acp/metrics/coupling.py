@@ -29,20 +29,25 @@ def _package_of(module: str, is_init: bool) -> str:
     return module if is_init else module.rpartition(".")[0]
 
 
-def _absolute_module(node: ast.ImportFrom, package: str) -> str | None:
+def _join(package: str, name: str) -> str:
+    """Cualifica un nombre con su paquete, que puede ser la raíz del clon."""
+    return f"{package}.{name}" if package else name
+
+
+def _absolute_module(node: ast.ImportFrom, package: str) -> str:
     """Nombre absoluto del módulo importado, resolviendo los `.` iniciales.
 
     `from .core import x` dentro de pkg.api apunta a pkg.core; sin esto el
-    import se pierde entero y el repo se lee como desacoplado.
+    import se pierde entero y el repo se lee como desacoplado. La cadena vacía
+    es un ancla legítima, no un fallo: cuando el propio clon es el paquete, sus
+    módulos no llevan prefijo ninguno.
     """
     if not node.level:
-        return node.module
+        return node.module or ""
     base = package
     for _ in range(node.level - 1):
         base = base.rpartition(".")[0]
-    if not base:
-        return None
-    return f"{base}.{node.module}" if node.module else base
+    return _join(base, node.module) if node.module else base
 
 
 def _import_targets(tree: ast.AST, known: set[str], package: str = "") -> set[str]:
@@ -61,12 +66,12 @@ def _import_targets(tree: ast.AST, known: set[str], package: str = "") -> set[st
                     targets.add(resolved)
         elif isinstance(node, ast.ImportFrom):
             module = _absolute_module(node, package)
-            if not module:
+            if not module and not node.level:
                 continue
             specific = {
                 resolved
                 for alias in node.names
-                if (resolved := _resolve(f"{module}.{alias.name}", known))
+                if (resolved := _resolve(_join(module, alias.name), known))
                 and resolved != module
             }
             if specific:

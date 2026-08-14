@@ -75,6 +75,22 @@ def test_a_file_with_a_bom_still_contributes_its_imports(tmp_path):
     assert result.internal_edges == 1
 
 
+def test_a_package_at_the_root_of_the_clone_still_resolves_its_imports(tmp_path):
+    """Cuando el propio clon es el paquete, el nombre de módulo del `__init__`
+    queda vacío y sus imports relativos se descartaban por no tener ancla: el
+    repo se leía como menos acoplado de lo que está."""
+    (tmp_path / "__init__.py").write_text(
+        "from . import core\nfrom .api import thing\n", encoding="utf-8"
+    )
+    (tmp_path / "core.py").write_text("import os\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text("from .core import other\n", encoding="utf-8")
+
+    result = measure(tmp_path)
+
+    assert result.internal_edges == 3  # __init__ -> core, __init__ -> api, api -> core
+    assert result.max_fan_in == 2
+
+
 def test_repo_without_internal_imports_has_no_edges(tmp_path):
     pkg = tmp_path / "pkg"
     pkg.mkdir()
