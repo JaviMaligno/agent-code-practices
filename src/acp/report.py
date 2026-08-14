@@ -2,6 +2,17 @@ from __future__ import annotations
 
 from acp.models import RepoProfile
 
+
+def run_cost_seconds(profile: RepoProfile) -> float:
+    """Lo que cuesta una corrida entera: preparar el entorno y pasar la suite.
+
+    El spec §3.2 mide las dos porque las dos se multiplican por 54. Reportar
+    solo la suite deja fuera la mitad del criterio — en python-stdnum, 69 s de
+    preparación frente a 20 s de suite.
+    """
+    return profile.suite.install_seconds + profile.suite.seconds
+
+
 def admission_verdict(profile: RepoProfile) -> tuple[str, list[str]]:
     """Aplica los criterios de admisión del spec §3.2.1.
 
@@ -60,6 +71,7 @@ COLUMNS = [
     ("dominio", lambda p: f"{p.domain.domain_density:.0%}"),
     ("suite", lambda p: f"{p.suite.passed}p/{p.suite.failed}f {p.suite.seconds:.0f}s"),
     ("entorno", lambda p: f"{p.suite.install_seconds:.0f}s"),
+    ("coste", lambda p: f"{run_cost_seconds(p):.0f}s"),
 ]
 
 
@@ -121,6 +133,8 @@ def render_profile(profile: RepoProfile) -> str:
         f"errores: {profile.suite.errors}, saltados: {profile.suite.skipped}",
         f"- Duración: {profile.suite.seconds} s",
         f"- Tiempo agotado: {'sí' if profile.suite.timed_out else 'no'}",
+        f"- Coste por corrida: {run_cost_seconds(profile):.0f} s "
+        f"({profile.suite.install_seconds:.0f} s de entorno + {profile.suite.seconds:.0f} s de suite)",
         "",
         "## Tipado en ejecución",
         f"- Detectado: {'sí' if profile.runtime_typing.uses_runtime_typing else 'no'}",

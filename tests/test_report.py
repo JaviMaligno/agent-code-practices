@@ -46,6 +46,27 @@ def test_profile_reports_unparseable_files():
     assert "No parseables: 7" in text
 
 
+def test_profile_reports_the_whole_cost_of_a_run():
+    """El spec §3.2 mide el coste como preparación más suite, porque las dos se
+    multiplican por 54: publicar solo la suite esconde la mitad."""
+    profile = make_profile()
+    profile.suite.install_seconds = 69.0
+
+    text = render_profile(profile)
+
+    assert "Coste por corrida: 113 s" in text
+
+
+def test_comparison_table_carries_the_total_cost():
+    profile = make_profile()
+    profile.suite.install_seconds = 69.0
+
+    text = comparison_table([profile])
+
+    assert "coste" in text.splitlines()[0]
+    assert "113s" in text
+
+
 def test_comparison_table_has_a_row_per_repo():
     text = comparison_table([make_profile("a"), make_profile("b")])
     lines = [line for line in text.splitlines() if line.startswith("| ")]
