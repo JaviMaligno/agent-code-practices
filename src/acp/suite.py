@@ -18,6 +18,7 @@ Dos decisiones gobiernan este módulo:
 from __future__ import annotations
 
 import configparser
+import json
 import re
 import shutil
 import subprocess
@@ -163,6 +164,27 @@ def plugins_for_unrecognised(output: str) -> list[str]:
     return sorted(found)
 
 
+def editable_locations(pip_list_output: str) -> set[str]:
+    """Directorios de proyecto que pip tiene instalados en modo editable.
+
+    Se le pregunta a pip en vez de importar el paquete y mirar su `__file__`,
+    porque el nombre de distribución no tiene por qué coincidir con el de
+    import — python-dateutil se importa como dateutil — y adivinar esa
+    correspondencia es justo el tipo de heurística que falla en silencio.
+    """
+    try:
+        entries = json.loads(pip_list_output)
+    except (json.JSONDecodeError, TypeError):
+        return set()
+    if not isinstance(entries, list):
+        return set()
+    return {
+        entry["editable_project_location"]
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("editable_project_location")
+    }
+
+
 def collection_failed(output: str) -> bool:
     """True si pytest no pudo colectar una suite utilizable.
 
@@ -296,26 +318,50 @@ def install_and_collect(
     if not collection_failed(collect_output):
         metrics.install_strategy = "base"
         metrics.collect_ok = True
-        metrics.install_seconds = time.monotonic() - started
-        return metrics
+    else:
+        for strategy in install_strategies(repo):
+            code, output, timed_out = _run(runner.wrap([*pip, *strategy.args]), repo, timeout)
+            if timed_out:
+                metrics.timed_out = True
+                break
+            if code != 0:
+                continue
+            collect_output = try_collect()
+            if not collection_failed(collect_output):
+                metrics.install_strategy = strategy.label
+                metrics.collect_ok = True
+                break
 
-    for strategy in install_strategies(repo):
-        code, output, timed_out = _run(runner.wrap([*pip, *strategy.args]), repo, timeout)
-        if timed_out:
-            metrics.timed_out = True
-            break
-        if code != 0:
-            continue
-        collect_output = try_collect()
-        if not collection_failed(collect_output):
-            metrics.install_strategy = strategy.label
-            metrics.collect_ok = True
-            break
-
-    if not metrics.collect_ok:
+    if metrics.collect_ok:
+        metrics.tree_under_test = _restore_tree_under_test(repo, runner, pip, timeout)
+        if not metrics.tree_under_test:
+            metrics.install_error = (
+                "el árbol del repo no quedó instalado como el paquete bajo prueba"
+            )
+    else:
         metrics.install_error = f"collect: {collect_output[-800:]}"
     metrics.install_seconds = time.monotonic() - started
     return metrics
+
+
+def _tree_is_under_test(repo: Path, runner, timeout: int) -> bool:
+    listing = runner.wrap([runner.python, "-m", "pip", "list", "--format=json"])
+    _, output, _ = _run(listing, repo, timeout)
+    return runner.project_dir in editable_locations(output)
+
+
+def _restore_tree_under_test(repo: Path, runner, pip: list[str], timeout: int) -> bool:
+    """Comprueba que lo instalado es el árbol, y lo reinstala si no lo es.
+
+    Verificado con dateutil: `pip install -r requirements-dev.txt` arrastra
+    freezegun, que depende de python-dateutil, y pip **desinstala la editable**
+    para poner la versión de PyPI. A partir de ahí la suite mide el paquete
+    publicado y no el repositorio, sin que nada lo anuncie.
+    """
+    if _tree_is_under_test(repo, runner, timeout):
+        return True
+    _run(runner.wrap([*pip, "-e", "."]), repo, timeout)
+    return _tree_is_under_test(repo, runner, timeout)
 
 
 def run_suite_in_venv(
@@ -408,4 +454,5 @@ def run_prepared_suite(
     result.install_strategy = metrics.install_strategy
     result.install_seconds = metrics.install_seconds
     result.collect_ok = True
+    result.tree_under_test = metrics.tree_under_test
     return result

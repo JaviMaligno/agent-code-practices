@@ -42,6 +42,11 @@ class VenvRunner:
     def python(self) -> str:
         return _venv_python(self.env_dir)
 
+    @property
+    def project_dir(self) -> str:
+        """Dónde vive el repo desde el punto de vista del intérprete que lo usa."""
+        return str(self.repo)
+
     def wrap(self, command: list[str]) -> list[str]:
         return command
 
@@ -66,6 +71,10 @@ class DockerRunner:
     @property
     def python(self) -> str:
         return "python"
+
+    @property
+    def project_dir(self) -> str:
+        return CONTAINER_WORKDIR
 
     def wrap(self, command: list[str]) -> list[str]:
         return ["docker", "exec", "--workdir", CONTAINER_WORKDIR, self.container, *command]

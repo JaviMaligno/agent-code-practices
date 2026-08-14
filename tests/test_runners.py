@@ -83,6 +83,13 @@ def test_a_virtualenv_runner_points_python_at_its_own_environment():
     assert runner.python.endswith(("python", "python.exe"))
 
 
+def test_each_runner_knows_where_the_project_lives_for_it():
+    """La comprobación de que se prueba el árbol y no la versión de PyPI
+    compara rutas, y la del contenedor no es la del anfitrión."""
+    assert DockerRunner(repo=Path("/clones/pint")).project_dir == "/repo"
+    assert VenvRunner(repo=Path("/clones/pint"), env_dir=Path("/e")).project_dir == "/clones/pint"
+
+
 def test_a_docker_runner_uses_the_interpreter_of_the_image():
     runner = DockerRunner(repo=Path("/clones/pint"))
 

@@ -270,6 +270,25 @@ def test_plugins_are_inferred_from_compound_flags():
     assert plugins_for_unrecognised(output) == ["pytest-cov"]
 
 
+def test_editable_locations_are_read_from_pip():
+    """Se le pregunta a pip en vez de adivinar el nombre de import: el de
+    distribución no tiene por qué coincidir (python-dateutil / dateutil)."""
+    from acp.suite import editable_locations
+
+    output = """[
+      {"name": "python-dateutil", "version": "0.1.dev1", "editable_project_location": "/repo"},
+      {"name": "pytest", "version": "9.1.1"}
+    ]"""
+
+    assert editable_locations(output) == {"/repo"}
+
+
+def test_unreadable_pip_output_yields_no_locations():
+    from acp.suite import editable_locations
+
+    assert editable_locations("Traceback (most recent call last):") == set()
+
+
 def test_a_flag_that_merely_starts_the_same_is_not_a_match():
     from acp.suite import plugins_for_unrecognised
 

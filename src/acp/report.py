@@ -31,6 +31,11 @@ def admission_verdict(profile: RepoProfile) -> tuple[str, list[str]]:
         blockers.append(f"no se pudo preparar el entorno{detail}")
     elif not suite.collect_ok:
         blockers.append("el entorno se instaló pero la suite no llegó a colectarse")
+    elif not suite.tree_under_test:
+        blockers.append(
+            "la suite no se ejecutó contra el árbol del repo: una dependencia lo sustituyó "
+            "por su versión publicada"
+        )
     elif suite.timed_out:
         blockers.append("se agotó el tiempo antes de terminar la suite")
     elif not suite.ran:

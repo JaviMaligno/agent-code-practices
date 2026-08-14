@@ -17,6 +17,7 @@ def healthy_suite(**overrides) -> SuiteMetrics:
     defaults = dict(
         ran=True, passed=300, failed=0, errors=0, seconds=44.0,
         attempted=True, install_ok=True, collect_ok=True, install_strategy="extra:test",
+        tree_under_test=True,
     )
     return SuiteMetrics(**{**defaults, **overrides})
 
@@ -71,6 +72,26 @@ def test_comparison_table_carries_the_total_cost():
 
     assert "coste" in text.splitlines()[0]
     assert "113s" in text
+
+
+def test_a_repo_replaced_by_its_published_version_is_not_evaluable():
+    """Una dependencia de test puede desinstalar el repo y dejar en su lugar la
+    versión de PyPI: la suite saldría verde midiendo otro código, y en la
+    campaña las transformaciones no tendrían efecto sobre lo que se prueba."""
+    profile = make_profile()
+    profile.suite = healthy_suite(tree_under_test=False)
+
+    verdict, reasons = admission_verdict(profile)
+
+    assert verdict == "NO EVALUABLE"
+    assert any("árbol" in reason for reason in reasons)
+
+
+def test_a_repo_that_tests_its_own_tree_passes_admission():
+    profile = make_profile()
+    profile.suite = healthy_suite(tree_under_test=True)
+
+    assert admission_verdict(profile)[0] == "ADMITIDO"
 
 
 def test_profile_reports_the_reach_of_runtime_typing():

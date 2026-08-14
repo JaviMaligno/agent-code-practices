@@ -20,7 +20,7 @@ def make_profile(name: str = "demo", **suite_kwargs) -> RepoProfile:
     suite = SuiteMetrics(
         ran=True, passed=300, failed=0, errors=0, seconds=44.0,
         attempted=True, install_ok=True, collect_ok=True, install_strategy="extra:test",
-        install_seconds=61.0,
+        install_seconds=61.0, tree_under_test=True,
     )
     for key, value in suite_kwargs.items():
         setattr(suite, key, value)

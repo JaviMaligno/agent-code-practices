@@ -71,6 +71,10 @@ class SuiteMetrics:
     install_error: str = ""
     collect_ok: bool = False
     timed_out: bool = False
+    # Que lo que se prueba sea el árbol del repo y no la versión publicada en
+    # PyPI. Una dependencia de test puede desinstalar la instalación editable y
+    # dejar la suya, y entonces la suite mide otro código sin decirlo.
+    tree_under_test: bool = False
 
 
 @dataclass

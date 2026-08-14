@@ -77,6 +77,52 @@ def test_the_container_does_not_survive_the_run(tmp_path: Path):
     assert runner.container not in containers()
 
 
+# Layout src/, como dateutil: sin él, pytest mete la raíz en sys.path y el
+# import encuentra el árbol por accidente aunque la instalación apunte a PyPI.
+SELF_UNINSTALLING = """\
+[project]
+name = "six"
+version = "0.1.0"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["six"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+"""
+
+
+def test_a_dependency_cannot_swap_the_repo_for_its_published_version(tmp_path: Path):
+    """Reproduce lo verificado con dateutil: `pip install -r requirements` trae
+    el propio paquete desde PyPI y desinstala la editable, con lo que la suite
+    pasaría a medir el código publicado en vez del árbol del repositorio."""
+    (tmp_path / "pyproject.toml").write_text(SELF_UNINSTALLING, encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "six.py").write_text("MARKER = 'from the tree'\n", encoding="utf-8")
+    # `six>=1.0` no lo satisface la editable, que declara 0.1.0: pip la
+    # desinstala y pone la de PyPI, igual que freezegun con python-dateutil>=2.7.
+    # El fichero solo se instala si la colecta base falla, así que el test
+    # importa algo que solo trae él — que es exactamente cómo se llegó allí.
+    (tmp_path / "requirements-test.txt").write_text(
+        "pytest\nsortedcontainers\nsix>=1.0\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_ok.py").write_text(
+        "import six\nimport sortedcontainers  # noqa: F401\n\n\n"
+        "def test_tree():\n    assert six.MARKER == 'from the tree'\n",
+        encoding="utf-8",
+    )
+
+    result = run_suite_in_docker(tmp_path, timeout=900)
+
+    assert result.tree_under_test is True, result.install_error
+    assert result.passed == 1
+
+
 def test_a_repo_that_needs_git_to_install_still_installs(tmp_path: Path):
     """La razón por la que la imagen no puede ser `slim`: varios candidatos
     derivan su versión del repositorio en tiempo de instalación."""
