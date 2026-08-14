@@ -10,6 +10,10 @@ class SizeMetrics:
     code_lines: int
     max_depth: int
     mean_depth: float
+    # Ficheros contados aquí pero ausentes de las métricas de AST. Publicarlo es
+    # lo que impide que una omisión silenciosa se lea como un repo sin dominio,
+    # sin acoplamiento y sin anotaciones.
+    unparseable_files: int = 0
 
 
 @dataclass

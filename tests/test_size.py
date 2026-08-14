@@ -18,6 +18,18 @@ def test_counts_python_files_and_code_lines(tmp_path):
     assert result.code_lines == 3  # __init__ vacío, dos líneas en a.py, una en b.py
 
 
+def test_counts_the_files_that_cannot_be_parsed(tmp_path):
+    """Un fichero que no parsea desaparece de las métricas de AST pero sus
+    líneas siguen contando: si nadie lo publica, la omisión no se ve."""
+    build_tree(tmp_path)
+    (tmp_path / "pkg" / "broken.py").write_text("def f(:\n", encoding="utf-8")
+
+    result = measure(tmp_path)
+
+    assert result.python_files == 4
+    assert result.unparseable_files == 1
+
+
 def test_depth_is_measured_relative_to_root(tmp_path):
     build_tree(tmp_path)
     result = measure(tmp_path)

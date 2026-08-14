@@ -37,6 +37,15 @@ def test_profile_renders_name_and_key_numbers():
     assert "44.0" in text
 
 
+def test_profile_reports_unparseable_files():
+    profile = make_profile()
+    profile.size.unparseable_files = 7
+
+    text = render_profile(profile)
+
+    assert "No parseables: 7" in text
+
+
 def test_comparison_table_has_a_row_per_repo():
     text = comparison_table([make_profile("a"), make_profile("b")])
     lines = [line for line in text.splitlines() if line.startswith("| ")]

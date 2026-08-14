@@ -79,6 +79,8 @@ def render_profile(profile: RepoProfile) -> str:
         f"- Ficheros Python: {profile.size.python_files}",
         f"- Líneas de código: {profile.size.code_lines}",
         f"- Profundidad de jerarquía: máx {profile.size.max_depth}, media {profile.size.mean_depth:.2f}",
+        f"- No parseables: {profile.size.unparseable_files} "
+        "(cuentan líneas pero no aparecen en el resto de métricas)",
         "",
         "## Margen de degradación",
         f"- Ratio de comentarios: {profile.readability.comment_ratio:.1%}",

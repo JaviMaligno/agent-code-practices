@@ -76,4 +76,5 @@ def measure(root: Path) -> SizeMetrics:
         code_lines=sum(_code_lines(path) for path in files),
         max_depth=max(depths),
         mean_depth=sum(depths) / len(depths),
+        unparseable_files=sum(1 for path in files if parse_source(path) is None),
     )
