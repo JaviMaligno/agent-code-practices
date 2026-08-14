@@ -12,6 +12,15 @@ RUNTIME_TYPING_MODULES = {
     "beartype", "trafaret", "schematics", "msgspec", "typedload",
 }
 RUNTIME_TYPING_CALLS = {"get_type_hints", "validate_arguments", "validate_call"}
+# Stdlib, así que ningún import de tercero los delata: `register` elige la
+# implementación leyendo la anotación del primer argumento, con lo que quitar
+# las anotaciones cambiaría el comportamiento del programa.
+RUNTIME_TYPING_DECORATORS = {"singledispatch", "singledispatchmethod"}
+
+
+def _decorator_name(node: ast.expr) -> str | None:
+    target = node.func if isinstance(node, ast.Call) else node
+    return getattr(target, "attr", None) or getattr(target, "id", None)
 
 
 def measure(root: Path) -> RuntimeTypingMetrics:
@@ -35,5 +44,10 @@ def measure(root: Path) -> RuntimeTypingMetrics:
                 name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
                 if name in RUNTIME_TYPING_CALLS:
                     evidence.append(f"{path.name}: {name}()")
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for decorator in node.decorator_list:
+                    name = _decorator_name(decorator)
+                    if name in RUNTIME_TYPING_DECORATORS:
+                        evidence.append(f"{path.name}: @{name}")
 
     return RuntimeTypingMetrics(uses_runtime_typing=bool(evidence), evidence=evidence[:20])

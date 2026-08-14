@@ -32,6 +32,47 @@ def test_a_file_with_a_bom_is_still_screened(tmp_path):
     assert result.uses_runtime_typing is True
 
 
+def test_flags_singledispatch(tmp_path):
+    """Es stdlib, así que no lo delata ningún import de tercero: `register`
+    elige la implementación leyendo la anotación del primer argumento."""
+    write(
+        tmp_path,
+        "from functools import singledispatch\n"
+        "\n"
+        "\n"
+        "@singledispatch\n"
+        "def render(value):\n"
+        "    return str(value)\n"
+        "\n"
+        "\n"
+        "@render.register\n"
+        "def _(value: int):\n"
+        "    return f'{value:d}'\n",
+    )
+
+    result = measure(tmp_path)
+
+    assert result.uses_runtime_typing is True
+    assert any("singledispatch" in item for item in result.evidence)
+
+
+def test_flags_singledispatchmethod_qualified(tmp_path):
+    write(
+        tmp_path,
+        "import functools\n"
+        "\n"
+        "\n"
+        "class R:\n"
+        "    @functools.singledispatchmethod\n"
+        "    def render(self, value):\n"
+        "        return str(value)\n",
+    )
+
+    result = measure(tmp_path)
+
+    assert result.uses_runtime_typing is True
+
+
 def test_plain_annotations_are_clean(tmp_path):
     write(tmp_path, "def f(a: int) -> int:\n    return a\n")
     result = measure(tmp_path)
