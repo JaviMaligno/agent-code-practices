@@ -17,6 +17,22 @@ def test_complexity_counts_branches():
     assert cyclomatic_complexity(node) == 4
 
 
+def test_match_scores_one_point_per_case():
+    """Un match es una cadena de ramas: si puntúa 1, el código moderno sale
+    subestimado y el umbral deja de ser comparable entre repos."""
+    node = first_function(
+        "def f(x):\n"
+        "    match x:\n"
+        "        case 1:\n"
+        "            return 'a'\n"
+        "        case 2:\n"
+        "            return 'b'\n"
+        "        case _:\n"
+        "            return 'c'\n"
+    )
+    assert cyclomatic_complexity(node) == 4
+
+
 def test_flat_function_has_complexity_one():
     node = first_function("def f(a):\n    return a + 1\n")
     assert cyclomatic_complexity(node) == 1
