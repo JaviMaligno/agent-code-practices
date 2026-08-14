@@ -6,10 +6,26 @@ from pathlib import Path
 from acp.metrics import coupling, domain, readability, runtime_typing, size
 from acp.models import RepoProfile
 from acp.report import comparison_table, render_profile
-from acp.suite import run_suite_in_venv
+from acp.suite import run_suite_in_docker, run_suite_in_venv
+
+# Los dos se conservan a propósito (§2 del spec): con contenedor el aislamiento
+# es de sistema, y sin él es solo de dependencias, pero está verificado y sirve
+# donde Docker no se puede usar.
+RUNNERS = {"docker": run_suite_in_docker, "venv": run_suite_in_venv}
+DEFAULT_RUNNER = "docker"
 
 
-def profile_repo(root: Path, name: str, run_suite: bool = True) -> RepoProfile:
+def suite_runner(name: str | None):
+    """Ejecutor de suites por nombre. Docker por defecto: es el de la campaña."""
+    key = name or DEFAULT_RUNNER
+    if key not in RUNNERS:
+        raise ValueError(f"ejecutor desconocido: {key}. Opciones: {', '.join(RUNNERS)}")
+    return RUNNERS[key]
+
+
+def profile_repo(
+    root: Path, name: str, run_suite: bool = True, runner: str | None = None
+) -> RepoProfile:
     profile = RepoProfile(
         name=name,
         size=size.measure(root),
@@ -19,7 +35,7 @@ def profile_repo(root: Path, name: str, run_suite: bool = True) -> RepoProfile:
         domain=domain.measure(root),
     )
     if run_suite:
-        profile.suite = run_suite_in_venv(root)
+        profile.suite = suite_runner(runner)(root)
     return profile
 
 
@@ -32,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     profile_parser.add_argument("--name", required=True)
     profile_parser.add_argument("--out", type=Path, default=Path("out"))
     profile_parser.add_argument("--no-suite", action="store_true")
+    profile_parser.add_argument(
+        "--runner", choices=sorted(RUNNERS), default=DEFAULT_RUNNER,
+        help="dónde se ejecuta la suite del candidato",
+    )
 
     table_parser = subparsers.add_parser("table", help="tabla comparativa de las fichas existentes")
     table_parser.add_argument("--out", type=Path, default=Path("out"))
@@ -40,7 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
 
     if args.command == "profile":
-        profile = profile_repo(args.path, name=args.name, run_suite=not args.no_suite)
+        profile = profile_repo(
+            args.path, name=args.name, run_suite=not args.no_suite, runner=args.runner
+        )
         destination = args.out / f"{args.name}.md"
         destination.write_text(render_profile(profile), encoding="utf-8")
         import json
