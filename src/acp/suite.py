@@ -291,6 +291,11 @@ def install_and_collect(
     """
     pip = [runner.python, "-m", "pip", "install", "--disable-pip-version-check", "-q"]
 
+    # `pip install --group` no existe antes de pip 25.1, y la imagen trae una
+    # anterior: sin esto, un repo que declare `[dependency-groups]` —jsonschema
+    # lo hace— se lee como un repo que no declara nada.
+    _run(runner.wrap([*pip, "--upgrade", "pip"]), repo, timeout)
+
     code, output, timed_out = _run(runner.wrap([*pip, "-e", "."]), repo, timeout)
     if code != 0 or timed_out:
         metrics.install_error = f"install -e .: {output[-800:]}"
@@ -313,24 +318,29 @@ def install_and_collect(
             _, output, _ = _run(collect, repo, timeout)
         return output
 
-    collect_output = try_collect()
+    # Primero lo que el repo declara para sus tests, y "base" solo como último
+    # recurso. Colectar no prueba que las dependencias estén: pint colecta sin
+    # `pytest-subtests` y luego falla con 332 errores al ejecutar, así que usar
+    # la colecta como señal para no instalar nada deja suites rotas por
+    # dependencias que el propio repo sí declaraba.
+    for strategy in install_strategies(repo):
+        code, output, timed_out = _run(runner.wrap([*pip, *strategy.args]), repo, timeout)
+        if timed_out:
+            metrics.timed_out = True
+            break
+        if code != 0:
+            continue
+        collect_output = try_collect()
+        if not collection_failed(collect_output):
+            metrics.install_strategy = strategy.label
+            metrics.collect_ok = True
+            break
 
-    if not collection_failed(collect_output):
-        metrics.install_strategy = "base"
-        metrics.collect_ok = True
-    else:
-        for strategy in install_strategies(repo):
-            code, output, timed_out = _run(runner.wrap([*pip, *strategy.args]), repo, timeout)
-            if timed_out:
-                metrics.timed_out = True
-                break
-            if code != 0:
-                continue
-            collect_output = try_collect()
-            if not collection_failed(collect_output):
-                metrics.install_strategy = strategy.label
-                metrics.collect_ok = True
-                break
+    if not metrics.collect_ok and not metrics.timed_out:
+        collect_output = try_collect()
+        if not collection_failed(collect_output):
+            metrics.install_strategy = "base"
+            metrics.collect_ok = True
 
     if metrics.collect_ok:
         metrics.tree_under_test = _restore_tree_under_test(repo, runner, pip, timeout)

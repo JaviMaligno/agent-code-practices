@@ -123,6 +123,72 @@ def test_a_dependency_cannot_swap_the_repo_for_its_published_version(tmp_path: P
     assert result.passed == 1
 
 
+DECLARES_TEST_EXTRA = """\
+[project]
+name = "demo"
+version = "0.1.0"
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-subtests"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []
+"""
+
+DECLARES_TEST_GROUP = """\
+[project]
+name = "demo"
+version = "0.1.0"
+
+[dependency-groups]
+test = ["pytest", "pytest-subtests"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []
+"""
+
+SUBTESTS_SUITE = (
+    "def test_ok(subtests):\n"
+    "    with subtests.test(i=1):\n"
+    "        assert True\n"
+)
+
+
+def test_a_declared_test_extra_is_installed_even_when_collection_succeeds(tmp_path: Path):
+    """El caso de pint: colecta bien sin `pytest-subtests` y luego revienta con
+    332 errores al ejecutar. Colectar no prueba que estén las dependencias."""
+    (tmp_path / "pyproject.toml").write_text(DECLARES_TEST_EXTRA, encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_ok.py").write_text(SUBTESTS_SUITE, encoding="utf-8")
+
+    result = run_suite_in_docker(tmp_path, timeout=900)
+
+    assert result.install_strategy == "extra:test"
+    assert result.passed == 1
+    assert result.errors == 0
+
+
+def test_a_dependency_group_is_installable(tmp_path: Path):
+    """El caso de jsonschema: declara `[dependency-groups]`, y `pip --group`
+    solo existe desde pip 25.1 — la imagen trae una anterior."""
+    (tmp_path / "pyproject.toml").write_text(DECLARES_TEST_GROUP, encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_ok.py").write_text(SUBTESTS_SUITE, encoding="utf-8")
+
+    result = run_suite_in_docker(tmp_path, timeout=900)
+
+    assert result.install_strategy == "group:test"
+    assert result.passed == 1
+
+
 def test_a_repo_that_needs_git_to_install_still_installs(tmp_path: Path):
     """La razón por la que la imagen no puede ser `slim`: varios candidatos
     derivan su versión del repositorio en tiempo de instalación."""
