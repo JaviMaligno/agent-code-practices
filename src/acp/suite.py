@@ -154,7 +154,11 @@ def plugins_for_unrecognised(output: str) -> list[str]:
     found = {
         package
         for flag, package in PLUGIN_BY_FLAG.items()
-        if re.search(rf"(?<![\w-]){re.escape(flag)}(?=[\s=]|$)", rejected)
+        # El flag puede venir compuesto (`--cov-fail-under=100`), así que se
+        # busca como prefijo de token; el `(?![\w])` impide que `--covfefe`
+        # cuente, pero deja pasar las variantes con guion, que son las que
+        # escriben los proyectos.
+        if re.search(rf"(?<![\w-]){re.escape(flag)}(?=[\s=\-]|$)", rejected)
     }
     return sorted(found)
 

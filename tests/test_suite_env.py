@@ -257,3 +257,20 @@ def test_no_plugins_inferred_from_unrelated_errors():
     from acp.suite import plugins_for_unrecognised
 
     assert plugins_for_unrecognised("ModuleNotFoundError: No module named 'zeep'") == []
+
+
+def test_plugins_are_inferred_from_compound_flags():
+    """holidays rechaza `--cov-fail-under=100`, no `--cov=x`. Exigir que el
+    flag termine ahí mismo dejaba fuera todas las variantes con guion, que son
+    la mayoría de las que un proyecto escribe en sus addopts."""
+    from acp.suite import plugins_for_unrecognised
+
+    output = "error: unrecognized arguments: --cov-fail-under=100 --cov-report=html"
+
+    assert plugins_for_unrecognised(output) == ["pytest-cov"]
+
+
+def test_a_flag_that_merely_starts_the_same_is_not_a_match():
+    from acp.suite import plugins_for_unrecognised
+
+    assert plugins_for_unrecognised("error: unrecognized arguments: --covfefe") == []
