@@ -86,6 +86,19 @@ def test_init_counts_as_annotated_without_an_explicit_return(tmp_path):
     assert result.annotated_function_ratio == 1.0
 
 
+def test_a_file_with_a_bom_is_still_parsed(tmp_path):
+    """Un BOM es SyntaxError al parsear, así que el fichero desaparecía de las
+    métricas de AST mientras sus líneas seguían contando en el denominador."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_bytes(
+        "def f(a: int) -> int:\n    return a\n".encode("utf-8-sig")
+    )
+
+    result = measure(tmp_path)
+
+    assert result.annotated_function_ratio == 1.0
+
+
 def test_detects_docs_directory(tmp_path):
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "a.py").write_text("x = 1\n", encoding="utf-8")

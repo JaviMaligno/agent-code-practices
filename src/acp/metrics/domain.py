@@ -4,7 +4,7 @@ import ast
 from collections.abc import Iterator
 from pathlib import Path
 
-from acp.metrics.size import iter_source_files
+from acp.metrics.size import iter_source_files, parse_source
 from acp.models import DomainMetrics
 
 BRANCHING = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler, ast.IfExp, ast.Assert)
@@ -106,9 +106,8 @@ def measure(root: Path) -> DomainMetrics:
     total_functions = 0
 
     for path in files:
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-        except SyntaxError:
+        tree = parse_source(path)
+        if tree is None:
             continue
 
         module = ".".join(path.relative_to(root).with_suffix("").parts)

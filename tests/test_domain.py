@@ -134,6 +134,29 @@ def test_calls_to_functions_defined_in_the_same_file_count_as_internal(tmp_path)
     assert "pkg.billing.total" in result.samples
 
 
+def test_a_file_with_a_bom_still_contributes_its_functions(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "billing.py").write_bytes(
+        (
+            "def _rate(x):\n"
+            "    return x * 2\n"
+            "\n"
+            "\n"
+            "def total(rows, premium):\n"
+            "    out = 0\n"
+            "    for row in rows:\n"
+            "        if row > 0 and premium:\n"
+            "            out += _rate(row)\n"
+            "    return out\n"
+        ).encode("utf-8-sig")
+    )
+
+    result = measure(tmp_path)
+
+    assert "pkg.billing.total" in result.samples
+
+
 def test_method_calls_on_self_count_as_internal(tmp_path):
     """holidays concentra su dominio en self._add_holiday(...): sin esto sale 0."""
     pkg = tmp_path / "pkg"

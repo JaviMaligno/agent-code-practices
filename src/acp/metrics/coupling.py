@@ -4,7 +4,7 @@ import ast
 from collections import defaultdict
 from pathlib import Path
 
-from acp.metrics.size import iter_source_files
+from acp.metrics.size import iter_source_files, parse_source
 from acp.models import CouplingMetrics
 
 
@@ -87,9 +87,8 @@ def measure(root: Path) -> CouplingMetrics:
     fan_in: dict[str, int] = defaultdict(int)
 
     for name, path in modules.items():
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-        except SyntaxError:
+        tree = parse_source(path)
+        if tree is None:
             continue
         package = _package_of(name, path.name == "__init__.py")
         for target in _import_targets(tree, known, package):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -37,8 +38,26 @@ def iter_source_files(root: Path) -> list[Path]:
     return found
 
 
+def read_source(path: Path) -> str:
+    """Texto de un fichero fuente, sin el BOM si lo trae.
+
+    Leído como utf-8 a secas, el BOM queda dentro del texto y `ast.parse` lo
+    rechaza: el fichero desaparecería de todas las métricas de AST mientras sus
+    líneas siguen contando en el denominador.
+    """
+    return path.read_text(encoding="utf-8-sig", errors="replace")
+
+
+def parse_source(path: Path) -> ast.Module | None:
+    """Árbol del fichero, o None si no hay forma de parsearlo."""
+    try:
+        return ast.parse(read_source(path))
+    except (SyntaxError, ValueError):
+        return None
+
+
 def _code_lines(path: Path) -> int:
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = read_source(path)
     count = 0
     for line in text.splitlines():
         stripped = line.strip()

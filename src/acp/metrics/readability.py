@@ -5,7 +5,7 @@ import io
 import tokenize
 from pathlib import Path
 
-from acp.metrics.size import iter_source_files
+from acp.metrics.size import iter_source_files, parse_source, read_source
 from acp.models import ReadabilityMetrics
 
 README_NAMES = ("README.md", "README.rst", "README.txt", "README")
@@ -62,14 +62,13 @@ def measure(root: Path) -> ReadabilityMetrics:
     annotated = 0
 
     for path in iter_source_files(root):
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = read_source(path)
         lines = text.splitlines()
         total_lines += len(lines)
         comment_lines += _comment_lines(text)
 
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
+        tree = parse_source(path)
+        if tree is None:
             continue
 
         for node in ast.walk(tree):

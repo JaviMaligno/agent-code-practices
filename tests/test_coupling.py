@@ -64,6 +64,17 @@ def test_package_init_resolves_its_own_relative_imports(tmp_path):
     assert result.max_fan_in == 1
 
 
+def test_a_file_with_a_bom_still_contributes_its_imports(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "core.py").write_text("import os\n", encoding="utf-8")
+    (pkg / "api.py").write_bytes("from pkg import core\n".encode("utf-8-sig"))
+
+    result = measure(tmp_path)
+
+    assert result.internal_edges == 1
+
+
 def test_repo_without_internal_imports_has_no_edges(tmp_path):
     pkg = tmp_path / "pkg"
     pkg.mkdir()
