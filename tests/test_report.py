@@ -1,4 +1,10 @@
-from acp.models import ReadabilityMetrics, RepoProfile, SizeMetrics, SuiteMetrics
+from acp.models import (
+    ReadabilityMetrics,
+    RepoProfile,
+    RuntimeTypingMetrics,
+    SizeMetrics,
+    SuiteMetrics,
+)
 from acp.report import admission_verdict, comparison_table, render_profile
 
 
@@ -65,6 +71,18 @@ def test_comparison_table_carries_the_total_cost():
 
     assert "coste" in text.splitlines()[0]
     assert "113s" in text
+
+
+def test_profile_reports_the_reach_of_runtime_typing():
+    profile = make_profile()
+    profile.runtime_typing = RuntimeTypingMetrics(
+        uses_runtime_typing=True, evidence=["pkg/a.py: @singledispatch"],
+        affected_files=1, total_files=360,
+    )
+
+    text = render_profile(profile)
+
+    assert "1 de 360 ficheros" in text
 
 
 def test_comparison_table_has_a_row_per_repo():

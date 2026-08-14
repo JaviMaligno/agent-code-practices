@@ -138,6 +138,8 @@ def render_profile(profile: RepoProfile) -> str:
         "",
         "## Tipado en ejecución",
         f"- Detectado: {'sí' if profile.runtime_typing.uses_runtime_typing else 'no'}",
+        f"- Alcance: {profile.runtime_typing.affected_files} de "
+        f"{profile.runtime_typing.total_files} ficheros",
     ]
     lines += [f"  - {item}" for item in profile.runtime_typing.evidence]
     return "\n".join(lines) + "\n"

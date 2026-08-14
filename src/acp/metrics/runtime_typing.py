@@ -25,8 +25,10 @@ def _decorator_name(node: ast.expr) -> str | None:
 
 def measure(root: Path) -> RuntimeTypingMetrics:
     evidence: list[str] = []
+    affected: set[str] = set()
+    files = iter_source_files(root)
 
-    for path in iter_source_files(root):
+    for path in files:
         tree = parse_source(path)
         if tree is None:
             continue
@@ -34,6 +36,7 @@ def measure(root: Path) -> RuntimeTypingMetrics:
         # Ruta relativa, no nombre suelto: la evidencia existe para poder ir a
         # comprobarla, y en un repo grande hay varios `models.py`.
         location = path.relative_to(root).as_posix()
+        before = len(evidence)
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -54,4 +57,12 @@ def measure(root: Path) -> RuntimeTypingMetrics:
                     if name in RUNTIME_TYPING_DECORATORS:
                         evidence.append(f"{location}: @{name}")
 
-    return RuntimeTypingMetrics(uses_runtime_typing=bool(evidence), evidence=evidence[:20])
+        if len(evidence) > before:
+            affected.add(location)
+
+    return RuntimeTypingMetrics(
+        uses_runtime_typing=bool(evidence),
+        evidence=evidence[:20],
+        affected_files=len(affected),
+        total_files=len(files),
+    )

@@ -86,6 +86,23 @@ def test_evidence_locates_the_file_by_its_path(tmp_path):
     assert any("pkg/sub/models.py" in item for item in result.evidence)
 
 
+def test_counts_how_many_files_are_affected(tmp_path):
+    """Un booleano de repo iguala un uso marginal con uno estructural, y la
+    decisión de excluir el candidato depende justo de esa diferencia."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "a.py").write_text("from pydantic import BaseModel\n", encoding="utf-8")
+    (pkg / "b.py").write_text(
+        "import pydantic\nfrom pydantic import Field\n", encoding="utf-8"
+    )
+    (pkg / "c.py").write_text("def f(a: int) -> int:\n    return a\n", encoding="utf-8")
+
+    result = measure(tmp_path)
+
+    assert result.affected_files == 2
+    assert result.total_files == 3
+
+
 def test_plain_annotations_are_clean(tmp_path):
     write(tmp_path, "def f(a: int) -> int:\n    return a\n")
     result = measure(tmp_path)

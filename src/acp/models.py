@@ -29,6 +29,10 @@ class ReadabilityMetrics:
 class RuntimeTypingMetrics:
     uses_runtime_typing: bool = False
     evidence: list[str] = field(default_factory=list)
+    # El booleano no distingue un decorador suelto de un repo construido sobre
+    # pydantic, y de esa diferencia depende si el candidato se descarta.
+    affected_files: int = 0
+    total_files: int = 0
 
 
 @dataclass
