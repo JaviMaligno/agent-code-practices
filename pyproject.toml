@@ -20,5 +20,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: needs Docker, not run by default"]
+markers = [
+    "integration: creates real environments and hits the network, not run by default",
+    "docker: needs a working Docker daemon on top of that",
+]
 addopts = "-m 'not integration'"

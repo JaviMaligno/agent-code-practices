@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from acp.models import SuiteMetrics
-from acp.runners import DockerRunner, VenvRunner
+from acp.runners import DEFAULT_IMAGE, DockerRunner, VenvRunner
 
 COUNT_PATTERN = re.compile(r"(\d+)\s+(passed|failed|errors|error|skipped)\b")
 
@@ -333,6 +333,40 @@ def run_suite_in_venv(
     finally:
         if not keep_env and env_dir.exists():
             shutil.rmtree(env_dir, ignore_errors=True)
+
+
+def run_suite_in_docker(
+    repo: Path,
+    image: str = DEFAULT_IMAGE,
+    timeout: int = 3600,
+) -> SuiteMetrics:
+    """Prepara y pasa la suite dentro de un contenedor, y lo destruye siempre.
+
+    Es el ejecutor de la campaña: aquí el aislamiento es de sistema, así que un
+    repo que ensucie el entorno global no puede contaminar la corrida siguiente
+    — el coste declarado del ejecutor sin contenedor (§5.6 del spec).
+    """
+    repo, _ = resolve_locations(repo, None)
+    runner = DockerRunner(repo=repo, image=image)
+    metrics = SuiteMetrics(attempted=True)
+    started = time.monotonic()
+
+    # Un contenedor huérfano de una corrida anterior bloquearía el nombre.
+    _run(runner.stop_command(), repo, timeout)
+
+    code, output, timed_out = _run(runner.start_command(), repo, timeout)
+    if code != 0 or timed_out:
+        metrics.install_error = f"docker run: {output[-800:]}"
+        metrics.timed_out = timed_out
+        metrics.install_seconds = time.monotonic() - started
+        return metrics
+
+    try:
+        _run(runner.trust_command(), repo, timeout)
+        metrics = install_and_collect(repo, runner, timeout, metrics, started)
+        return run_prepared_suite(repo, runner, timeout, metrics)
+    finally:
+        _run(runner.stop_command(), repo, timeout)
 
 
 def run_prepared_suite(
