@@ -13,7 +13,9 @@ def admission_verdict(profile: RepoProfile) -> tuple[str, list[str]]:
     blockers: list[str] = []
     suite = profile.suite
 
-    if not suite.install_ok:
+    if not suite.attempted:
+        blockers.append("la suite no se ejecutó en este perfilado")
+    elif not suite.install_ok:
         detail = f": {suite.install_error}" if suite.install_error else ""
         blockers.append(f"no se pudo preparar el entorno{detail}")
     elif not suite.collect_ok:

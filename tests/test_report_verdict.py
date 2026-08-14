@@ -19,7 +19,7 @@ from acp.report import admission_verdict, comparison_table, render_profile
 def make_profile(name: str = "demo", **suite_kwargs) -> RepoProfile:
     suite = SuiteMetrics(
         ran=True, passed=300, failed=0, errors=0, seconds=44.0,
-        install_ok=True, collect_ok=True, install_strategy="extra:test",
+        attempted=True, install_ok=True, collect_ok=True, install_strategy="extra:test",
         install_seconds=61.0,
     )
     for key, value in suite_kwargs.items():
@@ -87,3 +87,30 @@ def test_table_carries_the_columns_the_plan_says_to_read_it_by():
 def test_profile_reports_the_install_strategy_that_worked():
     text = render_profile(make_profile())
     assert "extra:test" in text
+
+
+def test_a_profile_run_without_the_suite_does_not_blame_the_environment():
+    """`--no-suite` no intentó preparar nada, así que no puede haber fallado.
+
+    Es el mismo error que la distinción de tres estados venía a evitar: una
+    frase plausible y falsa sobre por qué un candidato no se pudo medir.
+    """
+    profile = make_profile()
+    profile.suite = SuiteMetrics()  # tal cual queda con --no-suite
+
+    verdict, reasons = admission_verdict(profile)
+
+    assert verdict == "NO EVALUABLE"
+    assert any("no se ejecutó" in reason for reason in reasons)
+    assert not any("no se pudo preparar" in reason for reason in reasons)
+
+
+def test_an_attempted_install_that_failed_still_blames_the_environment():
+    profile = make_profile(
+        ran=False, passed=0, attempted=True, install_ok=False, collect_ok=False,
+        install_error="install -e .: backend not found",
+    )
+
+    _, reasons = admission_verdict(profile)
+
+    assert any("no se pudo preparar" in reason for reason in reasons)

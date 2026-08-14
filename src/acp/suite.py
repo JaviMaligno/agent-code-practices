@@ -17,6 +17,7 @@ Dos decisiones gobiernan este módulo:
 
 from __future__ import annotations
 
+import configparser
 import re
 import shutil
 import subprocess
@@ -48,6 +49,23 @@ REQUIREMENTS_FILES = (
 )
 
 COLLECTION_ERROR_MARKERS = ("ERROR collecting", "ImportError", "ModuleNotFoundError", "INTERNALERROR")
+
+# Los `addopts` de un proyecto pueden exigir plugins que no declara en ninguna
+# parte. Neutralizar los addopts no es opción: suelen incluir cosas como
+# --doctest-modules, que en algunos repos son media suite.
+PLUGIN_BY_FLAG = {
+    "--cov": "pytest-cov",
+    "-n": "pytest-xdist",
+    "--numprocesses": "pytest-xdist",
+    "--timeout": "pytest-timeout",
+    "--benchmark": "pytest-benchmark",
+    "--asyncio": "pytest-asyncio",
+    "--randomly": "pytest-randomly",
+    "--mypy": "pytest-mypy",
+    "--flake8": "pytest-flake8",
+    "--snapshot": "pytest-snapshot",
+}
+UNRECOGNISED_PATTERN = re.compile(r"unrecognized arguments:(.*)")
 
 
 @dataclass(frozen=True)
@@ -95,7 +113,49 @@ def install_strategies(repo: Path) -> list[Strategy]:
         if (repo / relative).exists():
             strategies.append(Strategy(f"requirements:{relative}", ["-r", relative]))
 
+    tox_deps = _tox_testenv_deps(repo)
+    if tox_deps:
+        strategies.append(Strategy("tox:testenv", tox_deps))
+
     return strategies
+
+
+def _tox_testenv_deps(repo: Path) -> list[str]:
+    """Dependencias del entorno de test por defecto declaradas en tox.ini.
+
+    Muchos repos anteriores a pyproject no declaran extras en ninguna parte y
+    solo dicen qué necesita su suite aquí. Se lee `[testenv]` y nada más: los
+    entornos de lint o de tipos traen herramientas que no hacen falta.
+    """
+    path = repo / "tox.ini"
+    if not path.exists():
+        return []
+    parser = configparser.ConfigParser()
+    try:
+        parser.read_string(path.read_text(encoding="utf-8", errors="replace"))
+    except (configparser.Error, OSError):
+        return []
+    raw = parser.get("testenv", "deps", fallback="")
+    deps = []
+    for line in raw.splitlines():
+        dep = line.split("#")[0].strip()
+        if dep:
+            deps.append(dep)
+    return deps
+
+
+def plugins_for_unrecognised(output: str) -> list[str]:
+    """Plugins de pytest que hacen falta, deducidos de los flags rechazados."""
+    match = UNRECOGNISED_PATTERN.search(output)
+    if not match:
+        return []
+    rejected = match.group(1)
+    found = {
+        package
+        for flag, package in PLUGIN_BY_FLAG.items()
+        if re.search(rf"(?<![\w-]){re.escape(flag)}(?=[\s=]|$)", rejected)
+    }
+    return sorted(found)
 
 
 def collection_failed(output: str) -> bool:
@@ -162,6 +222,18 @@ def _venv_python(env_dir: Path) -> Path:
     return env_dir / "bin" / "python"
 
 
+def resolve_locations(repo: Path, env_dir: Path | None) -> tuple[Path, Path]:
+    """Rutas absolutas del repo y de su entorno.
+
+    Los comandos se lanzan con `cwd=repo`, así que una ruta relativa se
+    resolvería dos veces y el entorno acabaría en `repo/repo/.acp-venv`, fuera
+    del alcance de todo lo que viene después.
+    """
+    repo = Path(repo).expanduser().resolve()
+    env_dir = Path(env_dir).expanduser().resolve() if env_dir else repo / ".acp-venv"
+    return repo, env_dir
+
+
 def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> SuiteMetrics:
     """Crea el entorno del repo e instala lo necesario para colectar su suite.
 
@@ -169,7 +241,8 @@ def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> Suite
     si la suite llegó a colectarse: es la comprobación funcional que sustituye a
     mirar códigos de salida de pip, que mienten.
     """
-    metrics = SuiteMetrics()
+    repo, env_dir = resolve_locations(repo, env_dir)
+    metrics = SuiteMetrics(attempted=True)
     started = time.monotonic()
 
     code, output, timed_out = _run([sys.executable, "-m", "venv", str(env_dir)], repo, timeout)
@@ -193,7 +266,18 @@ def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> Suite
     _run([*pip, "pytest"], repo, timeout)
 
     collect = [python, "-m", "pytest", "--collect-only", "-q"]
-    _, collect_output, _ = _run(collect, repo, timeout)
+
+    def try_collect() -> str:
+        """Colecta, y si pytest rechaza flags de los addopts, instala los
+        plugins que faltan y vuelve a intentarlo una vez."""
+        _, output, _ = _run(collect, repo, timeout)
+        plugins = plugins_for_unrecognised(output)
+        if plugins:
+            _run([*pip, *plugins], repo, timeout)
+            _, output, _ = _run(collect, repo, timeout)
+        return output
+
+    collect_output = try_collect()
 
     if not collection_failed(collect_output):
         metrics.install_strategy = "base"
@@ -208,7 +292,7 @@ def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> Suite
             break
         if code != 0:
             continue
-        _, collect_output, _ = _run(collect, repo, timeout)
+        collect_output = try_collect()
         if not collection_failed(collect_output):
             metrics.install_strategy = strategy.label
             metrics.collect_ok = True
@@ -232,7 +316,7 @@ def run_suite_in_venv(
     completa se reutiliza uno por repositorio, pero al perfilar candidatos se
     descarta para no acumular gigas (§2 del spec).
     """
-    env_dir = env_dir or (repo / ".acp-venv")
+    repo, env_dir = resolve_locations(repo, env_dir)
     try:
         metrics = prepare_environment(repo, env_dir, timeout=timeout)
         if not metrics.collect_ok:
@@ -245,6 +329,7 @@ def run_suite_in_venv(
             return metrics
 
         result = parse_pytest_summary(output)
+        result.attempted = True
         result.install_ok = metrics.install_ok
         result.install_strategy = metrics.install_strategy
         result.install_seconds = metrics.install_seconds

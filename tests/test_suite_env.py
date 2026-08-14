@@ -151,3 +151,109 @@ def test_import_error_during_collection_is_a_failure():
 def test_zero_collected_tests_counts_as_failure():
     """Un repo del que no se colecta nada no puede admitirse como suite verde."""
     assert collection_failed("no tests ran in 0.01s\n") is True
+
+
+def test_locations_are_resolved_before_running_anything(tmp_path, monkeypatch):
+    """Los comandos se lanzan con cwd=repo, así que una ruta relativa se
+    resolvería dos veces: el entorno acaba en repo/repo/.acp-venv y el
+    intérprete no está donde se le busca después.
+    """
+    from pathlib import Path
+
+    from acp.suite import resolve_locations
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "repo").mkdir()
+
+    repo, env_dir = resolve_locations(Path("repo"), None)
+
+    assert repo.is_absolute()
+    assert env_dir.is_absolute()
+    assert env_dir.parent == repo
+
+
+def test_an_explicit_relative_env_dir_is_resolved_too(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from acp.suite import resolve_locations
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "repo").mkdir()
+
+    _, env_dir = resolve_locations(Path("repo"), Path("envs/demo"))
+
+    assert env_dir.is_absolute()
+    assert env_dir == (tmp_path / "envs" / "demo").resolve()
+
+
+TOX_INI = """\
+[testenv]
+deps = pytest
+       pytest-cov
+commands = pytest
+
+[testenv:flake8]
+deps = flake8
+commands = flake8
+"""
+
+
+def test_tox_testenv_deps_are_a_strategy(tmp_path):
+    """Repos antiguos declaran sus dependencias de test solo en tox.ini.
+
+    python-stdnum es exactamente ese caso: sin extras, sin grupos y sin
+    requirements-*.txt, pero con `deps = pytest, pytest-cov` en [testenv].
+    """
+    (tmp_path / "tox.ini").write_text(TOX_INI, encoding="utf-8")
+
+    strategies = install_strategies(tmp_path)
+
+    assert [s.label for s in strategies] == ["tox:testenv"]
+    assert strategies[0].args == ["pytest", "pytest-cov"]
+
+
+def test_tox_deps_ignore_other_environments_and_comments(tmp_path):
+    (tmp_path / "tox.ini").write_text(
+        "[testenv]\ndeps = pytest\n       mypy<2.0  # comentario al vuelo\n",
+        encoding="utf-8",
+    )
+
+    assert install_strategies(tmp_path)[0].args == ["pytest", "mypy<2.0"]
+
+
+def test_broken_tox_ini_does_not_crash_the_profiler(tmp_path):
+    (tmp_path / "tox.ini").write_text("[testenv\ndeps = ???", encoding="utf-8")
+
+    assert install_strategies(tmp_path) == []
+
+
+UNRECOGNISED = """\
+ERROR: usage: python -m pytest [options] [file_or_dir] [...]
+python -m pytest: error: unrecognized arguments: --cov=stdnum --cov-report=html
+  inifile: setup.cfg
+"""
+
+
+def test_plugins_are_inferred_from_unrecognised_arguments():
+    """Los addopts del proyecto pueden exigir plugins que nadie declara.
+
+    Aquí no vale neutralizar los addopts: en python-stdnum incluyen
+    --doctest-modules, y los doctests son la mitad de la suite.
+    """
+    from acp.suite import plugins_for_unrecognised
+
+    assert plugins_for_unrecognised(UNRECOGNISED) == ["pytest-cov"]
+
+
+def test_several_missing_plugins_are_inferred_at_once():
+    from acp.suite import plugins_for_unrecognised
+
+    output = "error: unrecognized arguments: -n auto --timeout=30 --cov=x"
+
+    assert plugins_for_unrecognised(output) == ["pytest-cov", "pytest-timeout", "pytest-xdist"]
+
+
+def test_no_plugins_inferred_from_unrelated_errors():
+    from acp.suite import plugins_for_unrecognised
+
+    assert plugins_for_unrecognised("ModuleNotFoundError: No module named 'zeep'") == []

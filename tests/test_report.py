@@ -10,7 +10,7 @@ def healthy_suite(**overrides) -> SuiteMetrics:
     """
     defaults = dict(
         ran=True, passed=300, failed=0, errors=0, seconds=44.0,
-        install_ok=True, collect_ok=True, install_strategy="extra:test",
+        attempted=True, install_ok=True, collect_ok=True, install_strategy="extra:test",
     )
     return SuiteMetrics(**{**defaults, **overrides})
 

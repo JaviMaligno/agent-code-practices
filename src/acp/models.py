@@ -54,6 +54,9 @@ class SuiteMetrics:
     # Preparación del entorno. Separada del resultado a propósito: un repo que no
     # se deja instalar no es lo mismo que un repo cuya suite está en rojo, y
     # confundirlos descarta candidatos por una razón que no es suya.
+    # `attempted` distingue además el caso de no haberlo intentado siquiera
+    # (perfilado estático con --no-suite) de haberlo intentado y fallado.
+    attempted: bool = False
     install_ok: bool = False
     install_strategy: str = ""
     install_seconds: float = 0.0
