@@ -24,7 +24,28 @@ def _resolve(candidate: str, known: set[str]) -> str | None:
     return None
 
 
-def _import_targets(tree: ast.AST, known: set[str]) -> set[str]:
+def _package_of(module: str, is_init: bool) -> str:
+    """Paquete al que pertenece un módulo, que es el ancla de sus imports relativos."""
+    return module if is_init else module.rpartition(".")[0]
+
+
+def _absolute_module(node: ast.ImportFrom, package: str) -> str | None:
+    """Nombre absoluto del módulo importado, resolviendo los `.` iniciales.
+
+    `from .core import x` dentro de pkg.api apunta a pkg.core; sin esto el
+    import se pierde entero y el repo se lee como desacoplado.
+    """
+    if not node.level:
+        return node.module
+    base = package
+    for _ in range(node.level - 1):
+        base = base.rpartition(".")[0]
+    if not base:
+        return None
+    return f"{base}.{node.module}" if node.module else base
+
+
+def _import_targets(tree: ast.AST, known: set[str], package: str = "") -> set[str]:
     """Módulos internos a los que apunta cada sentencia de import.
 
     De `from pkg import core` sale `pkg.core`, no `pkg`: se toma siempre el
@@ -38,17 +59,20 @@ def _import_targets(tree: ast.AST, known: set[str]) -> set[str]:
                 resolved = _resolve(alias.name, known)
                 if resolved:
                     targets.add(resolved)
-        elif isinstance(node, ast.ImportFrom) and node.module:
+        elif isinstance(node, ast.ImportFrom):
+            module = _absolute_module(node, package)
+            if not module:
+                continue
             specific = {
                 resolved
                 for alias in node.names
-                if (resolved := _resolve(f"{node.module}.{alias.name}", known))
-                and resolved != node.module
+                if (resolved := _resolve(f"{module}.{alias.name}", known))
+                and resolved != module
             }
             if specific:
                 targets |= specific
             else:
-                parent = _resolve(node.module, known)
+                parent = _resolve(module, known)
                 if parent:
                     targets.add(parent)
     return targets
@@ -67,7 +91,8 @@ def measure(root: Path) -> CouplingMetrics:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
         except SyntaxError:
             continue
-        for target in _import_targets(tree, known):
+        package = _package_of(name, path.name == "__init__.py")
+        for target in _import_targets(tree, known, package):
             if target != name:
                 fan_out[name].add(target)
                 fan_in[target] += 1
