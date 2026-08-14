@@ -51,6 +51,28 @@ def test_a_hash_inside_a_string_is_not_a_comment(tmp_path):
     assert result.comment_ratio == 0.0
 
 
+def test_partially_annotated_function_does_not_count_as_annotated(tmp_path):
+    """Si basta un argumento anotado para contar la función entera, el repo
+    parece más tipado de lo que está y A1 promete un efecto que no tiene."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("def f(a: int, b):\n    return a\n", encoding="utf-8")
+
+    result = measure(tmp_path)
+
+    assert result.annotated_function_ratio == 0.0
+
+
+def test_self_and_cls_do_not_need_an_annotation(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(
+        "class C:\n    def f(self, a: int) -> int:\n        return a\n", encoding="utf-8"
+    )
+
+    result = measure(tmp_path)
+
+    assert result.annotated_function_ratio == 1.0
+
+
 def test_detects_docs_directory(tmp_path):
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "a.py").write_text("x = 1\n", encoding="utf-8")

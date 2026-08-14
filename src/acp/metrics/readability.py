@@ -10,18 +10,28 @@ from acp.models import ReadabilityMetrics
 
 README_NAMES = ("README.md", "README.rst", "README.txt", "README")
 DOCS_DIRS = ("docs", "doc")
+# Nunca se anotan, y exigirlo dejaría todo método como no anotado.
+SELF_NAMES = {"self", "cls"}
 
 
 def _is_annotated(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    if node.returns is not None:
-        return True
+    """Anotada de verdad: el retorno y todos los parámetros.
+
+    Con `any` bastaba un argumento anotado para dar la función por tipada, y el
+    ratio medía presencia de anotaciones en el repo, no cobertura — que es lo
+    que decide cuánto puede quitar A1.
+    """
+    if node.returns is None:
+        return False
     args = node.args
     every = [*args.posonlyargs, *args.args, *args.kwonlyargs]
     if args.vararg:
         every.append(args.vararg)
     if args.kwarg:
         every.append(args.kwarg)
-    return any(arg.annotation is not None for arg in every)
+    return all(
+        arg.annotation is not None for arg in every if arg.arg not in SELF_NAMES
+    )
 
 
 def _comment_lines(text: str) -> int:
