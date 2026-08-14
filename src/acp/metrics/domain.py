@@ -19,7 +19,7 @@ def cyclomatic_complexity(node: ast.AST) -> int:
         elif isinstance(child, ast.BoolOp):
             score += len(child.values) - 1
         elif isinstance(child, ast.comprehension):
-            score += len(child.ifs)
+            score += 1 + len(child.ifs)
         elif isinstance(child, ast.match_case):
             score += 1
     return score

@@ -33,6 +33,13 @@ def test_match_scores_one_point_per_case():
     assert cyclomatic_complexity(node) == 4
 
 
+def test_comprehension_for_clauses_count_as_branches():
+    """Una comprehension anidada es un bucle dentro de otro: contar solo sus
+    `ifs` le da la misma puntuación que a una expresión sin ramas."""
+    node = first_function("def f(rows):\n    return [x for row in rows for x in row]\n")
+    assert cyclomatic_complexity(node) == 3
+
+
 def test_flat_function_has_complexity_one():
     node = first_function("def f(a):\n    return a + 1\n")
     assert cyclomatic_complexity(node) == 1
