@@ -12,6 +12,8 @@ README_NAMES = ("README.md", "README.rst", "README.txt", "README")
 DOCS_DIRS = ("docs", "doc")
 # Nunca se anotan, y exigirlo dejaría todo método como no anotado.
 SELF_NAMES = {"self", "cls"}
+# No devuelven nada, y omitir su `-> None` es práctica corriente.
+RETURNLESS_NAMES = {"__init__", "__init_subclass__", "__post_init__", "__set_name__"}
 
 
 def _is_annotated(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -21,7 +23,7 @@ def _is_annotated(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     ratio medía presencia de anotaciones en el repo, no cobertura — que es lo
     que decide cuánto puede quitar A1.
     """
-    if node.returns is None:
+    if node.returns is None and node.name not in RETURNLESS_NAMES:
         return False
     args = node.args
     every = [*args.posonlyargs, *args.args, *args.kwonlyargs]

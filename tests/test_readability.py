@@ -73,6 +73,19 @@ def test_self_and_cls_do_not_need_an_annotation(tmp_path):
     assert result.annotated_function_ratio == 1.0
 
 
+def test_init_counts_as_annotated_without_an_explicit_return(tmp_path):
+    """`__init__` no devuelve nada y muchos repos omiten `-> None`: exigirlo
+    dejaría como no anotada a toda clase que sí anota sus parámetros."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(
+        "class C:\n    def __init__(self, a: int):\n        self.a = a\n", encoding="utf-8"
+    )
+
+    result = measure(tmp_path)
+
+    assert result.annotated_function_ratio == 1.0
+
+
 def test_detects_docs_directory(tmp_path):
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "a.py").write_text("x = 1\n", encoding="utf-8")
