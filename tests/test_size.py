@@ -30,6 +30,20 @@ def test_counts_the_files_that_cannot_be_parsed(tmp_path):
     assert result.unparseable_files == 1
 
 
+def test_repo_tooling_is_not_part_of_the_code_under_study(tmp_path):
+    """sqlglot mete en el recuento sus benchmarks y los scripts de CI de
+    .github. No es el código que el agente tiene que entender para arreglar un
+    fallo de dominio, y encabeza la muestra por orden alfabético."""
+    build_tree(tmp_path)
+    for directory in (".github/scripts", "benchmarks", "ci_tools"):
+        (tmp_path / directory).mkdir(parents=True)
+        (tmp_path / directory / "helper.py").write_text("x = 1\n", encoding="utf-8")
+
+    result = measure(tmp_path)
+
+    assert result.python_files == 3
+
+
 def test_depth_is_measured_relative_to_root(tmp_path):
     build_tree(tmp_path)
     result = measure(tmp_path)

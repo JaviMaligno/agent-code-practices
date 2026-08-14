@@ -10,6 +10,10 @@ EXCLUDED_DIRS = {
     "tests", "test", "testing", "docs", "doc", "examples", "example",
     "vendor", "third_party", "build", "dist", ".git", ".venv", "venv",
     "__pycache__", "node_modules", "site-packages",
+    # Utilidades del repositorio, no el código que se estudia: benchmarks,
+    # scripts de CI y generadores. Cuentan como líneas y encabezan la muestra
+    # de dominio por orden alfabético, que es donde más molesta.
+    "benchmarks", "benchmark", "bench", "scripts", "ci_tools", "tools", "pdoc",
 }
 
 # Directorios de test que no se llaman "tests": pint guarda la suya en
@@ -22,6 +26,9 @@ EXCLUDED_FILE_PATTERN = re.compile(r"^(?:test_.+|.+_test|tests?|conftest)$")
 
 
 def _is_excluded_dir(name: str) -> bool:
+    # Los ocultos entran enteros: .github trae scripts de CI que no son el repo.
+    if name.startswith("."):
+        return True
     return name in EXCLUDED_DIRS or bool(EXCLUDED_DIR_PATTERN.match(name))
 
 

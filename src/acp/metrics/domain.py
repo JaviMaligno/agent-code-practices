@@ -133,5 +133,19 @@ def measure(root: Path) -> DomainMetrics:
         complex_functions=complex_count,
         domain_candidate_functions=len(candidates),
         domain_density=len(candidates) / (total_functions or 1),
-        samples=candidates[:MAX_SAMPLES],
+        samples=_spread(candidates, MAX_SAMPLES),
     )
+
+
+def _spread(candidates: list[str], count: int) -> list[str]:
+    """Muestra repartida por el árbol, no las primeras por orden alfabético.
+
+    En python-stdnum las quince primeras son quince países que empiezan por A, y
+    la muestra existe para juzgar a mano si el repo admite fallos que solo se
+    detecten entendiendo la regla de negocio: quince variantes de lo mismo no
+    dan ese juicio. El paso es determinista, así que la muestra es reproducible.
+    """
+    if len(candidates) <= count:
+        return candidates
+    step = len(candidates) / count
+    return [candidates[int(index * step)] for index in range(count)]

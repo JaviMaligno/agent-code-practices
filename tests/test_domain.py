@@ -157,6 +157,35 @@ def test_a_file_with_a_bom_still_contributes_its_functions(tmp_path):
     assert "pkg.billing.total" in result.samples
 
 
+def test_the_sample_spreads_across_the_tree(tmp_path):
+    """Las 15 primeras por orden alfabético son 15 países que empiezan por A:
+    la muestra existe para juzgar a mano si el repo admite fallos de dominio, y
+    quince variantes de lo mismo no permiten ese juicio."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    for index in range(40):
+        (pkg / f"m{index:02d}.py").write_text(
+            "def _rate(x):\n"
+            "    return x\n"
+            "\n"
+            "\n"
+            "def total(rows, premium):\n"
+            "    out = 0\n"
+            "    for row in rows:\n"
+            "        if row > 0 and premium:\n"
+            "            out += _rate(row)\n"
+            "    return out\n",
+            encoding="utf-8",
+        )
+
+    result = measure(tmp_path)
+
+    assert result.domain_candidate_functions == 40
+    assert len(result.samples) == 15
+    # No pueden ser todas del principio del árbol.
+    assert any("m3" in sample for sample in result.samples)
+
+
 def test_method_calls_on_self_count_as_internal(tmp_path):
     """holidays concentra su dominio en self._add_holiday(...): sin esto sale 0."""
     pkg = tmp_path / "pkg"
