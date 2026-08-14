@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 from pathlib import Path
 
 from acp.metrics.size import iter_source_files
@@ -22,6 +24,24 @@ def _is_annotated(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(arg.annotation is not None for arg in every)
 
 
+def _comment_lines(text: str) -> int:
+    """Líneas que llevan comentario, esté al principio o al final.
+
+    Se tokeniza en vez de mirar el principio de la línea porque los dos errores
+    que eso comete van en direcciones opuestas: pierde los comentarios de final
+    de línea y se inventa comentarios donde solo hay una almohadilla dentro de
+    una cadena.
+    """
+    rows: set[int] = set()
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            if token.type == tokenize.COMMENT:
+                rows.add(token.start[0])
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return sum(1 for line in text.splitlines() if line.strip().startswith("#"))
+    return len(rows)
+
+
 def measure(root: Path) -> ReadabilityMetrics:
     total_lines = 0
     comment_lines = 0
@@ -33,7 +53,7 @@ def measure(root: Path) -> ReadabilityMetrics:
         text = path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
         total_lines += len(lines)
-        comment_lines += sum(1 for line in lines if line.strip().startswith("#"))
+        comment_lines += _comment_lines(text)
 
         try:
             tree = ast.parse(text)
