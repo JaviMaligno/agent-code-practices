@@ -73,10 +73,22 @@ class DockerRunner:
     def start_command(self) -> list[str]:
         return [
             "docker", "run", "--detach", "--name", self.container,
-            "--volume", f"{self.repo}:{CONTAINER_WORKDIR}",
             "--workdir", CONTAINER_WORKDIR,
             self.image, "sleep", "infinity",
         ]
+
+    def copy_command(self) -> list[str]:
+        """Copia el repo dentro en vez de montarlo.
+
+        Medido sobre python-stdnum, mismo contenedor y mismo entorno: 113 s de
+        suite sobre volumen montado frente a 43 s con el repo dentro. Con 54
+        corridas la diferencia no es un detalle. De paso, el clon del host queda
+        intacto: ni `.egg-info` ni artefactos de la suite.
+
+        El `/.` final copia el contenido; sin él, `docker cp` crearía
+        `/repo/<nombre>` y nada encontraría el repo donde lo espera.
+        """
+        return ["docker", "cp", f"{self.repo}/.", f"{self.container}:{CONTAINER_WORKDIR}"]
 
     def trust_command(self) -> list[str]:
         """Sin esto git ve el montaje como `dubious ownership` y aborta."""

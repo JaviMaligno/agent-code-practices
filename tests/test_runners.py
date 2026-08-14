@@ -3,14 +3,24 @@ from pathlib import Path
 from acp.runners import DEFAULT_IMAGE, DockerRunner, VenvRunner
 
 
-def test_container_mounts_the_repo_and_works_inside_it():
+def test_the_container_starts_without_mounting_anything():
+    """Medido sobre python-stdnum en el mismo contenedor y con el mismo
+    entorno: 113 s de suite sobre el volumen montado frente a 43 s copiando el
+    repo dentro. El coste se multiplica por 54 corridas (§3.2 del spec)."""
     runner = DockerRunner(repo=Path("/clones/pint"), container="acp-pint")
 
     assert runner.start_command() == [
-        "docker", "run", "--detach", "--name", "acp-pint",
-        "--volume", "/clones/pint:/repo", "--workdir", "/repo",
+        "docker", "run", "--detach", "--name", "acp-pint", "--workdir", "/repo",
         DEFAULT_IMAGE, "sleep", "infinity",
     ]
+
+
+def test_the_repo_is_copied_into_the_container():
+    """El `/.` copia el contenido, no el directorio: sin él acabaría en
+    /repo/pint y nada de lo que viene después encontraría el repo."""
+    runner = DockerRunner(repo=Path("/clones/pint"), container="acp-pint")
+
+    assert runner.copy_command() == ["docker", "cp", "/clones/pint/.", "acp-pint:/repo"]
 
 
 def test_commands_run_inside_the_container():

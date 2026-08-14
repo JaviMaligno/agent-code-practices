@@ -362,6 +362,13 @@ def run_suite_in_docker(
         return metrics
 
     try:
+        code, output, timed_out = _run(runner.copy_command(), repo, timeout)
+        if code != 0 or timed_out:
+            metrics.install_error = f"docker cp: {output[-800:]}"
+            metrics.timed_out = timed_out
+            metrics.install_seconds = time.monotonic() - started
+            return metrics
+
         _run(runner.trust_command(), repo, timeout)
         metrics = install_and_collect(repo, runner, timeout, metrics, started)
         return run_prepared_suite(repo, runner, timeout, metrics)
