@@ -49,6 +49,7 @@ class SuiteMetrics:
     passed: int = 0
     failed: int = 0
     errors: int = 0
+    skipped: int = 0
     seconds: float = 0.0
 
 

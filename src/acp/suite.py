@@ -6,8 +6,13 @@ from pathlib import Path
 
 from acp.models import SuiteMetrics
 
-COUNT_PATTERN = re.compile(r"(\d+)\s+(passed|failed|error|errors|skipped)")
-DURATION_PATTERN = re.compile(r"in\s+([\d.]+)s")
+COUNT_PATTERN = re.compile(r"(\d+)\s+(passed|failed|errors|error|skipped)\b")
+
+# Línea de resumen de pytest: la última que termina en `in <n>s`, con o sin el
+# marco de `=` (con `-q` no lo lleva) y con o sin el reloj de las corridas
+# largas. Anclar aquí es lo que impide que los números de una traza de fallo
+# entren en el recuento y que la duración se lea de la primera coincidencia.
+SUMMARY_LINE_PATTERN = re.compile(r"\bin\s+(\d+(?:\.\d+)?)s(?:\s*\([^)]*\))?\s*=*\s*$")
 
 DEFAULT_IMAGE = "python:3.12-slim"
 INSTALL_AND_TEST = (
@@ -17,25 +22,33 @@ INSTALL_AND_TEST = (
 )
 
 
-def parse_pytest_summary(output: str) -> SuiteMetrics:
-    counts = {"passed": 0, "failed": 0, "errors": 0}
-    found = False
-    for number, label in COUNT_PATTERN.findall(output):
-        found = True
-        key = "errors" if label.startswith("error") else label
-        if key in counts:
-            counts[key] += int(number)
+def _summary_line(output: str) -> tuple[str, float] | None:
+    """Última línea de resumen de pytest y su duración, o None si no la hay."""
+    for line in reversed(output.splitlines()):
+        match = SUMMARY_LINE_PATTERN.search(line.rstrip())
+        if match:
+            return line, float(match.group(1))
+    return None
 
-    if not found:
+
+def parse_pytest_summary(output: str) -> SuiteMetrics:
+    summary = _summary_line(output)
+    if summary is None:
         return SuiteMetrics()
 
-    duration = DURATION_PATTERN.search(output)
+    line, seconds = summary
+    counts = {"passed": 0, "failed": 0, "errors": 0, "skipped": 0}
+    for number, label in COUNT_PATTERN.findall(line):
+        key = "errors" if label.startswith("error") else label
+        counts[key] += int(number)
+
     return SuiteMetrics(
         ran=True,
         passed=counts["passed"],
         failed=counts["failed"],
         errors=counts["errors"],
-        seconds=float(duration.group(1)) if duration else 0.0,
+        skipped=counts["skipped"],
+        seconds=seconds,
     )
 
 
