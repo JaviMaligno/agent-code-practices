@@ -31,3 +31,42 @@ def test_skips_test_and_vendor_directories(tmp_path):
     (tmp_path / "tests" / "test_a.py").write_text("x = 1\n", encoding="utf-8")
     result = measure(tmp_path)
     assert result.python_files == 3
+
+
+def test_skips_test_packages_nested_in_the_source_package(tmp_path):
+    """pint guarda su suite en pint/testsuite/: 12.016 líneas de test contadas como código."""
+    build_tree(tmp_path)
+    (tmp_path / "pkg" / "testsuite").mkdir()
+    (tmp_path / "pkg" / "testsuite" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "testsuite" / "test_x.py").write_text("x = 1\n" * 50, encoding="utf-8")
+    (tmp_path / "pkg" / "test_suite").mkdir()
+    (tmp_path / "pkg" / "test_suite" / "helper.py").write_text("y = 2\n" * 10, encoding="utf-8")
+
+    result = measure(tmp_path)
+
+    assert result.python_files == 3
+    assert result.code_lines == 3
+
+
+def test_skips_test_files_outside_test_directories(tmp_path):
+    build_tree(tmp_path)
+    (tmp_path / "conftest.py").write_text("import pytest\n", encoding="utf-8")
+    (tmp_path / "tests.py").write_text("x = 1\n" * 30, encoding="utf-8")
+    (tmp_path / "pkg" / "test_a.py").write_text("x = 1\n" * 20, encoding="utf-8")
+    (tmp_path / "pkg" / "a_test.py").write_text("x = 1\n" * 20, encoding="utf-8")
+
+    result = measure(tmp_path)
+
+    assert result.python_files == 3
+    assert result.code_lines == 3
+
+
+def test_keeps_source_packages_whose_name_merely_starts_with_test(tmp_path):
+    """`testfixtures` es una librería real: excluirla entera sería peor que el fallo."""
+    build_tree(tmp_path)
+    (tmp_path / "testfixtures").mkdir()
+    (tmp_path / "testfixtures" / "core.py").write_text("x = 1\n", encoding="utf-8")
+
+    result = measure(tmp_path)
+
+    assert result.python_files == 4
