@@ -73,6 +73,19 @@ def test_flags_singledispatchmethod_qualified(tmp_path):
     assert result.uses_runtime_typing is True
 
 
+def test_evidence_locates_the_file_by_its_path(tmp_path):
+    """Con 360 módulos hay varios `models.py`: el nombre suelto no permite ir a
+    comprobar la exclusión, que es para lo único que sirve la evidencia."""
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "pkg" / "sub" / "models.py").write_text(
+        "from pydantic import BaseModel\n", encoding="utf-8"
+    )
+
+    result = measure(tmp_path)
+
+    assert any("pkg/sub/models.py" in item for item in result.evidence)
+
+
 def test_plain_annotations_are_clean(tmp_path):
     write(tmp_path, "def f(a: int) -> int:\n    return a\n")
     result = measure(tmp_path)

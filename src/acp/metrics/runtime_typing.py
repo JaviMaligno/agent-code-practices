@@ -31,23 +31,27 @@ def measure(root: Path) -> RuntimeTypingMetrics:
         if tree is None:
             continue
 
+        # Ruta relativa, no nombre suelto: la evidencia existe para poder ir a
+        # comprobarla, y en un repo grande hay varios `models.py`.
+        location = path.relative_to(root).as_posix()
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.split(".")[0] in RUNTIME_TYPING_MODULES:
-                        evidence.append(f"{path.name}: import {alias.name}")
+                        evidence.append(f"{location}: import {alias.name}")
             elif isinstance(node, ast.ImportFrom):
                 root_module = (node.module or "").split(".")[0]
                 if root_module in RUNTIME_TYPING_MODULES:
-                    evidence.append(f"{path.name}: from {node.module} import ...")
+                    evidence.append(f"{location}: from {node.module} import ...")
             elif isinstance(node, ast.Call):
                 name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
                 if name in RUNTIME_TYPING_CALLS:
-                    evidence.append(f"{path.name}: {name}()")
+                    evidence.append(f"{location}: {name}()")
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 for decorator in node.decorator_list:
                     name = _decorator_name(decorator)
                     if name in RUNTIME_TYPING_DECORATORS:
-                        evidence.append(f"{path.name}: @{name}")
+                        evidence.append(f"{location}: @{name}")
 
     return RuntimeTypingMetrics(uses_runtime_typing=bool(evidence), evidence=evidence[:20])
