@@ -117,6 +117,45 @@ def test_missing_pyproject_falls_back_to_requirements(tmp_path):
     assert [s.label for s in install_strategies(tmp_path)] == ["requirements:requirements-dev.txt"]
 
 
+def test_extras_declared_in_setup_py_are_found(tmp_path):
+    """sqlglot declara sus dependencias de test en `extras_require` de setup.py
+    y deja el pyproject con `dynamic = ["optional-dependencies"]`: leer solo el
+    pyproject lo deja como un repo que no declara nada."""
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "\n"
+        "setup(\n"
+        "    name='demo',\n"
+        "    extras_require={\n"
+        "        'dev': ['pytest', 'pandas'],\n"
+        "        'docs': ['sphinx'],\n"
+        "    },\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    labels = [strategy.label for strategy in install_strategies(tmp_path)]
+
+    assert labels == ["extra:dev"]
+
+
+def test_extras_declared_in_setup_cfg_are_found(tmp_path):
+    (tmp_path / "setup.cfg").write_text(
+        "[metadata]\nname = demo\n\n[options.extras_require]\ntest =\n    pytest\n",
+        encoding="utf-8",
+    )
+
+    assert [s.label for s in install_strategies(tmp_path)] == ["extra:test"]
+
+
+def test_setup_py_that_cannot_be_parsed_does_not_crash_the_profiler(tmp_path):
+    """No se ejecuta setup.py, se lee: ejecutar código de un repo de terceros
+    para averiguar qué instalar es exactamente lo que el aislamiento evita."""
+    (tmp_path / "setup.py").write_text("def broken(:\n", encoding="utf-8")
+
+    assert install_strategies(tmp_path) == []
+
+
 def test_broken_pyproject_does_not_crash_the_profiler(tmp_path):
     write_pyproject(tmp_path, "[project\nname = broken")
 

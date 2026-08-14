@@ -17,6 +17,7 @@ Dos decisiones gobiernan este módulo:
 
 from __future__ import annotations
 
+import ast
 import configparser
 import json
 import re
@@ -102,6 +103,9 @@ def install_strategies(repo: Path) -> list[Strategy]:
     config = _read_pyproject(repo)
 
     extras = config.get("project", {}).get("optional-dependencies", {})
+    # Un pyproject con `dynamic = ["optional-dependencies"]` no lista sus
+    # extras: los declara el setup.py o el setup.cfg, y hay que ir a buscarlos.
+    extras = {**_setup_cfg_extras(repo), **_setup_py_extras(repo), **extras}
     for name in TEST_EXTRAS:
         if name in extras:
             strategies.append(Strategy(f"extra:{name}", ["-e", f".[{name}]"]))
@@ -120,6 +124,50 @@ def install_strategies(repo: Path) -> list[Strategy]:
         strategies.append(Strategy("tox:testenv", tox_deps))
 
     return strategies
+
+
+def _setup_py_extras(repo: Path) -> dict[str, list]:
+    """Nombres de extra declarados en `extras_require` dentro de setup.py.
+
+    Se parsea con `ast`, no se ejecuta: correr el setup.py de un repositorio de
+    terceros para averiguar qué instalar echaría abajo el aislamiento que
+    justifica todo el ejecutor.
+    """
+    path = repo / "setup.py"
+    if not path.exists():
+        return {}
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8-sig", errors="replace"))
+    except (SyntaxError, ValueError, OSError):
+        return {}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "extras_require" or not isinstance(keyword.value, ast.Dict):
+                continue
+            return {
+                key.value: []
+                for key in keyword.value.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+    return {}
+
+
+def _setup_cfg_extras(repo: Path) -> dict[str, list]:
+    """Nombres de extra declarados en `[options.extras_require]` de setup.cfg."""
+    path = repo / "setup.cfg"
+    if not path.exists():
+        return {}
+    parser = configparser.ConfigParser()
+    try:
+        parser.read_string(path.read_text(encoding="utf-8-sig", errors="replace"))
+    except (configparser.Error, OSError):
+        return {}
+    if not parser.has_section("options.extras_require"):
+        return {}
+    return {name: [] for name in parser.options("options.extras_require")}
 
 
 def _tox_testenv_deps(repo: Path) -> list[str]:
