@@ -6,7 +6,7 @@ from pathlib import Path
 from acp.metrics import coupling, domain, readability, runtime_typing, size
 from acp.models import RepoProfile
 from acp.report import comparison_table, render_profile
-from acp.suite import run_suite_in_docker
+from acp.suite import run_suite_in_venv
 
 
 def profile_repo(root: Path, name: str, run_suite: bool = True) -> RepoProfile:
@@ -19,7 +19,7 @@ def profile_repo(root: Path, name: str, run_suite: bool = True) -> RepoProfile:
         domain=domain.measure(root),
     )
     if run_suite:
-        profile.suite = run_suite_in_docker(root)
+        profile.suite = run_suite_in_venv(root)
     return profile
 
 

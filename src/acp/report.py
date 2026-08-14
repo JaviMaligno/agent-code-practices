@@ -2,32 +2,37 @@ from __future__ import annotations
 
 from acp.models import RepoProfile
 
-COLUMNS = [
-    ("repo", lambda p: p.name),
-    ("ficheros", lambda p: str(p.size.python_files)),
-    ("líneas", lambda p: str(p.size.code_lines)),
-    ("prof. máx", lambda p: str(p.size.max_depth)),
-    ("anotadas", lambda p: f"{p.readability.annotated_function_ratio:.0%}"),
-    ("docs", lambda p: "sí" if p.readability.has_docs_dir else "no"),
-    ("fan-out", lambda p: f"{p.coupling.mean_fan_out:.2f}"),
-    ("dominio", lambda p: f"{p.domain.domain_density:.0%}"),
-    ("suite", lambda p: f"{p.suite.passed}p/{p.suite.failed}f {p.suite.seconds:.0f}s"),
-]
-
-
 def admission_verdict(profile: RepoProfile) -> tuple[str, list[str]]:
-    """Aplica los criterios de admisión del spec §3.2.1."""
+    """Aplica los criterios de admisión del spec §3.2.1.
+
+    Tres estados, no dos. NO EVALUABLE es para lo que no se pudo medir —el
+    entorno no se dejó preparar, la suite no colectó, se agotó el tiempo— y
+    RECHAZADO para lo que se midió y no cumple. Mezclarlos haría que un fallo
+    de la cadena de instalación se lea como un defecto del candidato.
+    """
+    blockers: list[str] = []
+    suite = profile.suite
+
+    if not suite.install_ok:
+        detail = f": {suite.install_error}" if suite.install_error else ""
+        blockers.append(f"no se pudo preparar el entorno{detail}")
+    elif not suite.collect_ok:
+        blockers.append("el entorno se instaló pero la suite no llegó a colectarse")
+    elif suite.timed_out:
+        blockers.append("se agotó el tiempo antes de terminar la suite")
+    elif not suite.ran:
+        blockers.append("la suite no llegó a ejecutarse")
+
+    if blockers:
+        return "NO EVALUABLE", blockers
+
     reasons: list[str] = []
-    if not profile.suite.ran:
-        reasons.append("la suite no llegó a ejecutarse")
-    elif profile.suite.failed or profile.suite.errors:
-        reasons.append(f"suite en rojo: {profile.suite.failed} fallos, {profile.suite.errors} errores")
-    elif not profile.suite.passed:
+    if suite.failed or suite.errors:
+        reasons.append(f"suite en rojo: {suite.failed} fallos, {suite.errors} errores")
+    elif not suite.passed:
         # Verde sin haber ejecutado ningún test: la variable dependiente del
         # experimento saldría "sin regresión" por construcción.
-        reasons.append(
-            f"la suite no ejecutó ningún test: 0 pasan, {profile.suite.skipped} saltados"
-        )
+        reasons.append(f"la suite no ejecutó ningún test: 0 pasan, {suite.skipped} saltados")
     if profile.runtime_typing.uses_runtime_typing:
         reasons.append("usa tipado en ejecución, A1 no sería equivalente")
     if profile.size.code_lines < 2000:
@@ -35,6 +40,25 @@ def admission_verdict(profile: RepoProfile) -> tuple[str, list[str]]:
     if profile.size.code_lines > 80000:
         reasons.append("demasiado grande para el presupuesto")
     return ("RECHAZADO" if reasons else "ADMITIDO"), reasons
+
+
+# El plan manda descartar candidatos leyendo esta tabla, así que tiene que
+# llevar todo lo que decide un descarte: sin la columna de veredicto y la de
+# tipado en ejecución habría que abrir ficha por ficha.
+COLUMNS = [
+    ("repo", lambda p: p.name),
+    ("veredicto", lambda p: admission_verdict(p)[0]),
+    ("ficheros", lambda p: str(p.size.python_files)),
+    ("líneas", lambda p: str(p.size.code_lines)),
+    ("prof. máx", lambda p: str(p.size.max_depth)),
+    ("anotadas", lambda p: f"{p.readability.annotated_function_ratio:.0%}"),
+    ("docs", lambda p: "sí" if p.readability.has_docs_dir else "no"),
+    ("tipado runtime", lambda p: "sí" if p.runtime_typing.uses_runtime_typing else "no"),
+    ("fan-out", lambda p: f"{p.coupling.mean_fan_out:.2f}"),
+    ("dominio", lambda p: f"{p.domain.domain_density:.0%}"),
+    ("suite", lambda p: f"{p.suite.passed}p/{p.suite.failed}f {p.suite.seconds:.0f}s"),
+    ("entorno", lambda p: f"{p.suite.install_seconds:.0f}s"),
+]
 
 
 def render_profile(profile: RepoProfile) -> str:
@@ -77,11 +101,22 @@ def render_profile(profile: RepoProfile) -> str:
     lines += [f"- `{sample}`" for sample in profile.domain.samples] or ["- (ninguna)"]
     lines += [
         "",
+        "## Entorno",
+        f"- Instalación: {'sí' if profile.suite.install_ok else 'no'}",
+        f"- Estrategia que funcionó: {profile.suite.install_strategy or '(ninguna)'}",
+        f"- Coste de preparación: {profile.suite.install_seconds:.0f} s",
+        f"- Colecta la suite: {'sí' if profile.suite.collect_ok else 'no'}",
+    ]
+    if profile.suite.install_error:
+        lines += [f"- Error: `{profile.suite.install_error}`"]
+    lines += [
+        "",
         "## Suite",
         f"- Ejecutada: {'sí' if profile.suite.ran else 'no'}",
         f"- Pasan: {profile.suite.passed}, fallan: {profile.suite.failed}, "
         f"errores: {profile.suite.errors}, saltados: {profile.suite.skipped}",
         f"- Duración: {profile.suite.seconds} s",
+        f"- Tiempo agotado: {'sí' if profile.suite.timed_out else 'no'}",
         "",
         "## Tipado en ejecución",
         f"- Detectado: {'sí' if profile.runtime_typing.uses_runtime_typing else 'no'}",

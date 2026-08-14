@@ -2,6 +2,19 @@ from acp.models import ReadabilityMetrics, RepoProfile, SizeMetrics, SuiteMetric
 from acp.report import admission_verdict, comparison_table, render_profile
 
 
+def healthy_suite(**overrides) -> SuiteMetrics:
+    """Una suite que se ejecutó de verdad: entorno preparado y suite colectada.
+
+    Sin esos dos campos el veredicto es NO EVALUABLE, que es lo correcto: una
+    suite no puede haber corrido si su entorno nunca llegó a instalarse.
+    """
+    defaults = dict(
+        ran=True, passed=300, failed=0, errors=0, seconds=44.0,
+        install_ok=True, collect_ok=True, install_strategy="extra:test",
+    )
+    return SuiteMetrics(**{**defaults, **overrides})
+
+
 def make_profile(name: str = "demo") -> RepoProfile:
     return RepoProfile(
         name=name,
@@ -13,7 +26,7 @@ def make_profile(name: str = "demo") -> RepoProfile:
             has_readme=True,
             has_docs_dir=True,
         ),
-        suite=SuiteMetrics(ran=True, passed=300, failed=0, errors=0, seconds=44.0),
+        suite=healthy_suite(),
     )
 
 
@@ -32,7 +45,7 @@ def test_comparison_table_has_a_row_per_repo():
 
 def test_admission_verdict_rejects_red_suite():
     profile = make_profile()
-    profile.suite = SuiteMetrics(ran=True, passed=10, failed=2, errors=0, seconds=5.0)
+    profile.suite = healthy_suite(passed=10, failed=2, seconds=5.0)
     assert "RECHAZADO" in render_profile(profile)
 
 
@@ -40,7 +53,7 @@ def test_admission_verdict_rejects_a_suite_that_ran_no_test():
     """Todo skipped es verde para el parser y no mide nada: la variable
     dependiente del experimento saldría 'sin regresión' por construcción."""
     profile = make_profile()
-    profile.suite = SuiteMetrics(ran=True, passed=0, failed=0, errors=0, skipped=5, seconds=0.12)
+    profile.suite = healthy_suite(passed=0, skipped=5, seconds=0.12)
 
     verdict, reasons = admission_verdict(profile)
 
@@ -50,6 +63,6 @@ def test_admission_verdict_rejects_a_suite_that_ran_no_test():
 
 def test_admission_verdict_accepts_a_suite_with_skips_but_real_passes():
     profile = make_profile()
-    profile.suite = SuiteMetrics(ran=True, passed=300, failed=0, errors=0, skipped=12, seconds=44.0)
+    profile.suite = healthy_suite(skipped=12)
 
     assert admission_verdict(profile)[0] == "ADMITIDO"

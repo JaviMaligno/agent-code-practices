@@ -1,7 +1,29 @@
+"""Ejecución de la suite de un repositorio candidato.
+
+Sin contenedores: la máquina de ejecución no admite Docker, así que el
+aislamiento es un entorno virtual desechable por repositorio. Aísla las
+dependencias, no el sistema — que es la razón por la que solo entran
+repositorios públicos y conocidos.
+
+Dos decisiones gobiernan este módulo:
+
+1. Solo se intenta instalar lo que el repo **declara**. `pip install -e '.[test]'`
+   sobre un repo que no declara ese extra imprime un aviso y sale con código 0,
+   así que una cadena de fallbacks encadenada con `||` nunca dispara y la suite
+   acaba corriendo sin sus dependencias.
+2. El éxito de la preparación se comprueba **funcionalmente**, colectando los
+   tests, no leyendo códigos de salida.
+"""
+
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
+import sys
+import time
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from acp.models import SuiteMetrics
@@ -14,12 +36,79 @@ COUNT_PATTERN = re.compile(r"(\d+)\s+(passed|failed|errors|error|skipped)\b")
 # entren en el recuento y que la duración se lea de la primera coincidencia.
 SUMMARY_LINE_PATTERN = re.compile(r"\bin\s+(\d+(?:\.\d+)?)s(?:\s*\([^)]*\))?\s*=*\s*$")
 
-DEFAULT_IMAGE = "python:3.12-slim"
-INSTALL_AND_TEST = (
-    "python -m pip install --quiet --upgrade pip && "
-    "python -m pip install --quiet -e '.[test,dev]' || python -m pip install --quiet -e . ; "
-    "python -m pip install --quiet pytest && python -m pytest -q"
+# Nombres de extra que aportan dependencias de test, del más específico al menos.
+TEST_EXTRAS = ("test", "tests", "testing", "dev")
+REQUIREMENTS_FILES = (
+    "requirements-test.txt",
+    "requirements-dev.txt",
+    "requirements_test.txt",
+    "requirements_dev.txt",
+    "requirements/test.txt",
+    "requirements/dev.txt",
 )
+
+COLLECTION_ERROR_MARKERS = ("ERROR collecting", "ImportError", "ModuleNotFoundError", "INTERNALERROR")
+
+
+@dataclass(frozen=True)
+class Strategy:
+    """Un intento de instalar las dependencias de test que el repo declara."""
+
+    label: str
+    args: list[str]
+
+    def __eq__(self, other: object) -> bool:  # pragma: no cover - trivial
+        return isinstance(other, Strategy) and (self.label, self.args) == (other.label, other.args)
+
+
+def _read_pyproject(repo: Path) -> dict:
+    path = repo / "pyproject.toml"
+    if not path.exists():
+        return {}
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (tomllib.TOMLDecodeError, OSError):
+        return {}
+
+
+def install_strategies(repo: Path) -> list[Strategy]:
+    """Intentos de instalación ordenados, derivados de lo que el repo declara.
+
+    Nunca inventa un extra: si el repo no lo declara, no se intenta. Solo se
+    consideran extras y grupos cuyo nombre sugiera dependencias de test —
+    instalar el extra `docs` no acerca la suite a poder ejecutarse.
+    """
+    strategies: list[Strategy] = []
+    config = _read_pyproject(repo)
+
+    extras = config.get("project", {}).get("optional-dependencies", {})
+    for name in TEST_EXTRAS:
+        if name in extras:
+            strategies.append(Strategy(f"extra:{name}", ["-e", f".[{name}]"]))
+
+    groups = config.get("dependency-groups", {})
+    for name in TEST_EXTRAS:
+        if name in groups:
+            strategies.append(Strategy(f"group:{name}", ["--group", name]))
+
+    for relative in REQUIREMENTS_FILES:
+        if (repo / relative).exists():
+            strategies.append(Strategy(f"requirements:{relative}", ["-r", relative]))
+
+    return strategies
+
+
+def collection_failed(output: str) -> bool:
+    """True si pytest no pudo colectar una suite utilizable.
+
+    Colectar cero tests cuenta como fallo: un repo del que no sale ningún test
+    no puede admitirse como suite verde.
+    """
+    if any(marker in output for marker in COLLECTION_ERROR_MARKERS):
+        return True
+    if "no tests ran" in output:
+        return True
+    return not re.search(r"\b(\d+)\s+tests?\s+collected", output)
 
 
 def _summary_line(output: str) -> tuple[str, float] | None:
@@ -52,18 +141,115 @@ def parse_pytest_summary(output: str) -> SuiteMetrics:
     )
 
 
-def run_suite_in_docker(repo: Path, image: str = DEFAULT_IMAGE, timeout: int = 3600) -> SuiteMetrics:
-    """Instala el repo y corre su suite dentro de un contenedor desechable."""
-    command = [
-        "docker", "run", "--rm",
-        "-v", f"{repo.resolve()}:/repo",
-        "-w", "/repo",
-        image, "bash", "-lc", INSTALL_AND_TEST,
-    ]
+def _run(command: list[str], cwd: Path, timeout: int) -> tuple[int, str, bool]:
+    """Devuelve (código, salida combinada, si expiró el tiempo)."""
     try:
         completed = subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout, check=False
+            command, cwd=cwd, capture_output=True, text=True,
+            timeout=timeout, check=False, encoding="utf-8", errors="replace",
         )
-    except subprocess.TimeoutExpired:
-        return SuiteMetrics()
-    return parse_pytest_summary(completed.stdout + completed.stderr)
+    except subprocess.TimeoutExpired as expired:
+        partial = (expired.stdout or "") + (expired.stderr or "")
+        return 1, partial if isinstance(partial, str) else "", True
+    except OSError as error:
+        return 1, f"{type(error).__name__}: {error}", False
+    return completed.returncode, completed.stdout + completed.stderr, False
+
+
+def _venv_python(env_dir: Path) -> Path:
+    if sys.platform == "win32":
+        return env_dir / "Scripts" / "python.exe"
+    return env_dir / "bin" / "python"
+
+
+def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> SuiteMetrics:
+    """Crea el entorno del repo e instala lo necesario para colectar su suite.
+
+    Devuelve las métricas con la parte de preparación rellena. `collect_ok` dice
+    si la suite llegó a colectarse: es la comprobación funcional que sustituye a
+    mirar códigos de salida de pip, que mienten.
+    """
+    metrics = SuiteMetrics()
+    started = time.monotonic()
+
+    code, output, timed_out = _run([sys.executable, "-m", "venv", str(env_dir)], repo, timeout)
+    if code != 0 or timed_out:
+        metrics.install_error = f"venv: {output[-800:]}"
+        metrics.timed_out = timed_out
+        metrics.install_seconds = time.monotonic() - started
+        return metrics
+
+    python = str(_venv_python(env_dir))
+    pip = [python, "-m", "pip", "install", "--disable-pip-version-check", "-q"]
+
+    code, output, timed_out = _run([*pip, "-e", "."], repo, timeout)
+    if code != 0 or timed_out:
+        metrics.install_error = f"install -e .: {output[-800:]}"
+        metrics.timed_out = timed_out
+        metrics.install_seconds = time.monotonic() - started
+        return metrics
+    metrics.install_ok = True
+
+    _run([*pip, "pytest"], repo, timeout)
+
+    collect = [python, "-m", "pytest", "--collect-only", "-q"]
+    _, collect_output, _ = _run(collect, repo, timeout)
+
+    if not collection_failed(collect_output):
+        metrics.install_strategy = "base"
+        metrics.collect_ok = True
+        metrics.install_seconds = time.monotonic() - started
+        return metrics
+
+    for strategy in install_strategies(repo):
+        code, output, timed_out = _run([*pip, *strategy.args], repo, timeout)
+        if timed_out:
+            metrics.timed_out = True
+            break
+        if code != 0:
+            continue
+        _, collect_output, _ = _run(collect, repo, timeout)
+        if not collection_failed(collect_output):
+            metrics.install_strategy = strategy.label
+            metrics.collect_ok = True
+            break
+
+    if not metrics.collect_ok:
+        metrics.install_error = f"collect: {collect_output[-800:]}"
+    metrics.install_seconds = time.monotonic() - started
+    return metrics
+
+
+def run_suite_in_venv(
+    repo: Path,
+    env_dir: Path | None = None,
+    timeout: int = 3600,
+    keep_env: bool = False,
+) -> SuiteMetrics:
+    """Prepara el entorno del repo, ejecuta su suite y limpia.
+
+    El entorno se borra al terminar salvo que se pida conservarlo: en la campaña
+    completa se reutiliza uno por repositorio, pero al perfilar candidatos se
+    descarta para no acumular gigas (§2 del spec).
+    """
+    env_dir = env_dir or (repo / ".acp-venv")
+    try:
+        metrics = prepare_environment(repo, env_dir, timeout=timeout)
+        if not metrics.collect_ok:
+            return metrics
+
+        python = str(_venv_python(env_dir))
+        _, output, timed_out = _run([python, "-m", "pytest", "-q"], repo, timeout)
+        if timed_out:
+            metrics.timed_out = True
+            return metrics
+
+        result = parse_pytest_summary(output)
+        result.install_ok = metrics.install_ok
+        result.install_strategy = metrics.install_strategy
+        result.install_seconds = metrics.install_seconds
+        result.collect_ok = True
+        return result
+    finally:
+        if not keep_env and env_dir.exists():
+            shutil.rmtree(env_dir, ignore_errors=True)

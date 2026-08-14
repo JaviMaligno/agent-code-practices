@@ -51,6 +51,15 @@ class SuiteMetrics:
     errors: int = 0
     skipped: int = 0
     seconds: float = 0.0
+    # Preparación del entorno. Separada del resultado a propósito: un repo que no
+    # se deja instalar no es lo mismo que un repo cuya suite está en rojo, y
+    # confundirlos descarta candidatos por una razón que no es suya.
+    install_ok: bool = False
+    install_strategy: str = ""
+    install_seconds: float = 0.0
+    install_error: str = ""
+    collect_ok: bool = False
+    timed_out: bool = False
 
 
 @dataclass
