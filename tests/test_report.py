@@ -1,5 +1,5 @@
 from acp.models import ReadabilityMetrics, RepoProfile, SizeMetrics, SuiteMetrics
-from acp.report import comparison_table, render_profile
+from acp.report import admission_verdict, comparison_table, render_profile
 
 
 def make_profile(name: str = "demo") -> RepoProfile:
@@ -34,3 +34,22 @@ def test_admission_verdict_rejects_red_suite():
     profile = make_profile()
     profile.suite = SuiteMetrics(ran=True, passed=10, failed=2, errors=0, seconds=5.0)
     assert "RECHAZADO" in render_profile(profile)
+
+
+def test_admission_verdict_rejects_a_suite_that_ran_no_test():
+    """Todo skipped es verde para el parser y no mide nada: la variable
+    dependiente del experimento saldría 'sin regresión' por construcción."""
+    profile = make_profile()
+    profile.suite = SuiteMetrics(ran=True, passed=0, failed=0, errors=0, skipped=5, seconds=0.12)
+
+    verdict, reasons = admission_verdict(profile)
+
+    assert verdict == "RECHAZADO"
+    assert any("ningún test" in reason for reason in reasons)
+
+
+def test_admission_verdict_accepts_a_suite_with_skips_but_real_passes():
+    profile = make_profile()
+    profile.suite = SuiteMetrics(ran=True, passed=300, failed=0, errors=0, skipped=12, seconds=44.0)
+
+    assert admission_verdict(profile)[0] == "ADMITIDO"

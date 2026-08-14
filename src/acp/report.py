@@ -22,6 +22,12 @@ def admission_verdict(profile: RepoProfile) -> tuple[str, list[str]]:
         reasons.append("la suite no llegó a ejecutarse")
     elif profile.suite.failed or profile.suite.errors:
         reasons.append(f"suite en rojo: {profile.suite.failed} fallos, {profile.suite.errors} errores")
+    elif not profile.suite.passed:
+        # Verde sin haber ejecutado ningún test: la variable dependiente del
+        # experimento saldría "sin regresión" por construcción.
+        reasons.append(
+            f"la suite no ejecutó ningún test: 0 pasan, {profile.suite.skipped} saltados"
+        )
     if profile.runtime_typing.uses_runtime_typing:
         reasons.append("usa tipado en ejecución, A1 no sería equivalente")
     if profile.size.code_lines < 2000:
@@ -73,7 +79,8 @@ def render_profile(profile: RepoProfile) -> str:
         "",
         "## Suite",
         f"- Ejecutada: {'sí' if profile.suite.ran else 'no'}",
-        f"- Pasan: {profile.suite.passed}, fallan: {profile.suite.failed}, errores: {profile.suite.errors}",
+        f"- Pasan: {profile.suite.passed}, fallan: {profile.suite.failed}, "
+        f"errores: {profile.suite.errors}, saltados: {profile.suite.skipped}",
         f"- Duración: {profile.suite.seconds} s",
         "",
         "## Tipado en ejecución",
