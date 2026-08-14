@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from acp.metrics.size import iter_source_files
+from acp.metrics.size import iter_source_files, parse_source
 from acp.models import RuntimeTypingMetrics
 
 # Librerías que convierten las anotaciones en comportamiento en ejecución.
@@ -18,10 +18,8 @@ def measure(root: Path) -> RuntimeTypingMetrics:
     evidence: list[str] = []
 
     for path in iter_source_files(root):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
+        tree = parse_source(path)
+        if tree is None:
             continue
 
         for node in ast.walk(tree):
