@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
 from pathlib import Path
 
 from acp.metrics.size import iter_source_files
@@ -11,9 +12,23 @@ MIN_COMPLEXITY = 3
 MAX_SAMPLES = 15
 
 
+def _own_nodes(node: ast.AST) -> Iterator[ast.AST]:
+    """Descendientes de una función, sin entrar en las funciones que anida.
+
+    `measure` recorre el árbol con `ast.walk` y ya cuenta cada función anidada
+    como función propia: si sus ramas se sumaran también a la que la contiene,
+    se contarían dos veces.
+    """
+    for child in ast.iter_child_nodes(node):
+        yield child
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        yield from _own_nodes(child)
+
+
 def cyclomatic_complexity(node: ast.AST) -> int:
     score = 1
-    for child in ast.walk(node):
+    for child in _own_nodes(node):
         if isinstance(child, BRANCHING):
             score += 1
         elif isinstance(child, ast.BoolOp):

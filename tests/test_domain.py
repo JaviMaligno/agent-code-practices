@@ -40,6 +40,20 @@ def test_comprehension_for_clauses_count_as_branches():
     assert cyclomatic_complexity(node) == 3
 
 
+def test_nested_function_branches_belong_only_to_the_nested_function():
+    """`measure` ya cuenta la anidada por su cuenta: sumar sus ramas también a la
+    exterior sobreestima justo los repos que usan closures."""
+    node = first_function(
+        "def outer(rows):\n"
+        "    def inner(x):\n"
+        "        if x:\n"
+        "            return 1\n"
+        "        return 0\n"
+        "    return inner(rows)\n"
+    )
+    assert cyclomatic_complexity(node) == 1
+
+
 def test_flat_function_has_complexity_one():
     node = first_function("def f(a):\n    return a + 1\n")
     assert cyclomatic_complexity(node) == 1
