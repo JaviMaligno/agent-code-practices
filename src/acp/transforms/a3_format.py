@@ -9,6 +9,23 @@ from acp.transforms.base import TransformResult, iter_transformable_files
 
 _EMPTY = cst.SimpleWhitespace("")
 
+# Estos cuatro se escriben con palabras, así que su espacio es sintaxis igual
+# que la sangría: `a in b` pegado sería el nombre `ainb`. LibCST ni siquiera
+# deja construirlos así, y sin esta excepción A3 revienta en cualquier repo real.
+KEYWORD_COMPARISONS = (cst.In, cst.NotIn, cst.Is, cst.IsNot)
+
+
+def _crushed(whitespace: cst.BaseParenthesizableWhitespace) -> cst.BaseParenthesizableWhitespace:
+    """Aplasta el espaciado, salvo el que no es solo espaciado.
+
+    Un `a +  # la suma primero` guarda el comentario dentro del espacio que hay
+    tras el operador, y lo mismo pasa con los saltos de línea dentro de
+    paréntesis. Sustituirlo por vacío se llevaría el comentario por delante, que
+    es A4 metida dentro de A3: con las dos mezcladas ninguna de las dos celdas
+    del diseño es atribuible.
+    """
+    return _EMPTY if isinstance(whitespace, cst.SimpleWhitespace) else whitespace
+
 
 class _CrushFormatting(cst.CSTTransformer):
     """Quita el espaciado que no es sintaxis.
@@ -19,26 +36,32 @@ class _CrushFormatting(cst.CSTTransformer):
     """
 
     def leave_BinaryOperation(self, original, updated):
-        return updated.with_changes(
-            operator=updated.operator.with_changes(
-                whitespace_before=_EMPTY, whitespace_after=_EMPTY
-            )
-        )
+        return updated.with_changes(operator=_pinch(updated.operator))
 
     def leave_Comparison(self, original, updated):
         return updated.with_changes(
             comparisons=[
-                target.with_changes(
-                    operator=target.operator.with_changes(
-                        whitespace_before=_EMPTY, whitespace_after=_EMPTY
-                    )
-                )
+                target
+                if isinstance(target.operator, KEYWORD_COMPARISONS)
+                else target.with_changes(operator=_pinch(target.operator))
                 for target in updated.comparisons
             ]
         )
 
-    def leave_EmptyLine(self, original, updated) -> cst.RemovalSentinel:
+    def leave_EmptyLine(self, original, updated):
+        if updated.comment is not None:
+            # Una línea con comentario no es una línea en blanco: borrarla sería
+            # hacer A4, que es la transformación de al lado.
+            return updated
         return cst.RemoveFromParent()
+
+
+def _pinch(operator):
+    """Deja un operador sin aire a los lados."""
+    return operator.with_changes(
+        whitespace_before=_crushed(operator.whitespace_before),
+        whitespace_after=_crushed(operator.whitespace_after),
+    )
 
 
 def apply(root: Path) -> TransformResult:
