@@ -48,6 +48,15 @@ class _CrushFormatting(cst.CSTTransformer):
             ]
         )
 
+    def leave_AssignTarget(self, original, updated):
+        return updated.with_changes(
+            whitespace_before_equal=_crushed(updated.whitespace_before_equal),
+            whitespace_after_equal=_crushed(updated.whitespace_after_equal),
+        )
+
+    def leave_AugAssign(self, original, updated):
+        return updated.with_changes(operator=_pinch(updated.operator))
+
     def leave_EmptyLine(self, original, updated):
         if updated.comment is not None:
             # Una línea con comentario no es una línea en blanco: borrarla sería

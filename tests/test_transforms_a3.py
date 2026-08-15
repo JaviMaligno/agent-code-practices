@@ -62,6 +62,24 @@ def test_the_code_still_runs(tmp_path: Path):
     assert namespace["rate"](6, 6) == 37
 
 
+def test_assignment_spacing_is_gone(tmp_path: Path):
+    """El `=` es el operador más frecuente de un fichero de Python. Dejarlo con
+    aire deja A3 casi sin efecto sobre el código típico, que son asignaciones y
+    llamadas, no aritmética: la condición mediría una dosis mucho menor que la
+    nominal."""
+    path = write(
+        tmp_path,
+        "def f(a):\n    total = a * 2\n    total += 1\n    return total\n",
+    )
+
+    a3_format.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    compile(source, "core.py", "exec")
+    assert "total=a*2" in source
+    assert "total+=1" in source
+
+
 def test_keyword_comparisons_keep_the_space_they_need(tmp_path: Path):
     """`a in b` sin espacios sería `ainb`: en estos operadores el espacio es
     sintaxis, igual que la sangría, y LibCST se niega a escribirlos pegados."""
