@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 from pathlib import Path
 
 import libcst as cst
@@ -133,6 +134,9 @@ def collect_renames(root: Path) -> dict[str, str]:
     # símbolo del módulo y una variable local. Renombrar las dos rompe las
     # llamadas por palabra clave; renombrar una sola, el cuerpo de la función.
     names -= _parameter_names(root)
+    # Y un `def format(...)` propio no convierte en suyas las llamadas al
+    # builtin `format` del resto del repo: renombrarlas daría NameError.
+    names -= set(dir(builtins))
     return {name: _opaque(name, index) for index, name in enumerate(sorted(names))}
 
 

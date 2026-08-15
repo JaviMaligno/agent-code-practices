@@ -203,6 +203,29 @@ def test_a_name_that_is_also_a_parameter_stays_out_of_the_dictionary(tmp_path: P
     compile(source, "core.py", "exec")
 
 
+def test_a_name_that_shadows_a_builtin_stays_out_of_the_dictionary(tmp_path: Path):
+    """El repo define su propio `format`, pero en los demás módulos `format`
+    sigue siendo el builtin. Como el diccionario va por nombre desnudo,
+    renombrarlo convierte esas llamadas en un NameError."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "money.py").write_text(
+        "def format(number):\n    return number\n",
+        encoding="utf-8",
+    )
+    other = pkg / "report.py"
+    other.write_text(
+        "def render(number):\n    return format(number, '.2f')\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    assert "format" not in result.renames
+    assert "format(number, '.2f')" in other.read_text(encoding="utf-8")
+    assert "render" in result.renames
+
+
 def test_names_reachable_by_string_are_left_alone(tmp_path: Path):
     """Renombrar lo que se alcanza por getattr rompe el programa, y el fallo se
     leería como un agente que fracasa (§4.3.3)."""
