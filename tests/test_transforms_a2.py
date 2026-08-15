@@ -258,6 +258,113 @@ def test_the_public_list_follows_the_rename(tmp_path: Path):
     assert f'__all__ = ["{result.renames["apply_tax"]}"]' in source
 
 
+def test_a_doctest_in_a_docstring_follows_the_rename(tmp_path: Path):
+    """Un doctest no es documentación, es suite. python-stdnum corre la suya con
+    `--doctest-modules`, y un `>>> apply_tax(...)` que apunta al nombre viejo es
+    un NameError: medido, A2 sin esto pasa sus 413 tests a 413 fallos. La línea
+    de ejemplo es código y resuelve estáticamente, como `__all__`."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    path = pkg / "billing.py"
+    path.write_text(
+        '"""Impuestos.\n'
+        "\n"
+        ">>> apply_tax(100)\n"
+        "121.0\n"
+        '"""\n'
+        "\n"
+        "\n"
+        "def apply_tax(amount):\n"
+        "    return amount * 1.21\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert f">>> {result.renames['apply_tax']}(100)" in source
+    # La prosa de alrededor no es código y no se toca: eso sería A4.
+    assert "Impuestos." in source
+
+
+def test_the_prose_around_a_doctest_is_not_renamed(tmp_path: Path):
+    """El diccionario va por nombre desnudo. Si se aplicara a la cadena entera,
+    la palabra suelta de una frase cambiaría, y eso ya no es A2: es reescribir
+    la documentación, que es A4/B3."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    path = pkg / "billing.py"
+    path.write_text(
+        '"""Usa apply_tax para el IVA.\n'
+        "\n"
+        ">>> apply_tax(100)\n"
+        "121.0\n"
+        '"""\n'
+        "\n"
+        "\n"
+        "def apply_tax(amount):\n"
+        "    return amount * 1.21\n",
+        encoding="utf-8",
+    )
+
+    a2_names.apply(tmp_path)
+
+    assert "Usa apply_tax para el IVA." in path.read_text(encoding="utf-8")
+
+
+def test_a_multi_line_doctest_example_follows_the_rename(tmp_path: Path):
+    """Las continuaciones `...` son parte del mismo ejemplo. Renombrar la
+    primera línea y no el resto deja un ejemplo que no compila."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    path = pkg / "billing.py"
+    path.write_text(
+        '"""Impuestos.\n'
+        "\n"
+        ">>> for amount in (1, 2):\n"
+        "...     print(apply_tax(amount))\n"
+        '"""\n'
+        "\n"
+        "\n"
+        "def apply_tax(amount):\n"
+        "    return amount * 1.21\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert f"...     print({result.renames['apply_tax']}(amount))" in source
+
+
+def test_an_expected_output_line_is_not_code(tmp_path: Path):
+    """Lo que sigue a un ejemplo es lo que el programa imprime, no código. Un
+    `...` de salida esperada dentro de un traceback no es una continuación, y
+    tratarlo como tal rompería el ejemplo."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    path = pkg / "billing.py"
+    path.write_text(
+        '"""Impuestos.\n'
+        "\n"
+        ">>> apply_tax('x')\n"
+        "Traceback (most recent call last):\n"
+        "    ...\n"
+        "TypeError: ...\n"
+        '"""\n'
+        "\n"
+        "\n"
+        "def apply_tax(amount):\n"
+        "    return amount * 1.21\n",
+        encoding="utf-8",
+    )
+
+    a2_names.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert "Traceback (most recent call last):\n    ...\nTypeError: ...\n" in source
+
+
 def test_names_reachable_by_string_are_left_alone(tmp_path: Path):
     """Renombrar lo que se alcanza por getattr rompe el programa, y el fallo se
     leería como un agente que fracasa (§4.3.3)."""

@@ -140,6 +140,112 @@ def collect_renames(root: Path) -> dict[str, str]:
     return {name: _opaque(name, index) for index, name in enumerate(sorted(names))}
 
 
+DOCTEST_PROMPT = ">>>"
+DOCTEST_CONTINUATION = "..."
+
+
+def _prompt(line: str, marker: str) -> tuple[str, str, str] | None:
+    """(sangría, prefijo hasta el prompt, código) de una línea de doctest."""
+    stripped = line.lstrip(" ")
+    if not stripped.startswith(marker):
+        return None
+    indent = line[: len(line) - len(stripped)]
+    rest = stripped[len(marker) :]
+    # `>>>x` no es un prompt: doctest exige el espacio, o nada detrás.
+    if rest and not rest.startswith(" "):
+        return None
+    return indent, indent + marker + rest[:1], rest[1:]
+
+
+def _doctest_examples(lines: list[str]) -> list[list[tuple[int, str, str]]]:
+    """Ejemplos del texto: la línea `>>>` y las continuaciones que la siguen.
+
+    Una continuación solo cuenta si va pegada al ejemplo y con su misma
+    sangría. Es lo que distingue el `...` que continúa una línea de código del
+    `...` que es la salida esperada dentro de un traceback.
+    """
+    examples: list[list[tuple[int, str, str]]] = []
+    index = 0
+    while index < len(lines):
+        opened = _prompt(lines[index], DOCTEST_PROMPT)
+        if opened is None:
+            index += 1
+            continue
+        indent, prefix, code = opened
+        block = [(index, prefix, code)]
+        index += 1
+        while index < len(lines):
+            following = _prompt(lines[index], DOCTEST_CONTINUATION)
+            if following is None or following[0] != indent:
+                break
+            block.append((index, following[1], following[2]))
+            index += 1
+        examples.append(block)
+    return examples
+
+
+def rename_in_doctests(
+    text: str, renames: dict[str, str], aliases: dict[str, str], modules: set[str],
+    path: Path, root: Path,
+) -> str:
+    """Renombra dentro de los ejemplos de un doctest, y solo ahí.
+
+    Un doctest no es documentación: es suite. python-stdnum corre la suya con
+    `--doctest-modules`, y medido, dejar los ejemplos atrás convierte sus 413
+    tests en 413 fallos. La línea de ejemplo es código y resuelve estáticamente,
+    igual que `__all__`; la prosa y la salida esperada de alrededor no se tocan,
+    porque reescribirlas sería documentación (A4/B3) colándose dentro de A2.
+    """
+    lines = text.split("\n")
+    examples = _doctest_examples(lines)
+    if not examples:
+        return text
+
+    # Los alias se acumulan sobre el texto entero antes de tocar nada: el
+    # `>>> from pkg import billing` vive en un ejemplo y el `billing.total(...)`
+    # que lo usa, en otro. Resolviendo ejemplo a ejemplo, el segundo no sabría
+    # que `billing` es un módulo del repo.
+    combined = dict(aliases)
+    for block in examples:
+        try:
+            tree = ast.parse("\n".join(item[2] for item in block))
+        except SyntaxError:
+            continue
+        combined.update(module_aliases(tree, path, root, modules))
+
+    changed = False
+    for block in examples:
+        renamed = _renamed_snippet(
+            "\n".join(item[2] for item in block), renames, combined, modules, path, root
+        )
+        if renamed is None:
+            continue
+        new_lines = renamed.split("\n")
+        # Renombrar no añade ni quita líneas. Si las cuentas no cuadran, algo se
+        # entendió mal: se deja el ejemplo como estaba antes que a medias.
+        if len(new_lines) != len(block):
+            continue
+        for (index, prefix, _), new_code in zip(block, new_lines):
+            lines[index] = prefix + new_code
+        changed = True
+    return "\n".join(lines) if changed else text
+
+
+def _renamed_snippet(
+    code: str, renames: dict[str, str], aliases: dict[str, str], modules: set[str],
+    path: Path, root: Path,
+) -> str | None:
+    """El mismo renombrado sobre un trozo suelto de código, o None si no cuela."""
+    try:
+        module = cst.parse_module(code)
+        # LibCST valida al construir el nodo, y esa excepción no es de parseo:
+        # sin capturarla aquí, un ejemplo raro dejaría el árbol a medio
+        # transformar, que es la peor forma posible de fallar.
+        return module.visit(_Rename(renames, aliases, modules, path, root)).code
+    except (cst.ParserSyntaxError, cst.CSTValidationError):
+        return None
+
+
 def _dotted(node: cst.BaseExpression) -> str | None:
     """La cadena `a.b.c` de una cadena de atributos, o None si no lo es."""
     if isinstance(node, cst.Name):
@@ -152,11 +258,24 @@ def _dotted(node: cst.BaseExpression) -> str | None:
 
 class _Rename(cst.CSTTransformer):
     def __init__(
-        self, renames: dict[str, str], aliases: dict[str, str], modules: set[str]
+        self, renames: dict[str, str], aliases: dict[str, str], modules: set[str],
+        path: Path, root: Path,
     ) -> None:
         self.renames = renames
         self.aliases = aliases
         self.modules = modules
+        self.path = path
+        self.root = root
+
+    def leave_SimpleString(self, original: cst.SimpleString, updated: cst.SimpleString):
+        # Se opera sobre el literal entero, comillas incluidas: los prompts van
+        # por dentro, así que los escapes quedan intactos.
+        if DOCTEST_PROMPT not in updated.value:
+            return updated
+        rewritten = rename_in_doctests(
+            updated.value, self.renames, self.aliases, self.modules, self.path, self.root
+        )
+        return updated if rewritten == updated.value else updated.with_changes(value=rewritten)
 
     def leave_Name(self, original: cst.Name, updated: cst.Name) -> cst.Name:
         new = self.renames.get(updated.value)
@@ -232,7 +351,7 @@ def apply(root: Path) -> TransformResult:
             continue
         tree = parse_source(path)
         aliases = {} if tree is None else module_aliases(tree, path, root, modules)
-        transformed = module.visit(_Rename(renames, aliases, modules)).code
+        transformed = module.visit(_Rename(renames, aliases, modules, path, root)).code
         if transformed != source:
             path.write_text(transformed, encoding="utf-8")
             changed += 1
