@@ -65,6 +65,20 @@ def test_a_function_whose_body_is_only_a_docstring_keeps_a_body(tmp_path: Path):
     assert "pass" in source
 
 
+def test_removing_a_comment_leaves_no_whitespace_behind(tmp_path: Path):
+    """Al quitar `# de la biblioteca estándar` la línea se queda con los espacios
+    que separaban el comentario del código, y la línea del comentario suelto se
+    queda con la sangría del bloque. Eso es un cambio de formato (A3) colado
+    dentro de A4, y en un repo cuya suite pasa el linter lo lee como una
+    transformación que rompe el repo, no como una práctica que falta."""
+    path = write(tmp_path)
+
+    a4_docs.apply(tmp_path)
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert [line for line in lines if line != line.rstrip()] == []
+
+
 def test_it_reports_how_many_files_changed(tmp_path: Path):
     write(tmp_path)
     (tmp_path / "pkg" / "sin_docs.py").write_text("x = 1\n", encoding="utf-8")

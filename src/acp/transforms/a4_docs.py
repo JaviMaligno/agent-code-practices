@@ -18,6 +18,23 @@ class _StripDocs(cst.CSTTransformer):
     def leave_Comment(self, original: cst.Comment, updated: cst.Comment) -> cst.RemovalSentinel:
         return cst.RemoveFromParent()
 
+    def leave_TrailingWhitespace(self, original, updated):
+        if original.comment is None:
+            return updated
+        # El comentario ya se fue, pero los espacios que lo separaban del código
+        # se quedan al final de la línea. Trailing whitespace es formato (A3):
+        # dentro de A4 el efecto medido dejaría de ser atribuible, y en un repo
+        # cuya suite pasa el linter rompe la equivalencia.
+        return updated.with_changes(whitespace=cst.SimpleWhitespace(""))
+
+    def leave_EmptyLine(self, original, updated):
+        if original.comment is None:
+            return updated
+        # Una línea de comentario se queda en blanco en vez de desaparecer, para
+        # no desplazar los rangos de línea del mapa de símbolos. En blanco de
+        # verdad: sin la sangría del bloque colgando detrás.
+        return updated.with_changes(indent=False, whitespace=cst.SimpleWhitespace(""))
+
     def leave_FunctionDef(self, original, updated):
         return updated.with_changes(body=_without_docstring(updated.body))
 
