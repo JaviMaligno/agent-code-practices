@@ -83,6 +83,21 @@ def module_aliases(tree: ast.Module, path: Path, root: Path, modules: set[str]) 
     return aliases
 
 
+def _parameter_names(root: Path) -> set[str]:
+    """Todo lo que en algún sitio del repo es un parámetro.
+
+    Se mira el árbol entero, tests incluidos: la llamada que pasa el argumento
+    por palabra clave puede vivir en la suite.
+    """
+    names: set[str] = set()
+    for path in iter_transformable_files(root):
+        tree = parse_source(path)
+        if tree is None:
+            continue
+        names.update(node.arg for node in ast.walk(tree) if isinstance(node, ast.arg))
+    return names
+
+
 def collect_renames(root: Path) -> dict[str, str]:
     """Diccionario de renombrado de los símbolos que define el propio repo.
 
@@ -114,6 +129,10 @@ def collect_renames(root: Path) -> dict[str, str]:
     # rompería los imports. Sale fuera.
     basenames = {module.rsplit(".", 1)[-1] for module in repo_modules(root)}
     names -= basenames
+    # Un nombre que además es parámetro en algún sitio significa dos cosas: el
+    # símbolo del módulo y una variable local. Renombrar las dos rompe las
+    # llamadas por palabra clave; renombrar una sola, el cuerpo de la función.
+    names -= _parameter_names(root)
     return {name: _opaque(name, index) for index, name in enumerate(sorted(names))}
 
 
@@ -138,6 +157,13 @@ class _Rename(cst.CSTTransformer):
     def leave_Name(self, original: cst.Name, updated: cst.Name) -> cst.Name:
         new = self.renames.get(updated.value)
         return updated.with_changes(value=new) if new else updated
+
+    def leave_Arg(self, original: cst.Arg, updated: cst.Arg) -> cst.Arg:
+        # La palabra clave de una llamada es la firma de quien la recibe, y casi
+        # siempre es de fuera del repo. Como los nombres que además son
+        # parámetro quedan fuera del diccionario, aquí nunca hay nada que
+        # renombrar: lo que llegue renombrado viene de una coincidencia.
+        return updated.with_changes(keyword=original.keyword)
 
     def leave_Attribute(self, original: cst.Attribute, updated: cst.Attribute) -> cst.Attribute:
         if self._is_repo_module(original.value):

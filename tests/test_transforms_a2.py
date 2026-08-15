@@ -152,6 +152,57 @@ def test_an_attribute_of_a_module_of_the_repo_follows_the_rename(tmp_path: Path)
     assert "apply_tax" not in source
 
 
+def test_a_keyword_argument_keeps_its_name(tmp_path: Path):
+    """La palabra clave de `json.dumps(..., indent=...)` es la firma de otro,
+    no un símbolo del repo. Renombrarla llama a dumps con un argumento que no
+    existe, y el TypeError se lee como un agente que fracasa."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    path = pkg / "core.py"
+    path.write_text(
+        "import json\n"
+        "\n"
+        "indent = 2\n"
+        "\n"
+        "\n"
+        "def render(data):\n"
+        "    return json.dumps(data, indent=indent)\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert f"json.dumps(data, indent={result.renames['indent']})" in source
+
+
+def test_a_name_that_is_also_a_parameter_stays_out_of_the_dictionary(tmp_path: Path):
+    """Un parámetro es local y sus llamantes pueden pasarlo por palabra clave.
+    Renombrar el símbolo del módulo y el parámetro a la vez rompe esas llamadas;
+    renombrar solo uno de los dos, el cuerpo de la función. Con el mismo nombre
+    significando dos cosas no hay renombrado resoluble estáticamente (§4.3.3)."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    path = pkg / "core.py"
+    path.write_text(
+        "def amount(x):\n"
+        "    return x\n"
+        "\n"
+        "\n"
+        "def charge(amount):\n"
+        "    return amount * 2\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert "amount" not in result.renames
+    assert "def amount(x):" in source
+    assert f"def {result.renames['charge']}(amount):" in source
+    compile(source, "core.py", "exec")
+
+
 def test_names_reachable_by_string_are_left_alone(tmp_path: Path):
     """Renombrar lo que se alcanza por getattr rompe el programa, y el fallo se
     leería como un agente que fracasa (§4.3.3)."""
