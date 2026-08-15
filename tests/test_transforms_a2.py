@@ -226,6 +226,38 @@ def test_a_name_that_shadows_a_builtin_stays_out_of_the_dictionary(tmp_path: Pat
     assert "render" in result.renames
 
 
+def test_the_public_list_follows_the_rename(tmp_path: Path):
+    """`__all__` es una lista de cadenas, pero es la única de todas las cadenas
+    que se resuelve estáticamente, y es la que decide qué trae un `import *`. Si
+    no la seguimos, el import estrella deja de traer el símbolo y la suite falla
+    por fontanería, no por el agente."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    billing = pkg / "billing.py"
+    billing.write_text(
+        '__all__ = ["apply_tax"]\n'
+        "\n"
+        "\n"
+        "def apply_tax(number):\n"
+        "    return number * 1.21\n",
+        encoding="utf-8",
+    )
+    (pkg / "report.py").write_text(
+        "from pkg.billing import *\n"
+        "\n"
+        "\n"
+        "def render(number):\n"
+        "    return apply_tax(number)\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = billing.read_text(encoding="utf-8")
+    assert f'__all__ = ["{result.renames["apply_tax"]}"]' in source
+
+
 def test_names_reachable_by_string_are_left_alone(tmp_path: Path):
     """Renombrar lo que se alcanza por getattr rompe el programa, y el fallo se
     leería como un agente que fracasa (§4.3.3)."""

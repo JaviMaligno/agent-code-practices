@@ -162,6 +162,35 @@ class _Rename(cst.CSTTransformer):
         new = self.renames.get(updated.value)
         return updated.with_changes(value=new) if new else updated
 
+    def leave_Assign(self, original: cst.Assign, updated: cst.Assign) -> cst.Assign:
+        if not any(
+            isinstance(target.target, cst.Name) and target.target.value == "__all__"
+            for target in updated.targets
+        ):
+            return updated
+        # La única cadena que sí se sigue: `__all__` decide qué trae un
+        # `import *`, se resuelve estáticamente y dejarla atrás dejaría al
+        # importador sin el símbolo (§4.3.3 excluye lo *indecidible*, no esto).
+        value = updated.value
+        if not isinstance(value, (cst.List, cst.Tuple)):
+            return updated
+        return updated.with_changes(
+            value=value.with_changes(
+                elements=[
+                    element.with_changes(value=self._renamed_string(element.value))
+                    if isinstance(element.value, cst.SimpleString)
+                    else element
+                    for element in value.elements
+                ]
+            )
+        )
+
+    def _renamed_string(self, node: cst.SimpleString) -> cst.SimpleString:
+        new = self.renames.get(node.raw_value)
+        if new is None:
+            return node
+        return node.with_changes(value=f"{node.prefix}{node.quote}{new}{node.quote}")
+
     def leave_Arg(self, original: cst.Arg, updated: cst.Arg) -> cst.Arg:
         # La palabra clave de una llamada es la firma de quien la recibe, y casi
         # siempre es de fuera del repo. Como los nombres que además son
