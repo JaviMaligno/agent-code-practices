@@ -71,6 +71,49 @@ def test_an_annotated_assignment_without_value_becomes_nothing(tmp_path: Path):
     assert "x: int" not in source
 
 
+def test_a_dataclass_keeps_the_fields_its_annotations_declare(tmp_path: Path):
+    """En el cuerpo de una clase la anotación no describe el atributo: lo
+    declara. Quitarla borra el campo, el repo transformado deja de construir sus
+    objetos y eso se lee como un agente que fracasa (§4.3)."""
+    path = write(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "\n"
+        "@dataclass\n"
+        "class Invoice:\n"
+        "    amount: int\n"
+        "    tax: float = 0.21\n",
+    )
+
+    a1_types.apply(tmp_path)
+
+    namespace: dict = {}
+    exec(compile(path.read_text(encoding="utf-8"), "core.py", "exec"), namespace)
+    assert namespace["Invoice"](100).tax == 0.21
+
+
+def test_a_method_signature_inside_that_class_still_loses_its_types(tmp_path: Path):
+    """La excepción es solo para el cuerpo de la clase. Si se comiera también las
+    firmas, A1 dejaría de quitar tipos justo donde están casi todos: en los tres
+    finalistas los parámetros y retornos son más del 90% de las anotaciones."""
+    path = write(
+        tmp_path,
+        "class Invoice:\n"
+        "    amount: int = 0\n"
+        "\n"
+        "    def total(self, factor: float) -> float:\n"
+        "        return self.amount * factor\n",
+    )
+
+    a1_types.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert "factor: float" not in source
+    assert "-> float" not in source
+    assert "amount: int = 0" in source
+
+
 def test_the_code_still_runs(tmp_path: Path):
     path = write(tmp_path)
 
