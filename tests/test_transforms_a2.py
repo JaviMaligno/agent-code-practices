@@ -365,6 +365,48 @@ def test_an_expected_output_line_is_not_code(tmp_path: Path):
     assert "Traceback (most recent call last):\n    ...\nTypeError: ...\n" in source
 
 
+def test_a_doctest_file_the_suite_collects_follows_the_rename(tmp_path: Path):
+    """python-stdnum tiene 17.465 líneas de doctest fuera de los .py, en los
+    ficheros que sus `addopts` colectan con `--doctest-glob`. Son suite tanto
+    como un test_*.py, y dejarlos atrás rompe el repo entero."""
+    build(tmp_path)
+    (tmp_path / "setup.cfg").write_text(
+        "[tool:pytest]\naddopts = --doctest-modules --doctest-glob=\"*.doctest\"\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    doctest_file = tests / "test_billing.doctest"
+    doctest_file.write_text(
+        "Casos raros de facturación.\n"
+        "\n"
+        ">>> from pkg import billing\n"
+        ">>> billing.apply_tax(100)\n"
+        "121.0\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = doctest_file.read_text(encoding="utf-8")
+    assert f">>> billing.{result.renames['apply_tax']}(100)" in source
+    # La prosa sigue siendo prosa.
+    assert "Casos raros de facturación." in source
+
+
+def test_a_text_file_the_suite_does_not_collect_is_left_alone(tmp_path: Path):
+    """Un README con ejemplos no lo ejecuta nadie, así que reescribirlo no
+    arregla ninguna equivalencia — y sí contaminaría B3, que es justamente la
+    condición sobre la documentación del repo."""
+    build(tmp_path)
+    readme = tmp_path / "README.rst"
+    readme.write_text(">>> from pkg import billing\n>>> billing.apply_tax(100)\n", encoding="utf-8")
+
+    a2_names.apply(tmp_path)
+
+    assert ">>> billing.apply_tax(100)" in readme.read_text(encoding="utf-8")
+
+
 def test_names_reachable_by_string_are_left_alone(tmp_path: Path):
     """Renombrar lo que se alcanza por getattr rompe el programa, y el fallo se
     leería como un agente que fracasa (§4.3.3)."""

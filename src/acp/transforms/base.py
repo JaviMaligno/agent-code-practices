@@ -38,14 +38,18 @@ NOT_TRANSFORMABLE = {
 }
 
 
-def iter_transformable_files(root: Path) -> list[Path]:
+def iter_transformable_files(root: Path, pattern: str = "*.py") -> list[Path]:
     """Ficheros .py que una transformación puede tocar, tests del repo incluidos.
 
     Es deliberadamente distinta de `acp.metrics.size.iter_source_files`, que
     excluye los tests: perfilar y transformar quieren conjuntos opuestos.
+
+    El patrón se puede cambiar porque no todo lo que la suite ejecuta es un .py:
+    hay repos cuya suite son ficheros de doctest, y esos también hay que
+    transformarlos o el renombrado los deja llamando a nombres que ya no están.
     """
     found: list[Path] = []
-    for path in sorted(root.rglob("*.py")):
+    for path in sorted(root.rglob(pattern)):
         parts = path.relative_to(root).parts[:-1]
         if any(part in NOT_TRANSFORMABLE or part.startswith(".") for part in parts):
             continue

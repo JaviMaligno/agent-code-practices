@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import ast
 import builtins
+import configparser
+import re
+import tomllib
 from pathlib import Path
 
 import libcst as cst
@@ -339,10 +342,64 @@ class _Rename(cst.CSTTransformer):
         return (f"{target}.{rest}" if rest else target) in self.modules
 
 
+DOCTEST_GLOB_PATTERN = re.compile(r"--doctest-glob[=\s]+['\"]?([^'\"\s]+)")
+
+
+def _pytest_addopts(root: Path) -> str:
+    """Los `addopts` que el repo declara, mire donde mire pytest."""
+    pieces: list[str] = []
+    for name, section in (
+        ("setup.cfg", "tool:pytest"), ("pytest.ini", "pytest"), ("tox.ini", "pytest"),
+    ):
+        path = root / name
+        if not path.exists():
+            continue
+        parser = configparser.ConfigParser()
+        try:
+            parser.read_string(path.read_text(encoding="utf-8-sig", errors="replace"))
+        except (configparser.Error, OSError):
+            continue
+        pieces.append(parser.get(section, "addopts", fallback=""))
+
+    path = root / "pyproject.toml"
+    if path.exists():
+        try:
+            config = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (tomllib.TOMLDecodeError, OSError):
+            config = {}
+        raw = config.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("addopts", "")
+        pieces.append(" ".join(raw) if isinstance(raw, list) else str(raw))
+    return " ".join(pieces)
+
+
+def doctest_files(root: Path) -> list[Path]:
+    """Ficheros que no son .py y que la suite del repo ejecuta como doctests.
+
+    Se leen los `addopts` en vez de barrer todo lo que contenga un `>>>` porque
+    la diferencia importa: un README con ejemplos no lo ejecuta nadie, así que
+    reescribirlo no arregla ninguna equivalencia y sí contamina B3, que es la
+    condición sobre la documentación del repo.
+    """
+    found: list[Path] = []
+    for pattern in DOCTEST_GLOB_PATTERN.findall(_pytest_addopts(root)):
+        if pattern.endswith(".py"):
+            continue
+        found.extend(iter_transformable_files(root, pattern))
+    return sorted(set(found))
+
+
 def apply(root: Path) -> TransformResult:
     renames = collect_renames(root)
     modules = repo_modules(root)
     changed = 0
+    for path in doctest_files(root):
+        source = read_source(path)
+        # El fichero entero es texto de doctest: no hay módulo que parsear, así
+        # que los alias salen solo de los imports de sus propios ejemplos.
+        transformed = rename_in_doctests(source, renames, {}, modules, path, root)
+        if transformed != source:
+            path.write_text(transformed, encoding="utf-8")
+            changed += 1
     for path in iter_transformable_files(root):
         source = read_source(path)
         try:
