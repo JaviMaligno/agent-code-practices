@@ -3,7 +3,11 @@ name = "acp"
 version = "0.1.0"
 description = "Which software practices help a coding agent"
 requires-python = ">=3.11"
-dependencies = []
+# LibCST porque las transformaciones tienen que editar sin reescribir: si A4 se
+# llevara por delante el formato o A1 los comentarios, el efecto medido dejaría
+# de ser atribuible a una sola práctica. Instalar siempre desde wheel
+# (`pip install --only-binary :all: libcst`): compilarlo pide toolchain de Rust.
+dependencies = ["libcst>=1.8"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
