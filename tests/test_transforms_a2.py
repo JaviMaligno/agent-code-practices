@@ -103,6 +103,55 @@ def test_the_repo_tests_are_updated_but_not_renamed(tmp_path: Path):
     assert result.renames["apply_tax"] in source
 
 
+def test_an_attribute_of_something_ajeno_is_not_renamed(tmp_path: Path):
+    """`','.join(...)` no es el `join` del repo, solo se llama igual. El
+    diccionario va por nombre desnudo, así que renombrar el atributo convierte
+    la llamada en un AttributeError: un repo roto se lee igual que un agente que
+    fracasa (§4.3)."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    path = pkg / "core.py"
+    path.write_text(
+        "def join(parts):\n"
+        "    return parts\n"
+        "\n"
+        "\n"
+        "def render(parts):\n"
+        "    return ','.join(parts)\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert "','.join(parts)" in source
+    # El símbolo del repo sí se renombra: lo que no puede es arrastrar consigo
+    # los atributos ajenos que comparten nombre.
+    assert "def join" not in source
+    assert result.renames["join"] in source
+
+
+def test_an_attribute_of_a_module_of_the_repo_follows_the_rename(tmp_path: Path):
+    """El contraejemplo del test anterior: `billing.apply_tax(...)` sí es el
+    símbolo del repo, y si la definición se renombra y el uso cualificado no, el
+    módulo deja de resolver."""
+    build(tmp_path)
+    (tmp_path / "pkg" / "report.py").write_text(
+        "from pkg import billing\n"
+        "\n"
+        "\n"
+        "def render(amount):\n"
+        "    return billing.apply_tax(amount)\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = (tmp_path / "pkg" / "report.py").read_text(encoding="utf-8")
+    assert f"billing.{result.renames['apply_tax']}(" in source
+    assert "apply_tax" not in source
+
+
 def test_names_reachable_by_string_are_left_alone(tmp_path: Path):
     """Renombrar lo que se alcanza por getattr rompe el programa, y el fallo se
     leería como un agente que fracasa (§4.3.3)."""
