@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 from acp.transforms import a2_names
@@ -543,6 +545,78 @@ def test_a_name_that_a_table_of_strings_reaches_is_left_alone(tmp_path: Path):
 
     assert "Spain" not in result.renames
     assert "class Spain:" in countries.read_text(encoding="utf-8")
+
+
+def _run(root: Path, code: str) -> subprocess.CompletedProcess:
+    """Ejecuta un fragmento contra el árbol transformado, que es la prueba real:
+    un ImportError de A2 no lo ve ningún compileall."""
+    return subprocess.run(
+        [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, check=False
+    )
+
+
+def test_a_name_imported_from_a_library_keeps_its_name(tmp_path: Path):
+    """El diccionario va por nombre desnudo y no mira de dónde viene el nombre:
+    un `from json import dumps` se convertía en `from json import f0`, y json no
+    exporta f0. El repo deja de importar (§4.3.3: solo símbolos del repo)."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "text.py").write_text("def dumps(obj):\n    return str(obj)\n", encoding="utf-8")
+    serialize = pkg / "serialize.py"
+    serialize.write_text(
+        "from json import dumps\n"
+        "\n"
+        "\n"
+        "def to_json(obj):\n"
+        "    return dumps(obj)\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    assert "from json import dumps" in serialize.read_text(encoding="utf-8")
+    # El símbolo del repo sí se mueve; el nombre que trae json, no.
+    entry = result.renames["to_json"]
+    done = _run(tmp_path, f"from pkg.serialize import {entry}; print({entry}({{'a': 1}}))")
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == '{"a": 1}'
+
+
+def test_the_module_path_of_an_import_is_not_renamed(tmp_path: Path):
+    """El caso real de sqlglot: `from setuptools.command.build_ext import
+    build_ext as _build_ext` en su setup.py. La ruta del módulo importado no es
+    un símbolo del repo aunque algún fichero defina algo que se llame igual."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "tools.py").write_text(
+        "def collections():\n    return []\n"
+        "\n"
+        "\n"
+        "def namedtuple(*fields):\n    return fields\n",
+        encoding="utf-8",
+    )
+    build = pkg / "build.py"
+    build.write_text(
+        "import collections\n"
+        "from collections.abc import Sequence\n"
+        "from collections import namedtuple as _namedtuple\n"
+        "\n"
+        "\n"
+        "def pair():\n"
+        "    return _namedtuple('pair', 'a b')(1, 2), collections.deque(), Sequence\n",
+        encoding="utf-8",
+    )
+
+    a2_names.apply(tmp_path)
+
+    source = build.read_text(encoding="utf-8")
+    assert "import collections\n" in source
+    assert "from collections.abc import Sequence" in source
+    assert "from collections import namedtuple as" in source
+    done = _run(tmp_path, "from pkg.build import pair; print(pair()[0])")
+    assert done.returncode == 0, done.stderr
 
 
 def test_a_class_a_registry_indexes_by_its_own_name_is_left_alone(tmp_path: Path):

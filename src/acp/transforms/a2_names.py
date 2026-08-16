@@ -160,6 +160,40 @@ def _names_written_as_strings(root: Path) -> set[str]:
     return found
 
 
+def _names_bound_by_external_imports(root: Path, modules: set[str]) -> set[str]:
+    """Nombres que en algún fichero los trae un import de fuera del repo.
+
+    `from json import dumps` liga `dumps` a algo que json exporta y este repo no
+    define, por mucho que otro fichero tenga su propio `def dumps`. Como el
+    diccionario va por nombre desnudo, renombrarlo escribe `from json import f0`
+    y el repo deja de importar: es el caso real del setup.py de sqlglot con
+    `from setuptools.command.build_ext import build_ext`.
+
+    Igual con `import collections` sin alias: liga `collections` al módulo de la
+    biblioteca estándar. Con alias no hace falta —el nombre ligado es el alias, y
+    ese sí se mueve entero con sus usos—, y la ruta del módulo la protege
+    `_Rename`.
+    """
+    found: set[str] = set()
+    for path in iter_transformable_files(root):
+        tree = parse_source(path)
+        if tree is None:
+            continue
+        package = ".".join(path.relative_to(root).parts[:-1])
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    head = alias.name.split(".")[0]
+                    if alias.asname is None and head not in modules:
+                        found.add(head)
+            elif isinstance(node, ast.ImportFrom):
+                # Un import relativo siempre es del propio repo.
+                if node.level or _import_base(node, package) in modules:
+                    continue
+                found.update(alias.name for alias in node.names if alias.name != "*")
+    return found
+
+
 def _dotted_ast(node: ast.expr) -> str | None:
     """La cadena `a.b.c` de una cadena de atributos, sobre el árbol de `ast`."""
     if isinstance(node, ast.Name):
@@ -258,6 +292,10 @@ def collect_renames(root: Path) -> dict[str, str]:
     # Lo que en algún sitio se lee como atributo de algo que no resuelve puede
     # ser este mismo símbolo llegando por una ruta que no se ve.
     names -= _attribute_names_on_unresolved_bases(root, modules)
+    # Y lo que en algún fichero llega por un import de fuera no es de este repo
+    # aunque se llame igual que algo de aquí: renombrarlo pide a la librería
+    # ajena un nombre que no tiene.
+    names -= _names_bound_by_external_imports(root, modules)
     # Y lo que en algún sitio está escrito como cadena se alcanza por cadena:
     # el renombrado movería la definición y dejaría la cadena atrás.
     written = _names_written_as_strings(root)
@@ -389,6 +427,13 @@ def _dotted(node: cst.BaseExpression) -> str | None:
     return None
 
 
+def _restored_import_names(before, after):
+    """Devuelve a cada alias de un import el nombre que traía, no el alias."""
+    return [
+        alias.with_changes(name=original.name) for original, alias in zip(before, after)
+    ]
+
+
 class _Rename(cst.CSTTransformer):
     def __init__(
         self, renames: dict[str, str], aliases: dict[str, str], modules: set[str],
@@ -413,6 +458,27 @@ class _Rename(cst.CSTTransformer):
     def leave_Name(self, original: cst.Name, updated: cst.Name) -> cst.Name:
         new = self.renames.get(updated.value)
         return updated.with_changes(value=new) if new else updated
+
+    def leave_Import(self, original: cst.Import, updated: cst.Import) -> cst.Import:
+        # Lo que hay en un `import` es una ruta de módulo, y los ficheros siguen
+        # donde estaban: nada de esa ruta se renombra nunca. El alias, si lo hay,
+        # sí es un nombre local y `leave_Name` lo mueve con todos sus usos.
+        return updated.with_changes(names=_restored_import_names(original.names, updated.names))
+
+    def leave_ImportFrom(self, original: cst.ImportFrom, updated: cst.ImportFrom):
+        updated = updated.with_changes(module=original.module)
+        if isinstance(updated.names, cst.ImportStar) or self._imports_from_the_repo(original):
+            return updated
+        # De un módulo ajeno solo se puede importar lo que ese módulo exporta:
+        # el nombre importado es suyo, no del repo, y renombrarlo deja un
+        # ImportError en tiempo de import.
+        return updated.with_changes(names=_restored_import_names(original.names, updated.names))
+
+    def _imports_from_the_repo(self, node: cst.ImportFrom) -> bool:
+        if node.relative:
+            return True
+        dotted = _dotted(node.module) if node.module is not None else None
+        return dotted is not None and dotted in self.modules
 
     def leave_Assign(self, original: cst.Assign, updated: cst.Assign) -> cst.Assign:
         if not any(
