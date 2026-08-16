@@ -545,6 +545,57 @@ def test_a_name_that_a_table_of_strings_reaches_is_left_alone(tmp_path: Path):
     assert "class Spain:" in countries.read_text(encoding="utf-8")
 
 
+def test_a_class_a_registry_indexes_by_its_own_name_is_left_alone(tmp_path: Path):
+    """El patrón de sqlglot: una metaclase registra cada dialecto con
+    `clsname.lower()`, así que el NOMBRE de la clase es una clave de la API
+    pública y no aparece ningún getattr en ninguna parte. Renombrar `Postgres`
+    deja `transpile(..., write='postgres')` sin dialecto, con un mensaje que se
+    autocontradice."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "dialect.py").write_text(
+        "class Registry(type):\n"
+        "    classes = {}\n"
+        "\n"
+        "    def __new__(cls, clsname, bases, attrs):\n"
+        "        klass = super().__new__(cls, clsname, bases, attrs)\n"
+        "        Registry.classes[clsname.lower()] = klass\n"
+        "        return klass\n"
+        "\n"
+        "\n"
+        "class Dialect(metaclass=Registry):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    postgres = pkg / "postgres.py"
+    postgres.write_text(
+        "from pkg.dialect import Dialect\n"
+        "\n"
+        "\n"
+        "class Postgres(Dialect):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (pkg / "api.py").write_text(
+        "from pkg.dialect import Registry\n"
+        "\n"
+        "\n"
+        "def dialect(write):\n"
+        "    return Registry.classes[write]\n"
+        "\n"
+        "\n"
+        "def default():\n"
+        "    return dialect('postgres')\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    assert "Postgres" not in result.renames
+    assert "class Postgres(" in postgres.read_text(encoding="utf-8")
+
+
 def test_a_symbol_reached_through_a_module_object_is_left_alone(tmp_path: Path):
     """El módulo que trae el símbolo se decide en tiempo de ejecución, así que
     `mod.validate` no se puede atribuir a ningún fichero sin ejecutar el

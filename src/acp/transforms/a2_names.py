@@ -222,6 +222,7 @@ def collect_renames(root: Path) -> dict[str, str]:
     de tipos, y equivocarse rompe el repo en silencio.
     """
     names: set[str] = set()
+    classes: set[str] = set()
     # El diccionario sale solo del código fuente: incluir los ficheros de test
     # metería `test_algo` en el renombrado, y pytest colecta por nombre — la
     # suite dejaría de encontrar sus propios tests. Aplicarlo, en cambio, se
@@ -234,6 +235,8 @@ def collect_renames(root: Path) -> dict[str, str]:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 if not node.name.startswith("__"):
                     names.add(node.name)
+                    if isinstance(node, ast.ClassDef):
+                        classes.add(node.name)
             elif isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name) and not target.id.startswith("__"):
@@ -257,7 +260,16 @@ def collect_renames(root: Path) -> dict[str, str]:
     names -= _attribute_names_on_unresolved_bases(root, modules)
     # Y lo que en algún sitio está escrito como cadena se alcanza por cadena:
     # el renombrado movería la definición y dejaría la cadena atrás.
-    names -= _names_written_as_strings(root)
+    written = _names_written_as_strings(root)
+    names -= written
+    # El nombre de una clase, además, puede ser la clave de un registro sin que
+    # nadie lo escriba tal cual: en sqlglot una metaclase hace
+    # `cls._classes[clsname.lower()] = klass`, así que `class Postgres` publica
+    # la clave 'postgres' y no hay getattr ni cadena idéntica que lo delate. Una
+    # clase cuyo nombre aparece escrito con otra caja es exactamente ese caso, y
+    # renombrarla cambia una API pública consumida desde fuera (§4.3.3).
+    lowered = {literal.lower() for literal in written}
+    names -= {name for name in classes if name.lower() in lowered}
     return {name: _opaque(name, index) for index, name in enumerate(sorted(names))}
 
 
