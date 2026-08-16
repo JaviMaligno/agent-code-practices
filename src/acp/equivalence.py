@@ -25,4 +25,21 @@ def compare(before: SuiteMetrics, after: SuiteMetrics) -> EquivalenceReport:
         for field_name in COMPARED
         if getattr(before, field_name) != getattr(after, field_name)
     ]
+    # Dos corridas vacías son idénticas, y comparar la nada con la nada saldría
+    # verde. Es la peor forma de fallar de esta función: cuando Docker se cae o
+    # la instalación revienta, las dos versiones dan cero y el visto bueno
+    # dejaría pasar un bloque entero corrido sobre un repo roto.
+    if not _observed_anything(before):
+        differences.insert(0, _why_nothing_was_observed(before))
     return EquivalenceReport(equivalent=not differences, differences=differences)
+
+
+def _observed_anything(reference: SuiteMetrics) -> bool:
+    """Si la referencia no ejecutó ni un test, no hay nada que preservar."""
+    return reference.ran and (reference.passed + reference.failed + reference.errors) > 0
+
+
+def _why_nothing_was_observed(reference: SuiteMetrics) -> str:
+    if not reference.ran:
+        return "la suite de referencia no corrió: la comparación no prueba nada"
+    return "la suite de referencia no ejecutó ningún test: la comparación no prueba nada"

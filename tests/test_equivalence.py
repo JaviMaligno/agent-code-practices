@@ -33,3 +33,27 @@ def test_duration_does_not_count_as_a_difference():
     """El tiempo varía entre corridas de la misma máquina: exigirlo igual haría
     fallar la verificación por ruido."""
     assert compare(suite(seconds=20.0), suite(seconds=31.5)).equivalent is True
+
+
+def test_two_suites_that_never_ran_are_not_a_green_check():
+    """Si Docker se cae o la instalación falla, las dos corridas dan cero y son
+    idénticas. Leerlo como equivalente es el peor fallo posible aquí: la
+    verificación existe para atrapar un repo roto y estaría dando vía libre a un
+    bloque entero corrido sobre uno."""
+    dead = suite(ran=False, passed=0, skipped=0, install_ok=False)
+
+    report = compare(dead, dead)
+
+    assert report.equivalent is False
+    assert any("no corrió" in difference for difference in report.differences)
+
+
+def test_a_reference_that_executed_no_test_proves_nothing():
+    """Colectar cero también deja la comparación sin nada que comparar: la suite
+    arrancó, pero no observó ni un resultado que la transformación pudiera
+    preservar."""
+    empty = suite(passed=0, skipped=0)
+
+    report = compare(empty, empty)
+
+    assert report.equivalent is False
