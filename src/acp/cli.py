@@ -66,16 +66,58 @@ def _application_order(transform_ids: list[str]) -> list[str]:
     return sorted(transform_ids, key=lambda name: rank.get(name, len(rank)))
 
 
-def transform_repo(source: Path, transform_ids: list[str], destination: Path) -> Path:
+def manifest_path_for(destination: Path, manifest: Path | None = None) -> Path:
+    """Dónde vive el manifiesto de un árbol transformado: fuera del árbol.
+
+    Por defecto, hermano del árbol y con su nombre delante (`work/` →
+    `work.acp-manifest.json`): la procedencia solo sirve si se sabe a qué
+    condición pertenece, y el nombre es lo único que las ata cuando la campaña
+    acumula decenas de árboles en el mismo directorio.
+    """
+    if manifest is not None:
+        return manifest
+    return destination.with_name(f"{destination.name}.acp-manifest.json")
+
+
+def _reject_manifest_inside_the_tree(destination: Path, manifest: Path) -> None:
+    """El manifiesto dentro del árbol es entregarle al agente lo que se le mide.
+
+    Lleva el diccionario completo original→opaco de A2 y el fichero y rango de
+    cada símbolo: un `ls` de la raíz le da la clave del renombrado y, de paso,
+    la respuesta de la métrica de localización (§5.4.2). Y como el árbol de
+    referencia no lo tiene, sería además una diferencia entre condición y
+    control que no está en el diseño. Se comprueba antes de copiar: quien se
+    equivoque de ruta tiene que enterarse antes de gastar la corrida.
+    """
+    tree = destination.resolve()
+    target = manifest.resolve()
+    if target == tree or tree in target.parents:
+        raise ValueError(
+            f"el manifiesto caería dentro del árbol transformado ({target}): es "
+            "procedencia del experimento (§5.4.1), no contenido del repositorio"
+        )
+
+
+def transform_repo(
+    source: Path,
+    transform_ids: list[str],
+    destination: Path,
+    manifest: Path | None = None,
+) -> Path:
     """Aplica transformaciones sobre una copia y deja constancia de qué se hizo.
 
     El manifiesto no es decoración: sin procedencia registrada —qué se aplicó y
     dónde acabó cada símbolo— las métricas de localización de la campaña no se
-    pueden interpretar (§5.4.1, §5.4.2).
+    pueden interpretar (§5.4.1, §5.4.2). Pero vive **fuera** del árbol: lo que
+    se copia en `destination` es el repositorio que explora el agente, y ahí
+    dentro no entra nada que no estuviera en el original.
     """
     unknown = [name for name in transform_ids if name not in TRANSFORMS]
     if unknown:
         raise ValueError(f"transformación desconocida: {', '.join(unknown)}")
+
+    manifest_destination = manifest_path_for(destination, manifest)
+    _reject_manifest_inside_the_tree(destination, manifest_destination)
 
     symbols = build_symbol_map(source)
     root = copy_tree(source, destination)
@@ -86,15 +128,19 @@ def transform_repo(source: Path, transform_ids: list[str], destination: Path) ->
         renames.update(result.renames)
 
     symbols = apply_renames(symbols, renames)
-    manifest = {
+    # El contenido, separado del sitio donde va: `manifest` ya es la ruta.
+    provenance = {
         # Lo que se pidió, en el orden en que se pidió: el manifiesto es la
         # procedencia de la condición, no la traza de la implementación.
         "applied": transform_ids,
         "renames": renames,
         "symbols": {key: asdict(location) for key, location in symbols.items()},
     }
-    (root / "acp-manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    # `--manifest` puede apuntar a un directorio de procedencia que aún no
+    # existe; el árbol ya está escrito y perderlo por un mkdir sería absurdo.
+    manifest_destination.parent.mkdir(parents=True, exist_ok=True)
+    manifest_destination.write_text(
+        json.dumps(provenance, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return root
 
@@ -124,14 +170,24 @@ def main(argv: list[str] | None = None) -> int:
     transform_parser.add_argument("path", type=Path)
     transform_parser.add_argument("--apply", required=True, help="p. ej. A1,A4")
     transform_parser.add_argument("--out", type=Path, required=True)
+    transform_parser.add_argument(
+        "--manifest", type=Path, default=None,
+        help="dónde se escribe la procedencia; por defecto, hermano del árbol. "
+             "Nunca dentro de él: es material del experimento, no del repositorio",
+    )
 
     args = parser.parse_args(argv)
 
     if args.command == "transform":
         # Aquí `--out` no es un directorio de informes sino el árbol destino, y
         # la copia exige que no exista: crearlo antes la deja sin sitio.
-        destination = transform_repo(args.path, args.apply.split(","), args.out)
+        destination = transform_repo(
+            args.path, args.apply.split(","), args.out, manifest=args.manifest
+        )
+        # Se anuncian los dos porque son dos artefactos separados a propósito:
+        # quien recoja la corrida tiene que saber dónde quedó la procedencia.
         print(f"escrito {destination}")
+        print(f"escrito {manifest_path_for(args.out, args.manifest)}")
         return 0
 
     args.out.mkdir(parents=True, exist_ok=True)
