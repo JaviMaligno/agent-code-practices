@@ -208,7 +208,27 @@ def test_locations_are_resolved_before_running_anything(tmp_path, monkeypatch):
 
     assert repo.is_absolute()
     assert env_dir.is_absolute()
-    assert env_dir.parent == repo
+
+
+def test_the_default_environment_lives_outside_the_repo(tmp_path):
+    """El entorno es fontanería del pipeline, y el árbol es lo que explora el
+    agente: un `.acp-venv` dentro le enseña que el repo está instrumentado, y
+    con `keep_env` —lo que hace la campaña, un entorno por repositorio— se queda
+    ahí. De paso, `docker cp` copiaría dentro del contenedor un entorno del
+    host. Sigue atado al repo por el nombre: si no, dos repos hermanos con el
+    mismo entorno se pisan."""
+    from pathlib import Path
+
+    from acp.suite import resolve_locations
+
+    repo = tmp_path / "clones" / "pint"
+    repo.mkdir(parents=True)
+
+    resolved, env_dir = resolve_locations(repo, None)
+
+    assert repo not in env_dir.parents
+    assert env_dir != resolved
+    assert "pint" in env_dir.name
 
 
 def test_an_explicit_relative_env_dir_is_resolved_too(tmp_path, monkeypatch):

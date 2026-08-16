@@ -297,10 +297,17 @@ def resolve_locations(repo: Path, env_dir: Path | None) -> tuple[Path, Path]:
     Los comandos se lanzan con `cwd=repo`, así que una ruta relativa se
     resolvería dos veces y el entorno acabaría en `repo/repo/.acp-venv`, fuera
     del alcance de todo lo que viene después.
+
+    El entorno vive **fuera** del árbol, hermano suyo y con su nombre delante.
+    Dentro sería un artefacto del pipeline dentro del repositorio que explora el
+    agente —y con `keep_env`, que es como corre la campaña, uno permanente—;
+    además `docker cp` copiaría al contenedor un entorno construido en el host.
+    El nombre lo ata al repo: dos clones hermanos no pueden compartir entorno.
     """
     repo = Path(repo).expanduser().resolve()
-    env_dir = Path(env_dir).expanduser().resolve() if env_dir else repo / ".acp-venv"
-    return repo, env_dir
+    if env_dir:
+        return repo, Path(env_dir).expanduser().resolve()
+    return repo, repo.parent / f".acp-venv-{repo.name}"
 
 
 def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> SuiteMetrics:
