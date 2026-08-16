@@ -487,6 +487,64 @@ def test_names_reachable_by_string_are_left_alone(tmp_path: Path):
     assert "def handler" in path.read_text(encoding="utf-8")
 
 
+def test_a_name_that_another_module_reaches_by_getattr_is_left_alone(tmp_path: Path):
+    """El guardarraíl de acceso dinámico sacaba del diccionario las definiciones
+    del módulo que LLAMA a getattr, no las que el getattr ALCANZA. El símbolo
+    vive en otro fichero que no usa getattr, así que se renombraba mientras la
+    cadena se quedaba como estaba: AttributeError en ejecución con el árbol
+    compilando entero (§4.3.3)."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    core = pkg / "core.py"
+    core.write_text("def handler(x):\n    return x\n", encoding="utf-8")
+    (pkg / "dispatch.py").write_text(
+        "import importlib\n"
+        "\n"
+        "\n"
+        "def run(x):\n"
+        "    module = importlib.import_module('pkg.core')\n"
+        "    return getattr(module, 'handler')(x)\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    assert "handler" not in result.renames
+    assert "def handler(x):" in core.read_text(encoding="utf-8")
+
+
+def test_a_name_that_a_table_of_strings_reaches_is_left_alone(tmp_path: Path):
+    """El patrón de holidays: el registro guarda el nombre de la clase en una
+    tabla de cadenas y lo resuelve con `getattr(módulo, entrada)`. El getattr no
+    lleva el nombre dentro —lo lleva la tabla—, así que ni siquiera excluir el
+    módulo que hace el getattr salva a la clase, que además vive en otro
+    fichero."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    countries = pkg / "countries.py"
+    countries.write_text(
+        "class Spain:\n    def days(self):\n        return []\n", encoding="utf-8"
+    )
+    (pkg / "registry.py").write_text(
+        "import importlib\n"
+        "\n"
+        "ENTITIES = {'spain': ('Spain', 'ES')}\n"
+        "\n"
+        "\n"
+        "def load(code):\n"
+        "    module = importlib.import_module('pkg.countries')\n"
+        "    return getattr(module, ENTITIES[code][0])\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    assert "Spain" not in result.renames
+    assert "class Spain:" in countries.read_text(encoding="utf-8")
+
+
 def test_a_symbol_reached_through_a_module_object_is_left_alone(tmp_path: Path):
     """El módulo que trae el símbolo se decide en tiempo de ejecución, así que
     `mod.validate` no se puede atribuir a ningún fichero sin ejecutar el

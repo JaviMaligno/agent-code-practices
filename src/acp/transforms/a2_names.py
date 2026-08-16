@@ -12,8 +12,11 @@ import libcst as cst
 from acp.metrics.size import iter_source_files, parse_source, read_source
 from acp.transforms.base import TransformResult, iter_transformable_files
 
-# Un módulo que use cualquiera de estas queda fuera del renombrado entero: sus
-# nombres se alcanzan por cadena y renombrarlos rompe el programa (§4.3.3).
+# Las definiciones de un módulo que use cualquiera de estas salen del
+# diccionario: se alcanzan por cadena desde su propio fichero y renombrarlas
+# rompe el programa (§4.3.3). Ojo: esto solo cubre lo que el módulo dinámico
+# define; lo que ese getattr ALCANZA en otros ficheros lo cubre
+# `_names_written_as_strings`.
 DYNAMIC_ACCESS = {"getattr", "setattr", "hasattr", "globals", "locals", "vars", "eval", "exec"}
 
 
@@ -100,6 +103,61 @@ def _parameter_names(root: Path) -> set[str]:
             continue
         names.update(node.arg for node in ast.walk(tree) if isinstance(node, ast.arg))
     return names
+
+
+def _all_literals(tree: ast.Module) -> set[int]:
+    """Identidad de las cadenas que son elementos de un `__all__`.
+
+    Es la única cadena del repo que sí se sigue —decide qué trae un `import *`
+    y se resuelve estáticamente—, así que no puede contar como prueba de que el
+    símbolo se alcanza por cadena: lo excluiría a sí mismo del diccionario y
+    `__all__` dejaría de renombrarse nunca.
+    """
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        if any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets):
+            found.update(
+                id(child)
+                for child in ast.walk(node)
+                if isinstance(child, ast.Constant) and isinstance(child.value, str)
+            )
+    return found
+
+
+def _names_written_as_strings(root: Path) -> set[str]:
+    """Nombres que en algún sitio del repo aparecen escritos como cadena.
+
+    §4.3.3 excluye lo alcanzable por cadenas, y una cadena que dice exactamente
+    el nombre de un símbolo del repo es la forma en que se alcanza: el registro
+    de holidays guarda `("Spain", "ES", "ESP")` en una tabla y resuelve la clase
+    con `getattr(módulo, entrada)`, y la clase vive en otro fichero que no usa
+    getattr. Excluir el módulo que hace el getattr no la salva; el nombre en la
+    tabla sí lo delata.
+
+    Es deliberadamente indiscriminado —no se mira quién usa la cadena ni para
+    qué—, porque atar la cadena a su uso exige ejecutar el programa. El precio
+    se paga en dosis: se renombra de menos. Un repo roto, en cambio, se lee
+    igual que un agente que fracasa (§11).
+    """
+    found: set[str] = set()
+    for path in iter_transformable_files(root):
+        tree = parse_source(path)
+        if tree is None:
+            continue
+        public = _all_literals(tree)
+        found.update(
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in public
+        )
+    return found
 
 
 def _dotted_ast(node: ast.expr) -> str | None:
@@ -197,6 +255,9 @@ def collect_renames(root: Path) -> dict[str, str]:
     # Lo que en algún sitio se lee como atributo de algo que no resuelve puede
     # ser este mismo símbolo llegando por una ruta que no se ve.
     names -= _attribute_names_on_unresolved_bases(root, modules)
+    # Y lo que en algún sitio está escrito como cadena se alcanza por cadena:
+    # el renombrado movería la definición y dejaría la cadena atrás.
+    names -= _names_written_as_strings(root)
     return {name: _opaque(name, index) for index, name in enumerate(sorted(names))}
 
 
