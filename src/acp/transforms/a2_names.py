@@ -20,12 +20,64 @@ from acp.transforms.base import TransformResult, iter_transformable_files
 DYNAMIC_ACCESS = {"getattr", "setattr", "hasattr", "globals", "locals", "vars", "eval", "exec"}
 
 
+OPAQUE_PREFIXES = ("f", "K", "C")
+
+
 def _opaque(name: str, index: int) -> str:
     if name.isupper():
         return f"C{index}"
     if name[:1].isupper():
         return f"K{index}"
     return f"f{index}"
+
+
+def _identifiers(root: Path) -> set[str]:
+    """Todo identificador que ya aparece escrito en el repo.
+
+    Los nombres opacos se generan por índice, y `f0` o `C3` no son nombres
+    imposibles —en código científico salen solos—. Si el generado ya existe, el
+    símbolo renombrado y el que estaba se confunden bajo la misma etiqueta: el
+    programa cambia de comportamiento sin dar un error, que es la peor forma de
+    romperse.
+    """
+    found: set[str] = set()
+    for path in iter_transformable_files(root):
+        tree = parse_source(path)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                found.add(node.id)
+            elif isinstance(node, ast.arg):
+                found.add(node.arg)
+            elif isinstance(node, ast.Attribute):
+                found.add(node.attr)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                found.add(node.name)
+            elif isinstance(node, ast.keyword) and node.arg:
+                found.add(node.arg)
+            elif isinstance(node, ast.alias):
+                found.add(node.asname or node.name.split(".")[0])
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                found.update(node.names)
+    return found
+
+
+def _opaque_names(names: list[str], taken: set[str]) -> dict[str, str]:
+    """Diccionario de renombrado saltándose los índices que ya están ocupados.
+
+    Se salta el índice entero, no solo el prefijo: es más barato de explicar en
+    el artículo que un contador por prefijo, y lo único que cuesta es que la
+    numeración tenga huecos.
+    """
+    renames: dict[str, str] = {}
+    index = 0
+    for name in names:
+        while any(f"{prefix}{index}" in taken for prefix in OPAQUE_PREFIXES):
+            index += 1
+        renames[name] = _opaque(name, index)
+        index += 1
+    return renames
 
 
 def _uses_dynamic_access(tree: ast.Module) -> bool:
@@ -308,7 +360,9 @@ def collect_renames(root: Path) -> dict[str, str]:
     # renombrarla cambia una API pública consumida desde fuera (§4.3.3).
     lowered = {literal.lower() for literal in written}
     names -= {name for name in classes if name.lower() in lowered}
-    return {name: _opaque(name, index) for index, name in enumerate(sorted(names))}
+    # El nombre generado tiene que ser nuevo de verdad: si ya existe en el repo,
+    # el renombrado no oculta el nombre, lo funde con otro.
+    return _opaque_names(sorted(names), _identifiers(root))
 
 
 DOCTEST_PROMPT = ">>>"

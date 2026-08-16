@@ -547,6 +547,35 @@ def test_a_name_that_a_table_of_strings_reaches_is_left_alone(tmp_path: Path):
     assert "class Spain:" in countries.read_text(encoding="utf-8")
 
 
+def test_an_opaque_name_never_collides_with_one_that_already_exists(tmp_path: Path):
+    """`f0`, `K1`, `C3` no son nombres imposibles: en código científico salen
+    solos. Si el nombre generado ya existe en el repo, el símbolo renombrado y
+    la variable local se confunden bajo la misma etiqueta y el programa cambia
+    de comportamiento en silencio, que es peor que un error."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    core = pkg / "core.py"
+    core.write_text(
+        "def alpha(x):\n"
+        "    return x\n"
+        "\n"
+        "\n"
+        "def beta(x):\n"
+        "    f0 = 2\n"
+        "    return alpha(x) * f0\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    assert set(result.renames.values()).isdisjoint({"f0"})
+    entry = result.renames["beta"]
+    done = _run(tmp_path, f"from pkg.core import {entry}; print({entry}(3))")
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "6"
+
+
 def _run(root: Path, code: str) -> subprocess.CompletedProcess:
     """Ejecuta un fragmento contra el árbol transformado, que es la prueba real:
     un ImportError de A2 no lo ve ningún compileall."""
