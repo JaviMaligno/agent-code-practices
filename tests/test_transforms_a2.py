@@ -485,3 +485,30 @@ def test_names_reachable_by_string_are_left_alone(tmp_path: Path):
 
     assert "handler" not in result.renames
     assert "def handler" in path.read_text(encoding="utf-8")
+
+
+def test_a_symbol_reached_through_a_module_object_is_left_alone(tmp_path: Path):
+    """El módulo que trae el símbolo se decide en tiempo de ejecución, así que
+    `mod.validate` no se puede atribuir a ningún fichero sin ejecutar el
+    programa: es alcanzable por cadena (§4.3.3). La definición está a la vista y
+    resulta tentadora, pero renombrarla sola deja un AttributeError. Es el
+    patrón de python-stdnum —`__import__('stdnum.%s' % cc)` y luego
+    `getattr(mod, 'validate')`— y era la causa de los 14 fallos que quedaban."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    country = pkg / "fr.py"
+    country.write_text("def validate(number):\n    return number\n", encoding="utf-8")
+    registry = pkg / "registry.py"
+    registry.write_text(
+        "def lookup(cc, number):\n"
+        "    mod = __import__('pkg.%s' % cc, globals(), locals(), ['validate'])\n"
+        "    return mod.validate(number)\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    assert "validate" not in result.renames
+    assert "def validate(number):" in country.read_text(encoding="utf-8")
+    assert "mod.validate(number)" in registry.read_text(encoding="utf-8")

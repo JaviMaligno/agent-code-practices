@@ -102,6 +102,59 @@ def _parameter_names(root: Path) -> set[str]:
     return names
 
 
+def _dotted_ast(node: ast.expr) -> str | None:
+    """La cadena `a.b.c` de una cadena de atributos, sobre el árbol de `ast`."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        head = _dotted_ast(node.value)
+        return f"{head}.{node.attr}" if head else None
+    return None
+
+
+def _attribute_names_on_unresolved_bases(root: Path, modules: set[str]) -> set[str]:
+    """Nombres que en algún sitio se leen como atributo de algo sin resolver.
+
+    `billing.apply_tax(...)` se resuelve —`billing` es un módulo del repo— y por
+    eso se renombra. `mod.validate(...)` no: `mod` puede ser cualquier cosa, y en
+    python-stdnum es literalmente un módulo elegido en tiempo de ejecución
+    (`__import__('stdnum.%s' % cc)` y `getattr(mod, 'validate')`). La definición
+    de `validate` está a la vista, pero la llamada no se puede mover con ella
+    porque no hay forma estática de saber a qué fichero apunta: entra en lo
+    indecidible de §4.3.3 y el símbolo entero sale del diccionario.
+
+    Solo cuentan las bases que podrían tener dentro un módulo, es decir un
+    nombre o una cadena de atributos. `','.join(...)` y `Klass().info()` no
+    entran: un literal y el resultado de una llamada nunca son el módulo donde
+    vive la definición, y excluirlos por ahí dejaría fuera del diccionario media
+    biblioteca estándar —`join`, `split`, `read`— por pura coincidencia de
+    nombre.
+    """
+    found: set[str] = set()
+    for path in iter_transformable_files(root):
+        tree = parse_source(path)
+        if tree is None:
+            continue
+        aliases = module_aliases(tree, path, root, modules)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
+            dotted = _dotted_ast(node.value)
+            if dotted is not None and not _resolves_to_module(dotted, aliases, modules):
+                found.add(node.attr)
+    return found
+
+
+def _resolves_to_module(dotted: str | None, aliases: dict[str, str], modules: set[str]) -> bool:
+    if dotted is None:
+        return False
+    head, _, rest = dotted.partition(".")
+    target = aliases.get(head)
+    if target is None:
+        return False
+    return (f"{target}.{rest}" if rest else target) in modules
+
+
 def collect_renames(root: Path) -> dict[str, str]:
     """Diccionario de renombrado de los símbolos que define el propio repo.
 
@@ -131,7 +184,8 @@ def collect_renames(root: Path) -> dict[str, str]:
     # donde estaban—, así que un símbolo que se llame igual que un módulo del
     # repo tendría dos significados bajo la misma entrada del diccionario y
     # rompería los imports. Sale fuera.
-    basenames = {module.rsplit(".", 1)[-1] for module in repo_modules(root)}
+    modules = repo_modules(root)
+    basenames = {module.rsplit(".", 1)[-1] for module in modules}
     names -= basenames
     # Un nombre que además es parámetro en algún sitio significa dos cosas: el
     # símbolo del módulo y una variable local. Renombrar las dos rompe las
@@ -140,6 +194,9 @@ def collect_renames(root: Path) -> dict[str, str]:
     # Y un `def format(...)` propio no convierte en suyas las llamadas al
     # builtin `format` del resto del repo: renombrarlas daría NameError.
     names -= set(dir(builtins))
+    # Lo que en algún sitio se lee como atributo de algo que no resuelve puede
+    # ser este mismo símbolo llegando por una ruta que no se ve.
+    names -= _attribute_names_on_unresolved_bases(root, modules)
     return {name: _opaque(name, index) for index, name in enumerate(sorted(names))}
 
 
@@ -351,14 +408,7 @@ class _Rename(cst.CSTTransformer):
     def _is_repo_module(self, node: cst.BaseExpression) -> bool:
         # Se pregunta sobre el nodo original: los hijos ya vienen renombrados y
         # su nombre nuevo no resuelve contra nada.
-        dotted = _dotted(node)
-        if dotted is None:
-            return False
-        head, _, rest = dotted.partition(".")
-        target = self.aliases.get(head)
-        if target is None:
-            return False
-        return (f"{target}.{rest}" if rest else target) in self.modules
+        return _resolves_to_module(_dotted(node), self.aliases, self.modules)
 
 
 DOCTEST_GLOB_PATTERN = re.compile(r"--doctest-glob[=\s]+['\"]?([^'\"\s]+)")
