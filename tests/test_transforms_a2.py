@@ -407,6 +407,64 @@ def test_a_text_file_the_suite_does_not_collect_is_left_alone(tmp_path: Path):
     assert ">>> billing.apply_tax(100)" in readme.read_text(encoding="utf-8")
 
 
+def test_a_method_that_shares_a_name_with_a_module_level_function_keeps_it(tmp_path: Path):
+    """El diccionario va por nombre desnudo, y en LibCST el nombre de un `def`
+    también es un `Name`: el método de una clase se renombraba por parecerse a
+    una función de otro módulo. Como sus llamadas son `obj.info()` y esas se
+    dejan —no hay inferencia de tipos que las atribuya a su clase—, renombrar
+    solo la definición deja un AttributeError. Medido en python-stdnum: 29 de
+    los 46 fallos que quedaban."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "report.py").write_text("def info(number):\n    return number\n", encoding="utf-8")
+    store = pkg / "store.py"
+    store.write_text(
+        "class Store:\n"
+        "    def info(self):\n"
+        "        return 1\n"
+        "\n"
+        "\n"
+        "def describe():\n"
+        "    return Store().info()\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = store.read_text(encoding="utf-8")
+    assert "def info(self):" in source
+    # La clase sí se mueve entera —definición y uso a la vez—, y el método que
+    # cuelga de ella se queda donde estaba.
+    assert f"{result.renames['Store']}().info()" in source
+    # La función de nivel de módulo sí se renombra: es la definición y el uso a
+    # la vez lo que tiene que moverse junto.
+    assert "info" in result.renames
+
+
+def test_a_class_attribute_that_shares_a_name_keeps_it(tmp_path: Path):
+    """Mismo caso que el método: se lee como `Klass.LIMIT`, y el atributo de
+    cualquier cosa se deja pasar."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "config.py").write_text("LIMIT = 10\n", encoding="utf-8")
+    store = pkg / "store.py"
+    store.write_text(
+        "class Store:\n"
+        "    LIMIT = 5\n"
+        "\n"
+        "\n"
+        "def cap():\n"
+        "    return Store.LIMIT\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    source = store.read_text(encoding="utf-8")
+    assert "    LIMIT = 5" in source
+    assert f"{result.renames['Store']}.LIMIT" in source
+
+
 def test_names_reachable_by_string_are_left_alone(tmp_path: Path):
     """Renombrar lo que se alcanza por getattr rompe el programa, y el fallo se
     leería como un agente que fracasa (§4.3.3)."""

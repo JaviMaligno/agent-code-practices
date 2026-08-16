@@ -320,6 +320,25 @@ class _Rename(cst.CSTTransformer):
         # renombrar: lo que llegue renombrado viene de una coincidencia.
         return updated.with_changes(keyword=original.keyword)
 
+    def leave_ClassDef(self, original: cst.ClassDef, updated: cst.ClassDef) -> cst.ClassDef:
+        # Lo que se define en el cuerpo de una clase se usa como `obj.nombre`, y
+        # esos usos se dejan pasar porque atribuirlos a su clase exigiría
+        # inferencia de tipos. Renombrar solo la definición deja un
+        # AttributeError, así que aquí se devuelve el nombre que `leave_Name`
+        # cambió de camino.
+        if not isinstance(original.body, cst.IndentedBlock) or not isinstance(
+            updated.body, cst.IndentedBlock
+        ):
+            return updated
+        return updated.with_changes(
+            body=updated.body.with_changes(
+                body=[
+                    _restored_definition(before, after)
+                    for before, after in zip(original.body.body, updated.body.body)
+                ]
+            )
+        )
+
     def leave_Attribute(self, original: cst.Attribute, updated: cst.Attribute) -> cst.Attribute:
         if self._is_repo_module(original.value):
             return updated
@@ -386,6 +405,40 @@ def doctest_files(root: Path) -> list[Path]:
             continue
         found.extend(iter_transformable_files(root, pattern))
     return sorted(set(found))
+
+
+def _restored_definition(before: cst.BaseStatement, after: cst.BaseStatement) -> cst.BaseStatement:
+    """Devuelve a una sentencia del cuerpo de una clase el nombre que definía."""
+    if isinstance(after, (cst.FunctionDef, cst.ClassDef)) and isinstance(before, type(after)):
+        return after.with_changes(name=before.name)
+    if isinstance(after, cst.SimpleStatementLine) and isinstance(before, cst.SimpleStatementLine):
+        return after.with_changes(
+            body=[
+                _restored_target(small_before, small_after)
+                for small_before, small_after in zip(before.body, after.body)
+            ]
+        )
+    return after
+
+
+def _restored_target(before: cst.BaseSmallStatement, after: cst.BaseSmallStatement):
+    """Solo el destino: el valor asignado sigue siendo código y sí se renombra."""
+    if isinstance(after, cst.Assign) and isinstance(before, cst.Assign):
+        return after.with_changes(
+            targets=[
+                target_after.with_changes(target=target_before.target)
+                if isinstance(target_after.target, cst.Name)
+                else target_after
+                for target_before, target_after in zip(before.targets, after.targets)
+            ]
+        )
+    if (
+        isinstance(after, cst.AnnAssign)
+        and isinstance(before, cst.AnnAssign)
+        and isinstance(after.target, cst.Name)
+    ):
+        return after.with_changes(target=before.target)
+    return after
 
 
 def apply(root: Path) -> TransformResult:
