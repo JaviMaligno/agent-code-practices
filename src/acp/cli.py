@@ -107,6 +107,14 @@ def main(argv: list[str] | None = None) -> int:
     transform_parser.add_argument("--out", type=Path, required=True)
 
     args = parser.parse_args(argv)
+
+    if args.command == "transform":
+        # Aquí `--out` no es un directorio de informes sino el árbol destino, y
+        # la copia exige que no exista: crearlo antes la deja sin sitio.
+        destination = transform_repo(args.path, args.apply.split(","), args.out)
+        print(f"escrito {destination}")
+        return 0
+
     args.out.mkdir(parents=True, exist_ok=True)
 
     if args.command == "profile":
@@ -119,11 +127,6 @@ def main(argv: list[str] | None = None) -> int:
         (args.out / f"{args.name}.json").write_text(
             json.dumps(profile.to_flat_dict(), indent=2), encoding="utf-8"
         )
-        print(f"escrito {destination}")
-        return 0
-
-    if args.command == "transform":
-        destination = transform_repo(args.path, args.apply.split(","), args.out)
         print(f"escrito {destination}")
         return 0
 

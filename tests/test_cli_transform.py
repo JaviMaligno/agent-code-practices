@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from acp.cli import transform_repo
+from acp.cli import main, transform_repo
 
 
 def build(root: Path) -> Path:
@@ -33,6 +33,17 @@ def test_the_manifest_records_what_was_applied(tmp_path: Path):
     manifest = json.loads((destination / "acp-manifest.json").read_text(encoding="utf-8"))
     assert manifest["applied"] == ["A1", "A4"]
     assert manifest["symbols"]["pkg.core.rate"]["current_name"] == "rate"
+
+
+def test_the_subcommand_writes_the_transformed_tree(tmp_path: Path):
+    """`--out` de `transform` es el árbol destino, no el directorio de informes
+    de `profile`: crearlo antes de copiar deja la copia sin sitio donde ir."""
+    source = build(tmp_path / "repo")
+
+    code = main(["transform", str(source), "--apply", "A1", "--out", str(tmp_path / "work")])
+
+    assert code == 0
+    assert "value: int" not in (tmp_path / "work" / "pkg" / "core.py").read_text(encoding="utf-8")
 
 
 def test_an_unknown_transform_is_rejected(tmp_path: Path):
