@@ -35,6 +35,36 @@ def test_the_manifest_records_what_was_applied(tmp_path: Path):
     assert manifest["symbols"]["pkg.core.rate"]["current_name"] == "rate"
 
 
+def build_annotated(root: Path) -> Path:
+    pkg = root / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "core.py").write_text(
+        "TOTAL: int = 0\n"
+        "\n"
+        "\n"
+        "def rate(value: int) -> int:\n"
+        "    partial: int = value * 2\n"
+        "    return partial\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_the_dose_does_not_depend_on_the_order_of_the_flags(tmp_path: Path):
+    """A1 reconstruye `x: int = 1` como una asignación nueva, y LibCST la escribe
+    con el espaciado por defecto. Si A3 ya había pasado, ese espaciado vuelve: la
+    dosis de A3 acabaría dependiendo del orden en que se escribieron los flags, y
+    dos condiciones con el mismo nombre no serían la misma condición."""
+    typed = transform_repo(build_annotated(tmp_path / "typed"), ["A3", "A1"], tmp_path / "a")
+    canonical = transform_repo(
+        build_annotated(tmp_path / "canonical"), ["A1", "A3"], tmp_path / "b"
+    )
+
+    result = (typed / "pkg" / "core.py").read_text(encoding="utf-8")
+    assert result == (canonical / "pkg" / "core.py").read_text(encoding="utf-8")
+    assert " = " not in result
+
+
 def test_the_subcommand_writes_the_transformed_tree(tmp_path: Path):
     """`--out` de `transform` es el árbol destino, no el directorio de informes
     de `profile`: crearlo antes de copiar deja la copia sin sitio donde ir."""

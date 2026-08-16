@@ -49,6 +49,23 @@ def profile_repo(
     return profile
 
 
+# A3 va la última porque es la única que otra puede deshacer: A1 y A2
+# reconstruyen nodos (`x: int = 1` sale de A1 como una asignación nueva) y LibCST
+# los escribe con el espaciado por defecto, así que cualquier cosa que corra
+# después de A3 devuelve parte del formato que A3 había quitado. El resto del
+# orden se fija por reproducibilidad: la condición tiene que ser la misma
+# aunque los flags lleguen en otro orden.
+CANONICAL_ORDER = ("A1", "A2", "A4", "A3")
+
+
+def _application_order(transform_ids: list[str]) -> list[str]:
+    """El orden en que se aplican, que no tiene por qué ser el que se pidió."""
+    rank = {name: index for index, name in enumerate(CANONICAL_ORDER)}
+    # `sorted` es estable: lo que aún no tenga sitio asignado —la familia B— se
+    # queda al final en el orden en que llegó.
+    return sorted(transform_ids, key=lambda name: rank.get(name, len(rank)))
+
+
 def transform_repo(source: Path, transform_ids: list[str], destination: Path) -> Path:
     """Aplica transformaciones sobre una copia y deja constancia de qué se hizo.
 
@@ -64,12 +81,14 @@ def transform_repo(source: Path, transform_ids: list[str], destination: Path) ->
     root = copy_tree(source, destination)
 
     renames: dict[str, str] = {}
-    for name in transform_ids:
+    for name in _application_order(transform_ids):
         result = TRANSFORMS[name](root)
         renames.update(result.renames)
 
     symbols = apply_renames(symbols, renames)
     manifest = {
+        # Lo que se pidió, en el orden en que se pidió: el manifiesto es la
+        # procedencia de la condición, no la traza de la implementación.
         "applied": transform_ids,
         "renames": renames,
         "symbols": {key: asdict(location) for key, location in symbols.items()},
