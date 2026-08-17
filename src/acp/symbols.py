@@ -32,7 +32,11 @@ def build_symbol_map(root: Path) -> dict[str, Location]:
     return symbols
 
 
-def relocate_symbols(symbols: dict[str, Location], root: Path) -> dict[str, Location]:
+def relocate_symbols(
+    symbols: dict[str, Location],
+    root: Path,
+    moves: dict[str, str] | None = None,
+) -> dict[str, Location]:
     """Reasienta el mapa sobre el árbol transformado sin tocar la identidad.
 
     El mapa se publica para proyectar sobre él lo que el agente lee (§5.4.2), y
@@ -59,11 +63,21 @@ def relocate_symbols(symbols: dict[str, Location], root: Path) -> dict[str, Loca
     símbolos: las hermanas que vienen detrás se habrían corrido un puesto y cada
     una heredaría el rango de otra, que es justo la mentira que este mapa existe
     para no contar. Antes de mentir, callar.
+
+    `moves` —módulo original → módulo destino— es lo que permite emparejar
+    cuando la transformación mueve los símbolos ENTRE módulos y no solo dentro
+    de cada uno: la familia B renombra y reubica ficheros, y sin seguir el
+    movimiento el módulo original no aparece en el árbol transformado y todos
+    sus símbolos se caerían del mapa a la vez. Solo la transformación sabe qué
+    movió, así que el dato tiene que llegar de fuera; lo que no venga en el
+    diccionario se busca donde siempre, y si tampoco está ahí, se calla.
     """
+    moves = moves or {}
     current = _definitions_by_module(root)
     relocated: dict[str, Location] = {}
     for module, entries in _grouped_by_module(symbols).items():
-        found = current.get(module, {})
+        # Dónde hay que ir a buscar ahora, que puede no ser su propio módulo.
+        found = current.get(moves.get(module, module), {})
         by_position = {
             position: found[qualified]
             for qualified, position in _positions(list(found)).items()

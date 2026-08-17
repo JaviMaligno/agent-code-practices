@@ -123,13 +123,18 @@ def transform_repo(
     root = copy_tree(source, destination)
 
     renames: dict[str, str] = {}
+    # Los movimientos se acumulan como los renombrados porque el mapa de
+    # identidad los necesita: la familia B mueve símbolos entre módulos y sin
+    # esto se caerían todos del mapa en cuanto una transformación toque el árbol.
+    moves: dict[str, str] = {}
     for name in _application_order(transform_ids):
         result = TRANSFORMS[name](root)
         renames.update(result.renames)
+        moves.update(result.moves)
 
     # El mapa describe el árbol que el agente va a ver: rangos y nombres se
     # leen del árbol transformado, no se deducen del diccionario de renombrados.
-    symbols = relocate_symbols(symbols, root)
+    symbols = relocate_symbols(symbols, root, moves)
     # El contenido, separado del sitio donde va: `manifest` ya es la ruta.
     provenance = {
         # Lo que se pidió, en el orden en que se pidió: el manifiesto es la

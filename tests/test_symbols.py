@@ -105,6 +105,42 @@ def test_a_module_whose_shape_changed_is_not_paired_by_guesswork(tmp_path: Path)
     assert "pkg.core.alpha" not in relocated
 
 
+def test_a_symbol_that_changed_module_keeps_its_identity(tmp_path: Path):
+    """B2 renombra los ficheros: sin seguir el movimiento, el módulo original no
+    existe en el árbol transformado y sus símbolos se caen del mapa entero."""
+    original = tmp_path / "before"
+    (original / "pkg" / "es").mkdir(parents=True)
+    (original / "pkg" / "es" / "nif.py").write_text(
+        "def validate(number):\n    return number\n", encoding="utf-8"
+    )
+    symbols = build_symbol_map(original)
+
+    after = tmp_path / "after"
+    (after / "pkg").mkdir(parents=True)
+    (after / "pkg" / "m17.py").write_text(
+        "def validate(number):\n    return number\n", encoding="utf-8"
+    )
+
+    relocated = relocate_symbols(symbols, after, moves={"pkg.es.nif": "pkg.m17"})
+
+    assert relocated["pkg.es.nif.validate"].path == "pkg/m17.py"
+    assert relocated["pkg.es.nif.validate"].current_name == "validate"
+
+
+def test_without_a_move_a_vanished_module_still_drops_out(tmp_path: Path):
+    """Lo que no se puede verificar contra el árbol que ve el agente no se
+    publica: un rango inventado es peor que ningún rango."""
+    original = tmp_path / "before"
+    (original / "pkg").mkdir(parents=True)
+    (original / "pkg" / "core.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    symbols = build_symbol_map(original)
+
+    after = tmp_path / "after"
+    (after / "pkg").mkdir(parents=True)
+
+    assert relocate_symbols(symbols, after) == {}
+
+
 def test_a_symbol_nobody_renamed_keeps_its_name(tmp_path: Path):
     original = tmp_path / "repo" / "pkg"
     original.mkdir(parents=True)

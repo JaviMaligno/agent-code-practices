@@ -17,6 +17,10 @@ class TransformResult:
 
     files_changed: int = 0
     renames: dict[str, str] = field(default_factory=dict)
+    # Módulo original → módulo destino. Viaja con el resultado por la misma
+    # razón que `renames`: el mapa de identidad tiene que poder seguir dónde
+    # acabó cada símbolo, y solo la transformación sabe qué movió.
+    moves: dict[str, str] = field(default_factory=dict)
 
 
 def copy_tree(source: Path, destination: Path) -> Path:
