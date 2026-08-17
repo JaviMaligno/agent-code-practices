@@ -122,3 +122,131 @@ def test_the_code_still_runs(tmp_path: Path):
     namespace: dict = {}
     exec(compile(path.read_text(encoding="utf-8"), "core.py", "exec"), namespace)
     assert namespace["rate"](21, 2.0) == 42.0
+
+
+def run(path: Path) -> dict:
+    """Ejecuta el fichero transformado. `exec` y no `compile` a secas porque el
+    despacho por anotación no falla al compilar: falla al ejecutar el decorador,
+    que es lo que convierte el árbol roto en algo que se lee como un agente que
+    fracasa (§4.3)."""
+    namespace: dict = {}
+    exec(compile(path.read_text(encoding="utf-8"), path.name, "exec"), namespace)
+    return namespace
+
+
+def test_a_function_registered_by_dispatch_keeps_the_annotation_that_selects_it(tmp_path: Path):
+    """En `@show.register` sin argumentos la anotación del primer parámetro no es
+    documentación: es el selector que `functools` lee para elegir la
+    implementación. Quitarla cambia el comportamiento del programa, así que A1
+    dejaría de ser semánticamente equivalente (§4.3).
+
+    El fichero vive en `tests/` a propósito: A1 transforma la suite del repo
+    (`iter_transformable_files`, §4.3.1) mientras la métrica `runtime_typing` de
+    la fase 0 solo recorre `iter_source_files`, así que un `@singledispatch` en
+    la suite es invisible al criterio de exclusión y solo lo puede proteger A1.
+    """
+    suite = tmp_path / "tests"
+    suite.mkdir()
+    path = suite / "test_dispatch.py"
+    path.write_text(
+        "from functools import singledispatch\n"
+        "\n"
+        "\n"
+        "@singledispatch\n"
+        "def show(value):\n"
+        "    return 'any'\n"
+        "\n"
+        "\n"
+        "@show.register\n"
+        "def _(value: int):\n"
+        "    return 'int'\n",
+        encoding="utf-8",
+    )
+
+    a1_types.apply(tmp_path)
+
+    namespace = run(path)
+    assert namespace["show"](1) == "int"
+    assert namespace["show"]("x") == "any"
+
+
+def test_a_method_registered_by_dispatch_keeps_it_even_though_self_comes_first(tmp_path: Path):
+    """`singledispatchmethod` lee la primera anotación que encuentra, y en un
+    método esa no está en el primer parámetro: `self` va delante y no se anota.
+    Proteger solo el parámetro nº1 dejaría los métodos rotos."""
+    path = write(
+        tmp_path,
+        "from functools import singledispatchmethod\n"
+        "\n"
+        "\n"
+        "class Printer:\n"
+        "    @singledispatchmethod\n"
+        "    def show(self, value):\n"
+        "        return 'any'\n"
+        "\n"
+        "    @show.register\n"
+        "    def _(self, value: int):\n"
+        "        return 'int'\n",
+    )
+
+    a1_types.apply(tmp_path)
+
+    namespace = run(path)
+    printer = namespace["Printer"]()
+    assert printer.show(1) == "int"
+    assert printer.show("x") == "any"
+
+
+def test_only_the_annotation_that_dispatches_survives(tmp_path: Path):
+    """La protección es del selector, no de la firma entera: el resto de
+    anotaciones de esa función siguen siendo documentación y A1 se las lleva. Si
+    no, cada `@register` regalaría dosis que el experimento cree haber quitado."""
+    path = write(
+        tmp_path,
+        "from functools import singledispatch\n"
+        "\n"
+        "\n"
+        "@singledispatch\n"
+        "def show(value, factor=1):\n"
+        "    return 'any'\n"
+        "\n"
+        "\n"
+        "@show.register\n"
+        "def _(value: int, factor: float = 1.0) -> str:\n"
+        "    return 'int'\n",
+    )
+
+    a1_types.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert "value: int" in source
+    assert "factor: float" not in source
+    assert "factor=1.0" in source
+    assert "-> str" not in source
+
+
+def test_a_registration_that_names_its_class_loses_its_annotations(tmp_path: Path):
+    """`@show.register(int)` da la clase explícitamente: ahí la anotación vuelve a
+    ser documentación y quitarla no cambia nada. Protegerla también sería inflar
+    la dosis de tipos que sobrevive sin ninguna razón semántica."""
+    path = write(
+        tmp_path,
+        "from functools import singledispatch\n"
+        "\n"
+        "\n"
+        "@singledispatch\n"
+        "def show(value):\n"
+        "    return 'any'\n"
+        "\n"
+        "\n"
+        "@show.register(int)\n"
+        "def _(value: int):\n"
+        "    return 'int'\n",
+    )
+
+    a1_types.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert "value: int" not in source
+    namespace = run(path)
+    assert namespace["show"](1) == "int"

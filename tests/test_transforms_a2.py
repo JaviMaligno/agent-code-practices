@@ -699,6 +699,54 @@ def test_a_class_a_registry_indexes_by_its_own_name_is_left_alone(tmp_path: Path
     assert "class Postgres(" in postgres.read_text(encoding="utf-8")
 
 
+def test_a_class_that_publishes_its_own_name_is_left_alone(tmp_path: Path):
+    """La otra forma del registro por nombre de clase, y la que la suite de
+    sqlglot destapa: una clase base convierte `cls.__name__` en el nombre
+    público de la función SQL, así que el nombre de cada subclase es API sin que
+    aparezca escrito en ninguna cadena. Medido: con `class PosexplodeOuter` sin
+    proteger, la suite de sqlglot transformada falla un test."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "core.py").write_text(
+        "class Func:\n"
+        "    @classmethod\n"
+        "    def sql_name(cls):\n"
+        "        return cls.__name__.lower()\n",
+        encoding="utf-8",
+    )
+    funcs = pkg / "funcs.py"
+    funcs.write_text(
+        "from pkg.core import Func\n"
+        "\n"
+        "\n"
+        "class Explode(Func):\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "class PosexplodeOuter(Explode):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (pkg / "api.py").write_text(
+        "from pkg.funcs import PosexplodeOuter\n"
+        "\n"
+        "\n"
+        "def sql():\n"
+        "    return PosexplodeOuter.sql_name()\n",
+        encoding="utf-8",
+    )
+
+    result = a2_names.apply(tmp_path)
+
+    assert "PosexplodeOuter" not in result.renames
+    assert "class PosexplodeOuter(" in funcs.read_text(encoding="utf-8")
+    entry = result.renames["sql"]
+    done = _run(tmp_path, f"from pkg.api import {entry}; print({entry}())")
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "posexplodeouter"
+
+
 def test_a_symbol_reached_through_a_module_object_is_left_alone(tmp_path: Path):
     """El módulo que trae el símbolo se decide en tiempo de ejecución, así que
     `mod.validate` no se puede atribuir a ningún fichero sin ejecutar el

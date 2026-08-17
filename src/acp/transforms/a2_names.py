@@ -212,6 +212,71 @@ def _names_written_as_strings(root: Path) -> set[str]:
     return found
 
 
+# Nombres locales por los que una clase se alcanza a sí misma. `cls.__name__`
+# dentro de un classmethod y `self.__class__.__name__` dentro de un método son
+# la misma cosa: el nombre de la clase convertido en dato.
+SELF_REFERENCES = {"cls", "klass", "__class__"}
+
+
+def _classes_that_publish_their_own_name(root: Path) -> set[str]:
+    """Clases cuyo nombre es un dato del programa, y sus subclases.
+
+    sqlglot tiene las dos formas. Una es la metaclase que registra
+    `cls._classes[clsname.lower()]`. La otra no deja ni esa pista: `Func`
+    devuelve `camel_to_snake_case(cls.__name__)` como nombre SQL público, así que
+    `class PosexplodeOuter` publica la función `posexplode_outer` sin que la
+    cadena aparezca escrita en ninguna parte. Lo hereda cada subclase, y por eso
+    la contaminación se propaga por el grafo de herencia del repo.
+
+    Se resuelve por nombre desnudo de la base —`Func` y `exp.Func` son la misma—
+    porque es lo que el resto del módulo ya puede resolver estáticamente. De
+    equivocarse, se equivoca renombrando de menos.
+    """
+    bases: dict[str, set[str]] = {}
+    metaclasses: dict[str, str] = {}
+    publishing: set[str] = set()
+    for path in iter_transformable_files(root):
+        tree = parse_source(path)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            entry = bases.setdefault(node.name, set())
+            entry.update(
+                dotted.rsplit(".", 1)[-1]
+                for dotted in (_dotted_ast(base) for base in node.bases)
+                if dotted
+            )
+            for keyword in node.keywords:
+                if keyword.arg == "metaclass":
+                    dotted = _dotted_ast(keyword.value)
+                    if dotted:
+                        metaclasses[node.name] = dotted.rsplit(".", 1)[-1]
+            for child in ast.walk(node):
+                if isinstance(child, ast.Attribute) and child.attr == "__name__":
+                    base = _dotted_ast(child.value) or ""
+                    if base.rsplit(".", 1)[-1] in SELF_REFERENCES:
+                        publishing.add(node.name)
+    # Una metaclase recibe el nombre de la clase como argumento de `__new__`: es
+    # el patrón del registro de dialectos, y lo que hace con él no se puede
+    # saber sin ejecutarlo. Quien la declara queda contaminado.
+    metaclass_classes = {name for name, entries in bases.items() if "type" in entries}
+    publishing.update(
+        name for name, meta in metaclasses.items() if meta in metaclass_classes
+    )
+
+    tainted = set(publishing)
+    growing = True
+    while growing:
+        growing = False
+        for name, entries in bases.items():
+            if name not in tainted and entries & tainted:
+                tainted.add(name)
+                growing = True
+    return tainted
+
+
 def _names_bound_by_external_imports(root: Path, modules: set[str]) -> set[str]:
     """Nombres que en algún fichero los trae un import de fuera del repo.
 
@@ -360,6 +425,9 @@ def collect_renames(root: Path) -> dict[str, str]:
     # renombrarla cambia una API pública consumida desde fuera (§4.3.3).
     lowered = {literal.lower() for literal in written}
     names -= {name for name in classes if name.lower() in lowered}
+    # Y la misma clave puede no estar escrita en ninguna cadena: basta con que
+    # una clase base convierta `cls.__name__` en el nombre público.
+    names -= _classes_that_publish_their_own_name(root)
     # El nombre generado tiene que ser nuevo de verdad: si ya existe en el repo,
     # el renombrado no oculta el nombre, lo funde con otro.
     return _opaque_names(sorted(names), _identifiers(root))
