@@ -21,8 +21,25 @@ DIRECTIVE_COMMENT = re.compile(
 )
 
 
+
+# El shebang y la cookie de codificación (PEP 263) son comentarios para el
+# sistema y para el propio parser: sin el primero un script deja de ser
+# ejecutable, y sin la segunda el intérprete decodifica el fichero con otra
+# codificación. Ninguna de las dos explica nada a quien lee. Se reconocen por
+# forma y no por posición (solo cuentan en las dos primeras líneas): confundir
+# una prosa rara con una cookie cuesta un comentario de dosis; equivocarse al
+# revés cuesta el fichero.
+SHEBANG = re.compile(r"#!")
+ENCODING_COOKIE = re.compile(r"#.*?coding[:=][ \t]*[-_.a-zA-Z0-9]+")
+
+
 def _is_directive(comment: cst.Comment | None) -> bool:
-    return comment is not None and DIRECTIVE_COMMENT.match(comment.value) is not None
+    if comment is None:
+        return False
+    return any(
+        pattern.match(comment.value) is not None
+        for pattern in (DIRECTIVE_COMMENT, SHEBANG, ENCODING_COOKIE)
+    )
 
 
 class _StripDocs(cst.CSTTransformer):

@@ -252,6 +252,28 @@ def test_a_comment_that_a_tool_reads_is_not_prose(tmp_path: Path):
     assert "# la regla viene de la norma" not in result
 
 
+def test_the_shebang_and_the_encoding_cookie_stay(tmp_path: Path):
+    """Las dos son comentarios para el parser, no para el lector: sin shebang un
+    script deja de ser ejecutable y sin cookie el intérprete decodifica el
+    fichero con otra codificación. Nada de eso es legibilidad, y romperlo mete
+    en la celda A4 un fallo que no tiene que ver con lo que se mide."""
+    path = write(
+        tmp_path,
+        "#!/usr/bin/env python3\n"
+        "# -*- coding: utf-8 -*-\n"
+        "# este sí es prosa\n"
+        "def rate(value):\n"
+        "    return value * 2\n",
+    )
+
+    a4_docs.apply(tmp_path)
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "#!/usr/bin/env python3"
+    assert lines[1] == "# -*- coding: utf-8 -*-"
+    assert "# este sí es prosa" not in "\n".join(lines)
+
+
 def test_it_reports_how_many_files_changed(tmp_path: Path):
     write(tmp_path)
     (tmp_path / "pkg" / "sin_docs.py").write_text("x = 1\n", encoding="utf-8")
