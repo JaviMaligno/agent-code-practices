@@ -274,6 +274,41 @@ def test_the_shebang_and_the_encoding_cookie_stay(tmp_path: Path):
     assert "# este sí es prosa" not in "\n".join(lines)
 
 
+def test_a_class_docstring_goes_with_the_function_ones(tmp_path: Path):
+    """La tabla del spec (§4.1) dice «docstrings de función», pero la de clase
+    es la misma cosa: explica cómo funciona lo que ya has abierto. La de módulo,
+    que dice qué fichero abrir, es B3 y se queda. Hasta ahora borrar
+    `leave_ClassDef` dejaba la suite entera en verde, así que la dosis real de
+    A4 no estaba fijada por ningún test en ninguna de las dos direcciones."""
+    path = write(
+        tmp_path,
+        '"""Módulo."""\n'
+        "\n"
+        "\n"
+        "class Widget:\n"
+        '    """Explica el widget.\n'
+        "\n"
+        "    >>> Widget().render()\n"
+        "    'w'\n"
+        '    """\n'
+        "\n"
+        "    def render(self):\n"
+        '        """Explica el render."""\n'
+        "        return 'w'\n",
+    )
+
+    a4_docs.apply(tmp_path)
+
+    source = path.read_text(encoding="utf-8")
+    assert "Explica el widget" not in source
+    assert "Explica el render" not in source
+    assert '"""Módulo."""' in source
+    # El doctest de la clase es suite igual que el de una función.
+    assert ">>> Widget().render()" in source
+    results = run_doctests(path)
+    assert (results.attempted, results.failed) == (1, 0)
+
+
 def test_it_reports_how_many_files_changed(tmp_path: Path):
     write(tmp_path)
     (tmp_path / "pkg" / "sin_docs.py").write_text("x = 1\n", encoding="utf-8")
