@@ -213,6 +213,24 @@ def test_a_scm_versioned_repo_without_git_needs_a_pretend_version(tmp_path):
     assert needs_pretend_version(tmp_path) is True
 
 
+def test_a_hatch_vcs_repo_without_git_needs_one_too(tmp_path):
+    """pint no deriva su versión con setuptools-scm sino con hatch-vcs, que por
+    debajo ES setuptools-scm y falla igual sin `.git`. Verificado contra el repo
+    real: sin reconocer este caso, la copia transformada de pint no se instala y
+    todas sus celdas —T0 incluida— salen NO EVALUABLE."""
+    from acp.suite import needs_pretend_version
+
+    write_pyproject(
+        tmp_path,
+        '[project]\nname = "demo"\ndynamic = ["version"]\n\n'
+        '[build-system]\nrequires = ["hatchling", "hatch-vcs"]\n'
+        'build-backend = "hatchling.build"\n\n'
+        '[tool.hatch.version]\nsource = "vcs"\n',
+    )
+
+    assert needs_pretend_version(tmp_path) is True
+
+
 def test_a_repo_that_still_has_its_git_directory_does_not(tmp_path):
     """Con `.git` presente setuptools-scm deriva la versión de verdad, y fijarla
     a mano daría una distinta de la del árbol original."""

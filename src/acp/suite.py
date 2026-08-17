@@ -243,10 +243,20 @@ def needs_pretend_version(repo: Path) -> bool:
     config = _read_pyproject(repo)
     if "setuptools_scm" in config.get("tool", {}):
         return True
+    requires = config.get("build-system", {}).get("requires", [])
     if any(
-        "setuptools" in requirement and "scm" in requirement
-        for requirement in config.get("build-system", {}).get("requires", [])
+        "setuptools" in requirement and "scm" in requirement for requirement in requires
     ):
+        return True
+    # hatch-vcs es setuptools-scm con otro nombre: pint lo usa, y sin
+    # reconocerlo su copia sin `.git` no se instala. Se mira también
+    # `[tool.hatch.version] source = "vcs"` porque es la declaración que de
+    # verdad activa el plugin; el requisito de build puede escribirse de varias
+    # formas (`hatch-vcs`, `hatch_vcs`, con marcador de versión).
+    if any("hatch" in requirement and "vcs" in requirement for requirement in requires):
+        return True
+    hatch_version = config.get("tool", {}).get("hatch", {}).get("version", {})
+    if hatch_version.get("source") == "vcs":
         return True
     setup_py = repo / "setup.py"
     if setup_py.exists():
