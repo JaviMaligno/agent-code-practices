@@ -228,3 +228,46 @@ def test_no_module_keeps_its_old_path_anywhere(tmp_path: Path):
     )
     for old in ("pkg.es.nif", "pkg.deep.inner", "pkg.util", "pkg.es "):
         assert old not in joined, old
+
+
+# --- B2 dentro de la fontanería del experimento -----------------------------
+
+
+def test_b2_is_registered_so_the_cli_can_apply_it(tmp_path: Path):
+    """Sin registrar, la transformación existe pero no hay forma de pedirla: la
+    condición T2 no se puede montar y el mapa de identidad nunca ve sus moves."""
+    import json
+
+    from acp.cli import manifest_path_for, transform_repo
+
+    source = tmp_path / "repo"
+    build(source)
+
+    destination = transform_repo(source, ["B2"], tmp_path / "work")
+
+    manifest = json.loads(manifest_path_for(destination).read_text(encoding="utf-8"))
+    located = manifest["symbols"]["pkg.es.nif.validate"]
+    assert located["path"].startswith("pkg/m")
+    assert located["current_name"] == "validate"
+
+
+def test_b2_runs_before_b4_whatever_the_order_asked(tmp_path: Path):
+    """B4 se lleva la suite fuera del árbol. Si corre antes que B2, esos tests se
+    quedan importando rutas que B2 va a borrar después, y la corrida de
+    validación —que sí los ejecuta— sale en rojo: se leería como un agente que
+    rompió el repo cuando lo que falló es el orden de aplicación."""
+    from acp.cli import transform_repo
+    from acp.transforms import b4_tests
+
+    source = tmp_path / "repo"
+    build(source)
+    (source / "tests").mkdir()
+    (source / "tests" / "test_nif.py").write_text(
+        "from pkg.es.nif import validate\n\n\ndef test_it():\n    assert validate(' 1 ') == '1'\n",
+        encoding="utf-8",
+    )
+
+    destination = transform_repo(source, ["B4", "B2"], tmp_path / "work")
+
+    kept = b4_tests.kept_suite_path(destination) / "tests" / "test_nif.py"
+    assert "pkg.es.nif" not in kept.read_text(encoding="utf-8")

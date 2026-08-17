@@ -62,7 +62,14 @@ def profile_repo(
 # Al revés, B3 no encuentra ningún test, vacía un README que la suite comprueba,
 # y el fallo aparece en la corrida de validación —donde la suite sí existe— en
 # vez de en el árbol, que es el sitio donde nadie lo busca.
-CANONICAL_ORDER = ("A1", "A2", "A4", "A3", "B3", "B4")
+#
+# B2 antes que las dos, y por otra dependencia real: aplana el árbol y reescribe
+# los imports de todo el repo, la suite incluida (§4.3.1). B4 se lleva la suite
+# fuera del árbol, así que después de B4 ya no hay nada de eso que reescribir y
+# los tests guardados se quedan importando rutas que B2 acaba de borrar. El
+# fallo aparecería en la corrida de validación —la única que ejecuta esa suite—
+# y se leería como un repo roto por el agente en vez de como un orden mal puesto.
+CANONICAL_ORDER = ("A1", "A2", "A4", "A3", "B2", "B3", "B4")
 
 
 def _application_order(transform_ids: list[str]) -> list[str]:
