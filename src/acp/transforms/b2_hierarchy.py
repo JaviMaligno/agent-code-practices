@@ -290,21 +290,15 @@ class _RewriteImports(cst.CSTTransformer):
     def leave_SimpleString(
         self, original: cst.SimpleString, updated: cst.SimpleString
     ) -> cst.SimpleString:
-        """Los ejemplos de doctest que hay dentro de una docstring.
+        """Las dos cosas que puede haber dentro de una cadena y hay que seguir.
 
-        Un doctest no es documentación: es suite. `stdnum/__init__.py` importa
-        `stdnum.isbn` desde un ejemplo de su propia docstring, y el paquete raíz
-        no se mueve pero el módulo que importa sí. Dejar el ejemplo atrás
-        convierte un test en un fallo, y la condición se leería como un repo
-        roto.
+        Una ruta de módulo escrita a mano —ver `_module_reference`—, y los
+        ejemplos de doctest. Un doctest no es documentación: es suite.
+        `stdnum/__init__.py` importa `stdnum.isbn` desde un ejemplo de su propia
+        docstring, y el paquete raíz no se mueve pero el módulo que importa sí.
+        Dejar el ejemplo atrás convierte un test en un fallo, y la condición se
+        leería como un repositorio roto.
         """
-        # Una cadena que es exactamente el nombre de un módulo del repo es una
-        # ruta de import, no prosa: `stdnum/gs1_128.py` guarda las suyas en un
-        # diccionario y las pasa a `__import__`. Resuelve estáticamente, así que
-        # §4.3.3 no la excluye —excluye lo indecidible— y es el mismo criterio
-        # con el que A2 sigue las cadenas de `__all__`. Se exige coincidencia
-        # exacta: una frase que menciona el módulo es documentación, y
-        # reescribirla sería B3 colándose dentro de B2.
         rewritten_path = self._module_reference(updated.raw_value)
         if rewritten_path is not None:
             return updated.with_changes(
