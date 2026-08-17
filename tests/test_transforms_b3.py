@@ -105,6 +105,25 @@ def test_a_doctest_in_a_module_docstring_survives(tmp_path: Path):
     assert ">>> 1 + 1" in path.read_text(encoding="utf-8")
 
 
+def test_the_readme_is_found_whatever_it_is_called(tmp_path: Path):
+    """Una lista cerrada de nombres exactos falla en silencio: el repo que
+    escriba `Readme.markdown` conserva su README y la celda mide media dosis sin
+    que nada lo cante. La dosis perdida invisible es peor que la declarada.
+    """
+    build(tmp_path)
+    (tmp_path / "README.md").unlink()
+    (tmp_path / "Readme.markdown").write_text("# demo\n", encoding="utf-8")
+    (tmp_path / "readme.rst").write_text("demo\n", encoding="utf-8")
+    # No es el README del repo: es documentación con nombre propio y se queda.
+    (tmp_path / "readme-for-packagers.md").write_text("empaquetado\n", encoding="utf-8")
+
+    b3_repo_docs.apply(tmp_path)
+
+    assert (tmp_path / "Readme.markdown").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "readme.rst").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "readme-for-packagers.md").read_text(encoding="utf-8") != ""
+
+
 def test_a_repo_that_publishes_its_docstrings_keeps_them(tmp_path: Path):
     """En python-stdnum la docstring de módulo no es documentación, es un dato:
     `stdnum.util.get_module_name()` la lee con `pydoc.getdoc()` para cada módulo

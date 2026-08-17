@@ -19,7 +19,11 @@ from acp.metrics.size import read_source
 from acp.transforms.base import TransformResult, iter_transformable_files
 from acp.transforms.docstrings import docstring_literal, only_doctests
 
-README_NAMES = ("README.md", "README.rst", "README.txt", "README")
+# Se reconoce por el nombre sin extensión y sin mayúsculas, no por una lista
+# cerrada: un repo que llame al suyo `Readme.markdown` se habría quedado con su
+# README y la celda habría medido media dosis sin que nada lo cantara. Lo que
+# lleva algo detrás —`readme-for-packagers.md`— no es el README del repo.
+README_STEM = "readme"
 DOCS_DIRS = ("docs", "doc")
 
 
@@ -103,8 +107,9 @@ def _reads_its_own_docstring(source: str) -> bool:
 
 def apply(root: Path) -> TransformResult:
     changed = 0
-    for name in README_NAMES:
-        path = root / name
+    for path in sorted(root.iterdir()):
+        if not path.is_file() or path.stem.lower() != README_STEM:
+            continue
         # Vaciado, no borrado. El empaquetado de los cuatro repos del sustrato
         # lee el README —python-stdnum lo abre a mano en su `setup.py`, pint,
         # sqlglot y holidays lo declaran en el `pyproject`—, y quitarle el
@@ -113,7 +118,7 @@ def apply(root: Path) -> TransformResult:
         # se lee igual que un agente que fracasa (§4.3). Vaciarlo quita lo mismo
         # —no queda nada que leer— sin tocar lo que la construcción espera, y
         # deja la dosis idéntica en repos con empaquetados distintos.
-        if path.is_file() and path.read_bytes():
+        if path.read_bytes():
             path.write_text("", encoding="utf-8")
             changed += 1
     for name in DOCS_DIRS:
