@@ -305,10 +305,10 @@ class _RewriteImports(cst.CSTTransformer):
         # con el que A2 sigue las cadenas de `__all__`. Se exige coincidencia
         # exacta: una frase que menciona el módulo es documentación, y
         # reescribirla sería B3 colándose dentro de B2.
-        target = self.moves.get(updated.raw_value)
-        if target is not None:
+        rewritten_path = self._module_reference(updated.raw_value)
+        if rewritten_path is not None:
             return updated.with_changes(
-                value=f"{updated.prefix}{updated.quote}{target}{updated.quote}"
+                value=f"{updated.prefix}{updated.quote}{rewritten_path}{updated.quote}"
             )
         if DOCTEST_PROMPT not in updated.value:
             return updated
@@ -316,6 +316,31 @@ class _RewriteImports(cst.CSTTransformer):
         # por dentro, así que los escapes quedan intactos.
         rewritten = rewrite_examples(updated.value, self.rewrite_snippet)
         return updated if rewritten == updated.value else updated.with_changes(value=rewritten)
+
+    def _module_reference(self, text: str) -> str | None:
+        """La misma cadena con la ruta de módulo actualizada, o None si no lo es.
+
+        Cubre dos formas de la misma cosa. La cadena que es exactamente un
+        módulo: `stdnum/gs1_128.py` guarda las suyas en un diccionario y se las
+        pasa a `__import__`. Y la que es un módulo más un atributo suyo: pint
+        parchea con `patch("pint.compat.upcast_type_names")`, que `mock` resuelve
+        importando `pint.compat`. Las dos resuelven estáticamente, así que
+        §4.3.3 no las excluye —excluye lo indecidible— y es el criterio con el
+        que A2 ya sigue las cadenas de `__all__`.
+
+        Se exige que la cadena entera sea una cadena de identificadores con
+        puntos, y se busca el prefijo de módulo **más largo**: una frase que
+        menciona el módulo es documentación, y reescribirla sería B3 colándose
+        dentro de B2.
+        """
+        parts = text.split(".")
+        if len(parts) < 2 or not all(part.isidentifier() for part in parts):
+            return None
+        for cut in range(len(parts), 1, -1):
+            target = self.moves.get(".".join(parts[:cut]))
+            if target is not None:
+                return ".".join([target, *parts[cut:]])
+        return None
 
     def rewrite_snippet(self, code: str) -> str | None:
         """El mismo reescrito sobre un trozo suelto, o None si no cuela.

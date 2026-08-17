@@ -634,3 +634,44 @@ def test_a_stationary_submodule_is_still_reached_through_its_own_path(tmp_path: 
     ran = run_in(tmp_path, f"from pkg.{target} import run; print(run())")
     assert ran.returncode == 0, ran.stderr
     assert ran.stdout.strip() == "hola"
+
+
+def test_a_patch_target_naming_a_module_attribute_follows_the_move(tmp_path: Path):
+    """pint parchea con `@patch("pint.compat.upcast_type_names", ...)`. La cadena
+    no es el nombre de un módulo —es módulo más atributo—, así que la
+    coincidencia exacta no la ve, y `mock` la resuelve importando el módulo: sin
+    reescribir, dos tests fallan con `module 'pint' has no attribute 'compat'`.
+
+    Es una cadena con puntos que resuelve estáticamente, del mismo tipo que las
+    de `__all__` que ya sigue A2. La fase 1 la dejó como límite conocido porque
+    no aparecía en ningún finalista; con B2 sí aparece.
+    """
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "patcher.py").write_text(
+        "from unittest.mock import patch\n\n\n"
+        "def run():\n"
+        "    with patch('pkg.util.SUFFIX', '?'):\n"
+        "        from pkg import util\n"
+        "        return util.SUFFIX\n",
+        encoding="utf-8",
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+    target = result.moves["pkg.patcher"].split(".")[-1]
+
+    ran = run_in(tmp_path, f"from pkg.{target} import run; print(run())")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == "?"
+
+
+def test_a_dotted_sentence_is_not_mistaken_for_a_module_path(tmp_path: Path):
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "prose2.py").write_text(
+        "MESSAGE = 'pkg.util is gone. use something else'\n", encoding="utf-8"
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+    target = result.moves["pkg.prose2"].split(".")[-1]
+
+    kept = (tmp_path / "pkg" / f"{target}.py").read_text(encoding="utf-8")
+    assert "pkg.util is gone" in kept
