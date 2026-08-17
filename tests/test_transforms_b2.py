@@ -557,3 +557,24 @@ def test_a_directory_that_scopes_a_conftest_is_not_flattened(tmp_path: Path):
     # Y el código de verdad sí se aplana: la excepción es del alcance de pytest,
     # no una puerta abierta para todo el paquete.
     assert result.moves["pkg.es.nif"].startswith("pkg.m")
+
+
+def test_a_test_file_without_a_conftest_beside_it_stays_collectable(tmp_path: Path):
+    """Sin `conftest.py` que declare alcance, el fichero sí se aplana —y ahí es
+    donde tiene que conservar el prefijo por el que pytest lo colecta—. Si no,
+    la suite no falla: desaparece."""
+    build_forms(tmp_path)
+    inner = tmp_path / "pkg" / "checks"
+    inner.mkdir()
+    (inner / "__init__.py").write_text("", encoding="utf-8")
+    (inner / "test_nif.py").write_text(
+        "from pkg.es.nif import validate\n\n\n"
+        "def test_it():\n    assert validate(' 12 ') == '12'\n",
+        encoding="utf-8",
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert result.moves["pkg.checks.test_nif"].startswith("pkg.test_m")
+    after = run_pytest(tmp_path)
+    assert "1 passed" in after.stdout, after.stdout[-2000:]
