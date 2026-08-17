@@ -9,7 +9,7 @@ from acp.metrics import coupling, domain, readability, runtime_typing, size
 from acp.models import RepoProfile
 from acp.report import comparison_table, render_profile
 from acp.suite import run_suite_in_docker, run_suite_in_venv
-from acp.symbols import apply_renames, build_symbol_map
+from acp.symbols import apply_renames, build_symbol_map, relocate_symbols
 from acp.transforms import TRANSFORMS
 from acp.transforms.base import copy_tree
 
@@ -127,6 +127,9 @@ def transform_repo(
         result = TRANSFORMS[name](root)
         renames.update(result.renames)
 
+    # Primero los rangos del árbol que el agente va a ver, y solo después el
+    # nombre: el mapa describe el árbol transformado, no el que entró.
+    symbols = relocate_symbols(symbols, root)
     symbols = apply_renames(symbols, renames)
     # El contenido, separado del sitio donde va: `manifest` ya es la ruta.
     provenance = {

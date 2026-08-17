@@ -44,6 +44,73 @@ def test_the_manifest_records_what_was_applied(tmp_path: Path):
     assert manifest["symbols"]["pkg.core.rate"]["current_name"] == "rate"
 
 
+def build_shifted(root: Path) -> Path:
+    """Un módulo con todo lo que las transformaciones desplazan: líneas en
+    blanco (las borra A3), docstrings (las borra A4) y anotaciones (A1)."""
+    pkg = root / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "core.py").write_text(
+        "import os\n"
+        "\n"
+        "\n"
+        "def alpha(value: int) -> int:\n"
+        '    """Duplica."""\n'
+        "    return value * 2\n"
+        "\n"
+        "\n"
+        "class Widget:\n"
+        '    """Un trasto."""\n'
+        "\n"
+        "    def render(self) -> str:\n"
+        "        return str(os.sep)\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def declared_line(root: Path, location: dict) -> str:
+    """La línea del árbol transformado a la que apunta el manifiesto."""
+    lines = (root / location["path"]).read_text(encoding="utf-8").splitlines()
+    return lines[location["start"] - 1]
+
+
+def test_the_symbol_ranges_point_at_the_transformed_tree(tmp_path: Path):
+    """El mapa se publica para proyectar sobre él lo que el agente lee (§5.4.2),
+    y el agente lee el árbol transformado. A3 borra líneas en blanco y A4
+    docstrings: un rango medido sobre el original señala otra cosa, y una
+    localización falsa es peor que ninguna porque nadie la ve venir."""
+    for index, transforms in enumerate((["A3"], ["A4"], ["A1", "A4", "A3"])):
+        source = build_shifted(tmp_path / f"repo{index}")
+        destination = transform_repo(source, transforms, tmp_path / f"work{index}")
+
+        symbols = json.loads(
+            manifest_path_for(destination).read_text(encoding="utf-8")
+        )["symbols"]
+
+        assert declared_line(destination, symbols["pkg.core.alpha"]).startswith("def alpha")
+        assert declared_line(destination, symbols["pkg.core.Widget"]).startswith("class Widget")
+        assert "def render" in declared_line(destination, symbols["pkg.core.Widget.render"])
+
+
+def test_the_symbol_range_ends_where_the_definition_ends(tmp_path: Path):
+    """El rango completo, no solo su primera línea: lo que se proyecta es la
+    región, así que el final tiene que caer dentro del fichero transformado y
+    cubrir el cuerpo entero de la definición."""
+    source = build_shifted(tmp_path / "repo")
+    destination = transform_repo(source, ["A3"], tmp_path / "work")
+
+    symbols = json.loads(manifest_path_for(destination).read_text(encoding="utf-8"))["symbols"]
+    location = symbols["pkg.core.alpha"]
+    lines = (destination / location["path"]).read_text(encoding="utf-8").splitlines()
+
+    assert location["end"] <= len(lines)
+    region = lines[location["start"] - 1 : location["end"]]
+    assert any("return value" in line for line in region)
+    # El rango no puede desbordar hacia la definición siguiente: proyectar una
+    # lectura de `Widget` como si fuera de `alpha` es la misma mentira al revés.
+    assert not any("class Widget" in line for line in region)
+
+
 def test_the_transformed_tree_gains_nothing_that_the_original_did_not_have(tmp_path: Path):
     """El árbol transformado es lo que explora el agente: cualquier fichero que
     el pipeline deje dentro es material del experimento filtrado al sujeto de
