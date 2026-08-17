@@ -384,7 +384,26 @@ def resolve_locations(repo: Path, env_dir: Path | None) -> tuple[Path, Path]:
     return repo, repo.parent / f".acp-venv-{repo.name}"
 
 
-def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> SuiteMetrics:
+def _pytest_command(runner, args: list[str], install_repo: bool) -> list[str]:
+    """Comando de pytest; con el repo sin instalar, hay que encontrarlo por ruta.
+
+    Se usa `$PWD` y no `.` porque una entrada relativa de PYTHONPATH se resuelve
+    contra el directorio actual **en cada import**, y las suites cambian de
+    directorio a mitad de corrida: con `.` bastaría un `os.chdir` en un test para
+    que el resto de módulos del árbol dejaran de encontrarse.
+    """
+    command = [runner.python, "-m", "pytest", *args]
+    if install_repo:
+        return command
+    return [
+        "sh", "-lc",
+        'PYTHONPATH="$PWD" ' + " ".join(shlex.quote(part) for part in command),
+    ]
+
+
+def prepare_environment(
+    repo: Path, env_dir: Path, timeout: int = 1800, install_repo: bool = True
+) -> SuiteMetrics:
     """Crea el entorno del repo e instala lo necesario para colectar su suite.
 
     Devuelve las métricas con la parte de preparación rellena. `collect_ok` dice
@@ -402,7 +421,9 @@ def prepare_environment(repo: Path, env_dir: Path, timeout: int = 1800) -> Suite
         metrics.install_seconds = time.monotonic() - started
         return metrics
 
-    return install_and_collect(repo, VenvRunner(repo, env_dir), timeout, metrics, started)
+    return install_and_collect(
+        repo, VenvRunner(repo, env_dir), timeout, metrics, started, install_repo=install_repo
+    )
 
 
 def install_and_collect(
@@ -412,6 +433,7 @@ def install_and_collect(
     metrics: SuiteMetrics,
     started: float,
     prepare: str | None = None,
+    install_repo: bool = True,
 ) -> SuiteMetrics:
     """Instala lo que el repo declara y comprueba que su suite se colecta.
 
@@ -437,17 +459,34 @@ def install_and_collect(
     def installer(args: list[str]) -> list[str]:
         return _install_command(pip, args, pretend)
 
-    code, output, timed_out = _run(runner.wrap(installer(["-e", "."])), repo, timeout)
-    if code != 0 or timed_out:
-        metrics.install_error = f"install -e .: {output[-800:]}"
-        metrics.timed_out = timed_out
-        metrics.install_seconds = time.monotonic() - started
-        return metrics
+    if install_repo:
+        code, output, timed_out = _run(runner.wrap(installer(["-e", "."])), repo, timeout)
+        if code != 0 or timed_out:
+            metrics.install_error = f"install -e .: {output[-800:]}"
+            metrics.timed_out = timed_out
+            metrics.install_seconds = time.monotonic() - started
+            return metrics
+    else:
+        # El árbol transformado ya no encaja con lo que declara su pyproject
+        # —B2 aplana los directorios—, así que se instala lo que necesita sin
+        # instalarlo a él, y pytest lo alcanza por ruta (§5.6).
+        dependencies = declared_dependencies(repo)
+        if dependencies:
+            code, output, timed_out = _run(
+                runner.wrap([*pip, *dependencies]), repo, timeout
+            )
+            if code != 0 or timed_out:
+                metrics.install_error = f"install deps: {output[-800:]}"
+                metrics.timed_out = timed_out
+                metrics.install_seconds = time.monotonic() - started
+                return metrics
     metrics.install_ok = True
 
     _run(runner.wrap([*pip, "pytest"]), repo, timeout)
 
-    collect = runner.wrap([runner.python, "-m", "pytest", "--collect-only", "-q"])
+    collect = runner.wrap(
+        _pytest_command(runner, ["--collect-only", "-q"], install_repo)
+    )
 
     def try_collect() -> str:
         """Colecta, y si pytest rechaza flags de los addopts, instala los
@@ -465,6 +504,14 @@ def install_and_collect(
     # la colecta como señal para no instalar nada deja suites rotas por
     # dependencias que el propio repo sí declaraba.
     for strategy in install_strategies(repo):
+        # Con el repo deliberadamente sin instalar, las estrategias que lo
+        # construyen —`pip install -e '.[test]'`— no solo fallarían: si llegaran
+        # a cuajar, dejarían un finder editable con el mapa de paquetes que
+        # declara el pyproject, y ese finder va ANTES que PYTHONPATH, con lo que
+        # los imports se resolverían contra rutas que la transformación borró.
+        # Lo que traen esos extras ya lo instaló `declared_dependencies`.
+        if not install_repo and "-e" in strategy.args:
+            continue
         code, output, timed_out = _run(runner.wrap(installer(strategy.args)), repo, timeout)
         if timed_out:
             metrics.timed_out = True
@@ -501,11 +548,17 @@ def install_and_collect(
             return metrics
 
     if metrics.collect_ok:
-        metrics.tree_under_test = _restore_tree_under_test(repo, runner, pip, timeout)
-        if not metrics.tree_under_test:
-            metrics.install_error = (
-                "el árbol del repo no quedó instalado como el paquete bajo prueba"
-            )
+        if install_repo:
+            metrics.tree_under_test = _restore_tree_under_test(repo, runner, pip, timeout)
+            if not metrics.tree_under_test:
+                metrics.install_error = (
+                    "el árbol del repo no quedó instalado como el paquete bajo prueba"
+                )
+        else:
+            # No hay editable que restaurar: el árbol está bajo prueba por ruta,
+            # y ninguna dependencia puede sustituirlo por su versión de PyPI
+            # porque PYTHONPATH se mira antes que site-packages.
+            metrics.tree_under_test = True
     else:
         metrics.install_error = f"collect: {collect_output[-800:]}"
     metrics.install_seconds = time.monotonic() - started
@@ -541,6 +594,7 @@ def run_suite_in_venv(
     env_dir: Path | None = None,
     timeout: int = 3600,
     keep_env: bool = False,
+    install_repo: bool = True,
 ) -> SuiteMetrics:
     """Prepara el entorno del repo, ejecuta su suite y limpia.
 
@@ -550,8 +604,12 @@ def run_suite_in_venv(
     """
     repo, env_dir = resolve_locations(repo, env_dir)
     try:
-        metrics = prepare_environment(repo, env_dir, timeout=timeout)
-        return run_prepared_suite(repo, VenvRunner(repo, env_dir), timeout, metrics)
+        metrics = prepare_environment(
+            repo, env_dir, timeout=timeout, install_repo=install_repo
+        )
+        return run_prepared_suite(
+            repo, VenvRunner(repo, env_dir), timeout, metrics, install_repo=install_repo
+        )
     finally:
         if not keep_env and env_dir.exists():
             shutil.rmtree(env_dir, ignore_errors=True)
@@ -562,6 +620,7 @@ def run_suite_in_docker(
     image: str = DEFAULT_IMAGE,
     timeout: int = 3600,
     prepare: str | None = None,
+    install_repo: bool = True,
 ) -> SuiteMetrics:
     """Prepara y pasa la suite dentro de un contenedor, y lo destruye siempre.
 
@@ -593,8 +652,10 @@ def run_suite_in_docker(
             return metrics
 
         _run(runner.trust_command(), repo, timeout)
-        metrics = install_and_collect(repo, runner, timeout, metrics, started, prepare)
-        return run_prepared_suite(repo, runner, timeout, metrics)
+        metrics = install_and_collect(
+            repo, runner, timeout, metrics, started, prepare, install_repo=install_repo
+        )
+        return run_prepared_suite(repo, runner, timeout, metrics, install_repo=install_repo)
     finally:
         _run(runner.stop_command(), repo, timeout)
 
@@ -604,6 +665,7 @@ def run_prepared_suite(
     runner: VenvRunner | DockerRunner,
     timeout: int,
     metrics: SuiteMetrics,
+    install_repo: bool = True,
 ) -> SuiteMetrics:
     """Pasa la suite de un entorno ya preparado y conserva lo medido al prepararlo.
 
@@ -615,7 +677,7 @@ def run_prepared_suite(
         return metrics
 
     _, output, timed_out = _run(
-        runner.wrap([runner.python, "-m", "pytest", "-q"]), repo, timeout
+        runner.wrap(_pytest_command(runner, ["-q"], install_repo)), repo, timeout
     )
     if timed_out:
         metrics.timed_out = True
