@@ -108,3 +108,47 @@ def test_plain_annotations_are_clean(tmp_path):
     result = measure(tmp_path)
     assert result.uses_runtime_typing is False
     assert result.evidence == []
+
+
+def test_the_suite_is_screened_too_because_the_transforms_rewrite_it(tmp_path):
+    """El criterio de exclusión §3.2.4 existe para una sola cosa: no dejar entrar
+    un repo donde A1 no sea semánticamente equivalente. Y A1 reescribe la suite
+    del repo (§4.3.1, `iter_transformable_files`), así que un `@singledispatch`
+    que solo vive en `tests/` rompe el árbol transformado exactamente igual.
+    Cribar solo `iter_source_files` deja pasar al candidato y el fallo aparece
+    en el pre-flight §3.6.3, que es el sitio caro de descubrirlo."""
+    suite = tmp_path / "tests"
+    suite.mkdir()
+    (suite / "test_dispatch.py").write_text(
+        "from functools import singledispatch\n"
+        "\n"
+        "\n"
+        "@singledispatch\n"
+        "def render(value):\n"
+        "    return str(value)\n"
+        "\n"
+        "\n"
+        "@render.register\n"
+        "def _(value: int):\n"
+        "    return f'{value:d}'\n",
+        encoding="utf-8",
+    )
+
+    result = measure(tmp_path)
+
+    assert result.uses_runtime_typing is True
+    assert any("tests/test_dispatch.py" in item for item in result.evidence)
+
+
+def test_what_no_transform_will_ever_touch_is_not_screened(tmp_path):
+    """El criterio no puede ampliarse a todo el disco: `.venv` es la dependencia
+    ajena instalada, ninguna transformación la reescribe, y casi cualquier
+    entorno trae pydantic dentro. Excluiría a todos los candidatos por algo que
+    no es suyo."""
+    installed = tmp_path / ".venv" / "lib"
+    installed.mkdir(parents=True)
+    (installed / "m.py").write_text("from pydantic import BaseModel\n", encoding="utf-8")
+
+    result = measure(tmp_path)
+
+    assert result.uses_runtime_typing is False

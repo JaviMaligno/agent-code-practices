@@ -3,8 +3,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from acp.metrics.size import iter_source_files, parse_source
+from acp.metrics.size import parse_source
 from acp.models import RuntimeTypingMetrics
+from acp.transforms.base import iter_transformable_files
 
 # Librerías que convierten las anotaciones en comportamiento en ejecución.
 RUNTIME_TYPING_MODULES = {
@@ -26,7 +27,13 @@ def _decorator_name(node: ast.expr) -> str | None:
 def measure(root: Path) -> RuntimeTypingMetrics:
     evidence: list[str] = []
     affected: set[str] = set()
-    files = iter_source_files(root)
+    # La única métrica de la fase 0 que no perfila el repo: decide si el
+    # candidato se excluye porque A1 no sería equivalente en él (§3.2.4). Por eso
+    # criba el conjunto que las transformaciones REESCRIBEN —tests y conftest
+    # incluidos (§4.3.1)— y no el que se perfila, que los deja fuera: un
+    # `@singledispatch` en la suite rompe el árbol transformado igual que uno en
+    # el paquete, y ahí el fallo ya solo lo ve el pre-flight §3.6.3.
+    files = iter_transformable_files(root)
 
     for path in files:
         tree = parse_source(path)
