@@ -271,3 +271,62 @@ def test_b2_runs_before_b4_whatever_the_order_asked(tmp_path: Path):
 
     kept = b4_tests.kept_suite_path(destination) / "tests" / "test_nif.py"
     assert "pkg.es.nif" not in kept.read_text(encoding="utf-8")
+
+
+# --- Los doctests son suite, no prosa ---------------------------------------
+#
+# python-stdnum corre `--doctest-modules --doctest-glob="*.doctest"`: 413 de sus
+# tests viven en ficheros `.doctest` y en docstrings, y sus ejemplos importan por
+# ruta de módulo. Medido sobre el clon real, aplanar sin tocarlos deja 234 líneas
+# de ejemplo importando rutas que ya no existen.
+
+SETUP_CFG = '[tool:pytest]\naddopts = --doctest-modules --doctest-glob="*.doctest" pkg tests\n'
+
+DOCTEST_FILE = """\
+Comprobación del NIF.
+
+>>> from pkg.es.nif import validate
+>>> validate(' 12 ')
+'12'
+"""
+
+
+def build_with_doctests(root: Path) -> None:
+    build_forms(root)
+    (root / "setup.cfg").write_text(SETUP_CFG, encoding="utf-8")
+    (root / "tests").mkdir()
+    (root / "tests" / "nif.doctest").write_text(DOCTEST_FILE, encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text(
+        '"""El paquete.\n\n>>> from pkg import util\n>>> util.clean(\' 12 \')\n\'12\'\n"""\n',
+        encoding="utf-8",
+    )
+
+
+def test_a_doctest_file_keeps_importing_something_that_exists(tmp_path: Path):
+    build_with_doctests(tmp_path)
+
+    b2_hierarchy.apply(tmp_path)
+
+    ran = run_in(
+        tmp_path,
+        "import doctest, sys;"
+        "r = doctest.testfile('tests/nif.doctest', module_relative=False);"
+        "sys.exit(r.failed)",
+    )
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+
+
+def test_a_doctest_inside_a_docstring_keeps_importing_something_that_exists(tmp_path: Path):
+    """El `__init__` del paquete raíz no se mueve, pero sus ejemplos importan
+    módulos que sí: es el caso exacto de `stdnum/__init__.py`."""
+    build_with_doctests(tmp_path)
+
+    b2_hierarchy.apply(tmp_path)
+
+    ran = run_in(
+        tmp_path,
+        "import doctest, sys, pkg;"
+        "r = doctest.testmod(pkg);"
+        "sys.exit(r.failed or (r.attempted == 0))",
+    )
+    assert ran.returncode == 0, ran.stdout + ran.stderr

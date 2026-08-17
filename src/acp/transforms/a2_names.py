@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import ast
 import builtins
-import configparser
-import re
-import tomllib
 from pathlib import Path
 
 import libcst as cst
 
 from acp.metrics.size import iter_source_files, parse_source, read_source
 from acp.transforms.base import TransformResult, iter_transformable_files
+
+# La regla de qué trozo de un texto es un ejemplo de doctest, y qué ficheros los
+# ejecutan, es la misma para A2 y para B2 y por eso vive en su propio módulo.
+from acp.transforms.doctests import (
+    DOCTEST_PROMPT,
+    doctest_examples,
+    doctest_files,
+)
 
 # Las definiciones de un módulo que use cualquiera de estas salen del
 # diccionario: se alcanzan por cadena desde su propio fichero y renombrarlas
@@ -433,50 +438,6 @@ def collect_renames(root: Path) -> dict[str, str]:
     return _opaque_names(sorted(names), _identifiers(root))
 
 
-DOCTEST_PROMPT = ">>>"
-DOCTEST_CONTINUATION = "..."
-
-
-def _prompt(line: str, marker: str) -> tuple[str, str, str] | None:
-    """(sangría, prefijo hasta el prompt, código) de una línea de doctest."""
-    stripped = line.lstrip(" ")
-    if not stripped.startswith(marker):
-        return None
-    indent = line[: len(line) - len(stripped)]
-    rest = stripped[len(marker) :]
-    # `>>>x` no es un prompt: doctest exige el espacio, o nada detrás.
-    if rest and not rest.startswith(" "):
-        return None
-    return indent, indent + marker + rest[:1], rest[1:]
-
-
-def _doctest_examples(lines: list[str]) -> list[list[tuple[int, str, str]]]:
-    """Ejemplos del texto: la línea `>>>` y las continuaciones que la siguen.
-
-    Una continuación solo cuenta si va pegada al ejemplo y con su misma
-    sangría. Es lo que distingue el `...` que continúa una línea de código del
-    `...` que es la salida esperada dentro de un traceback.
-    """
-    examples: list[list[tuple[int, str, str]]] = []
-    index = 0
-    while index < len(lines):
-        opened = _prompt(lines[index], DOCTEST_PROMPT)
-        if opened is None:
-            index += 1
-            continue
-        indent, prefix, code = opened
-        block = [(index, prefix, code)]
-        index += 1
-        while index < len(lines):
-            following = _prompt(lines[index], DOCTEST_CONTINUATION)
-            if following is None or following[0] != indent:
-                break
-            block.append((index, following[1], following[2]))
-            index += 1
-        examples.append(block)
-    return examples
-
-
 def rename_in_doctests(
     text: str, renames: dict[str, str], aliases: dict[str, str], modules: set[str],
     path: Path, root: Path,
@@ -490,7 +451,7 @@ def rename_in_doctests(
     porque reescribirlas sería documentación (A4/B3) colándose dentro de A2.
     """
     lines = text.split("\n")
-    examples = _doctest_examples(lines)
+    examples = doctest_examples(lines)
     if not examples:
         return text
 
@@ -670,52 +631,6 @@ class _Rename(cst.CSTTransformer):
         # Se pregunta sobre el nodo original: los hijos ya vienen renombrados y
         # su nombre nuevo no resuelve contra nada.
         return _resolves_to_module(_dotted(node), self.aliases, self.modules)
-
-
-DOCTEST_GLOB_PATTERN = re.compile(r"--doctest-glob[=\s]+['\"]?([^'\"\s]+)")
-
-
-def _pytest_addopts(root: Path) -> str:
-    """Los `addopts` que el repo declara, mire donde mire pytest."""
-    pieces: list[str] = []
-    for name, section in (
-        ("setup.cfg", "tool:pytest"), ("pytest.ini", "pytest"), ("tox.ini", "pytest"),
-    ):
-        path = root / name
-        if not path.exists():
-            continue
-        parser = configparser.ConfigParser()
-        try:
-            parser.read_string(path.read_text(encoding="utf-8-sig", errors="replace"))
-        except (configparser.Error, OSError):
-            continue
-        pieces.append(parser.get(section, "addopts", fallback=""))
-
-    path = root / "pyproject.toml"
-    if path.exists():
-        try:
-            config = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
-        except (tomllib.TOMLDecodeError, OSError):
-            config = {}
-        raw = config.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("addopts", "")
-        pieces.append(" ".join(raw) if isinstance(raw, list) else str(raw))
-    return " ".join(pieces)
-
-
-def doctest_files(root: Path) -> list[Path]:
-    """Ficheros que no son .py y que la suite del repo ejecuta como doctests.
-
-    Se leen los `addopts` en vez de barrer todo lo que contenga un `>>>` porque
-    la diferencia importa: un README con ejemplos no lo ejecuta nadie, así que
-    reescribirlo no arregla ninguna equivalencia y sí contamina B3, que es la
-    condición sobre la documentación del repo.
-    """
-    found: list[Path] = []
-    for pattern in DOCTEST_GLOB_PATTERN.findall(_pytest_addopts(root)):
-        if pattern.endswith(".py"):
-            continue
-        found.extend(iter_transformable_files(root, pattern))
-    return sorted(set(found))
 
 
 def _restored_definition(before: cst.BaseStatement, after: cst.BaseStatement) -> cst.BaseStatement:
