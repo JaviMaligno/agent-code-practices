@@ -124,6 +124,46 @@ def test_the_readme_is_found_whatever_it_is_called(tmp_path: Path):
     assert (tmp_path / "readme-for-packagers.md").read_text(encoding="utf-8") != ""
 
 
+def test_a_readme_the_suite_asserts_on_is_left_alone(tmp_path: Path):
+    """holidays comprueba en `tests/test_docs.py` que las tablas del README
+    listan todos los países y mercados soportados. Con el README vacío
+    `tables[table_index]` es un IndexError y son tres tests menos: 7558 -> 7554
+    en la corrida real. Ahí el README no es documentación, es el contrato que la
+    suite verifica, y §4.3 manda: la dosis se declara, la equivalencia no.
+    """
+    build(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_docs.py").write_text(
+        "from pathlib import Path\n"
+        "\n"
+        "\n"
+        "def test_readme_lists_everything():\n"
+        "    assert 'demo' in Path('README.md').read_text(encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    b3_repo_docs.apply(tmp_path)
+
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "# demo\n"
+
+
+def test_the_packaging_reading_the_readme_does_not_save_it(tmp_path: Path):
+    """El `setup.py` de python-stdnum lo abre para el long_description, y eso no
+    cambia el resultado de ningún test. Si bastara con que alguien lo abriera,
+    B3 no le quitaría el README a ninguno de los cuatro repos del sustrato y la
+    celda no mediría nada.
+    """
+    build(tmp_path)
+    (tmp_path / "setup.py").write_text(
+        "with open('README.md') as fp:\n    long_description = fp.read()\n",
+        encoding="utf-8",
+    )
+
+    b3_repo_docs.apply(tmp_path)
+
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == ""
+
+
 def test_a_repo_that_publishes_its_docstrings_keeps_them(tmp_path: Path):
     """En python-stdnum la docstring de módulo no es documentación, es un dato:
     `stdnum.util.get_module_name()` la lee con `pydoc.getdoc()` para cada módulo

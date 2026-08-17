@@ -15,7 +15,11 @@ from pathlib import Path
 
 import libcst as cst
 
-from acp.metrics.size import read_source
+from acp.metrics.size import (
+    EXCLUDED_DIR_PATTERN,
+    EXCLUDED_FILE_PATTERN,
+    read_source,
+)
 from acp.transforms.base import TransformResult, iter_transformable_files
 from acp.transforms.docstrings import docstring_literal, only_doctests
 
@@ -105,11 +109,69 @@ def _reads_its_own_docstring(source: str) -> bool:
     )
 
 
+SUITE_DIRS = frozenset({"tests", "test", "testing"})
+
+
+def _is_suite_file(relative: Path) -> bool:
+    """Si el fichero es parte de la suite del repo.
+
+    Reusa los patrones de `acp.metrics.size` en vez de escribir otra idea de qué
+    es un test: si las dos definiciones se separan, B3 mide una cosa distinta de
+    la que perfilan las métricas y nadie se entera.
+    """
+    if EXCLUDED_FILE_PATTERN.match(relative.stem):
+        return True
+    return any(
+        part in SUITE_DIRS or EXCLUDED_DIR_PATTERN.match(part)
+        for part in relative.parts[:-1]
+    )
+
+
+def suite_reads_the_readme(root: Path) -> bool:
+    """Si algún fichero de la suite abre el README por su nombre.
+
+    holidays comprueba en `tests/test_docs.py` que las tablas del README listan
+    todos los países y mercados soportados: con el README vacío son tres tests
+    menos (7558 → 7554 en la corrida real). Ahí el README no es documentación,
+    es el contrato que la suite verifica.
+
+    Se mira solo la suite, no el repo entero, y la diferencia es justo la que
+    importa: el `setup.py` de python-stdnum también lee el README, pero para el
+    long_description, y eso no cambia el resultado de ningún test. Con el
+    criterio ancho —cualquiera que lo abra— B3 no le quitaría el README a
+    ninguno de los cuatro repos del sustrato y la celda no mediría nada.
+    """
+    for path in iter_transformable_files(root):
+        if not _is_suite_file(path.relative_to(root)):
+            continue
+        try:
+            tree = ast.parse(read_source(path))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and Path(node.value).stem.lower() == README_STEM
+            ):
+                return True
+    return False
+
+
 def apply(root: Path) -> TransformResult:
     changed = 0
-    for path in sorted(root.iterdir()):
-        if not path.is_file() or path.stem.lower() != README_STEM:
-            continue
+    # Si la suite lee el README, el README es contrato y no se toca: ver
+    # `suite_reads_the_readme`.
+    readmes = (
+        []
+        if suite_reads_the_readme(root)
+        else [
+            path
+            for path in sorted(root.iterdir())
+            if path.is_file() and path.stem.lower() == README_STEM
+        ]
+    )
+    for path in readmes:
         # Vaciado, no borrado. El empaquetado de los cuatro repos del sustrato
         # lee el README —python-stdnum lo abre a mano en su `setup.py`, pint,
         # sqlglot y holidays lo declaran en el `pyproject`—, y quitarle el
