@@ -140,6 +140,13 @@ def suite_reads_the_readme(root: Path) -> bool:
     long_description, y eso no cambia el resultado de ningún test. Con el
     criterio ancho —cualquiera que lo abra— B3 no le quitaría el README a
     ninguno de los cuatro repos del sustrato y la celda no mediría nada.
+
+    Detecta el nombre escrito, no todas las formas de llegar al README: el
+    cuarto test que holidays perdía, `tests/test_package.py::test_metadata`, lo
+    lee sin nombrarlo —a través de la `description` que el empaquetado saca del
+    fichero— y ahí se salvó porque otro test del mismo repo sí lo nombra. El
+    guardarraíl que sí converge es la verificación de equivalencia por repo y
+    condición, igual que con los diez casos que la fase 1 dejó abiertos.
     """
     for path in iter_transformable_files(root):
         if not _is_suite_file(path.relative_to(root)):
