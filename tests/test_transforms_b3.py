@@ -25,13 +25,40 @@ def build(root: Path) -> Path:
     return path
 
 
-def test_the_readme_and_the_docs_directory_are_gone(tmp_path: Path):
+def test_the_readme_says_nothing_and_the_docs_directory_is_gone(tmp_path: Path):
     build(tmp_path)
 
     b3_repo_docs.apply(tmp_path)
 
-    assert not (tmp_path / "README.md").exists()
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == ""
     assert not (tmp_path / "docs").exists()
+
+
+def test_the_readme_survives_as_a_file_because_the_packaging_reads_it(tmp_path: Path):
+    """python-stdnum abre `README.md` en su `setup.py` para el long_description
+    (setup.py:37), y pint, sqlglot y holidays lo declaran en el `pyproject`.
+    Borrar el fichero revienta la construcción con FileNotFoundError antes de
+    que el paquete pueda ni declarar su versión, y esa condición se leería como
+    un fracaso total del agente cuando es fontanería rota (§4.3, fase 1). Se
+    vacía: la información se va, el fichero se queda.
+    """
+    build(tmp_path)
+    (tmp_path / "setup.py").write_text(
+        "with open('README.md', 'rb') as fp:\n"
+        "    long_description = fp.read().decode('utf-8')\n"
+        "print(len(long_description))\n",
+        encoding="utf-8",
+    )
+
+    b3_repo_docs.apply(tmp_path)
+
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "setup.py"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_module_docstrings_are_gone(tmp_path: Path):

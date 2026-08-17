@@ -50,8 +50,16 @@ def apply(root: Path) -> TransformResult:
     changed = 0
     for name in README_NAMES:
         path = root / name
-        if path.exists():
-            path.unlink()
+        # Vaciado, no borrado. El empaquetado de los cuatro repos del sustrato
+        # lee el README —python-stdnum lo abre a mano en su `setup.py`, pint,
+        # sqlglot y holidays lo declaran en el `pyproject`—, y quitarle el
+        # fichero a python-stdnum revienta la construcción con FileNotFoundError
+        # antes de que pueda ni declarar su versión. Un árbol que no se instala
+        # se lee igual que un agente que fracasa (§4.3). Vaciarlo quita lo mismo
+        # —no queda nada que leer— sin tocar lo que la construcción espera, y
+        # deja la dosis idéntica en repos con empaquetados distintos.
+        if path.is_file() and path.read_bytes():
+            path.write_text("", encoding="utf-8")
             changed += 1
     for name in DOCS_DIRS:
         directory = root / name
