@@ -437,3 +437,123 @@ def test_a_multi_line_import_inside_a_doctest_is_rewritten(tmp_path: Path):
         "sys.exit(r.failed)",
     )
     assert ran.returncode == 0, ran.stdout + ran.stderr
+
+
+# --- Lo que el repo alcanza por un nombre construido en ejecución ------------
+
+
+def test_a_package_reached_by_a_computed_module_name_is_not_flattened(tmp_path: Path):
+    """python-stdnum despacha por código de país con
+    `__import__('stdnum.%s' % cc, ..., [name])`: la jerarquía de directorios *es*
+    su tabla de búsqueda. Aplanarla deja 10 tests en rojo, y no hay reescritura
+    posible porque el nombre no existe hasta que corre.
+
+    Es el mismo criterio de §4.3.3 que ya excluye de A2 los símbolos que el repo
+    alcanza por cadena, y la política que la fase 1 dejó escrita: la verificación
+    de equivalencia lo dice, se saca del diccionario lo que rompa y se declara la
+    dosis real. Aquí lo que rompe es todo el paquete, así que B2 no se aplica y
+    la celda se declara no aplicable a ese repo.
+    """
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "dispatch.py").write_text(
+        "def load(cc):\n"
+        "    return __import__('pkg.%s' % cc, globals(), locals(), ['nif'])\n",
+        encoding="utf-8",
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert result.moves == {}
+    assert (tmp_path / "pkg" / "es" / "nif.py").exists()
+
+
+def test_a_computed_import_of_someone_elses_package_changes_nothing(tmp_path: Path):
+    """pint importa clases de terceros por nombre (`import_module(module_name)`,
+    `import_module("dask.array")`). Ninguna de las dos formas dice nada sobre los
+    módulos del repo, y tratarlas como si lo dijeran dejaría a B2 sin aplicar en
+    el único finalista con jerarquía profunda."""
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "third.py").write_text(
+        "from importlib import import_module\n\n\n"
+        "def load(name):\n"
+        "    import_module('numpy.%s' % name)\n"
+        "    return import_module(name)\n",
+        encoding="utf-8",
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert result.moves["pkg.es.nif"].startswith("pkg.m")
+
+
+def test_the_reason_a_repo_is_not_flattened_can_be_asked(tmp_path: Path):
+    """La dosis real se declara con datos, no se deduce de un contador a cero:
+    un `moves` vacío tiene dos causas distintas y hay que poder distinguirlas."""
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "dispatch.py").write_text(
+        "def load(cc):\n    return __import__('pkg.%s' % cc)\n", encoding="utf-8"
+    )
+
+    assert b2_hierarchy.computed_module_prefixes(tmp_path) == {"pkg."}
+
+
+# --- Lo que pytest resuelve por nombre y por sitio ---------------------------
+#
+# pint tiene su suite DENTRO del paquete: 35 ficheros `test_*.py` y dos
+# `conftest.py`. Aplanar sin mirar eso los renombra a `mN.py`, pytest deja de
+# colectarlos y la suite entera pasa a cero tests sin que falle ninguno. Es el
+# mismo criterio con el que A2 no renombra funciones de test: pytest colecta por
+# nombre, así que ahí el nombre es comportamiento, no documentación.
+
+
+def build_suite_inside_package(root: Path) -> None:
+    build_forms(root)
+    inner = root / "pkg" / "testsuite"
+    inner.mkdir()
+    (inner / "__init__.py").write_text("", encoding="utf-8")
+    (inner / "conftest.py").write_text(
+        "import pytest\n\n\n@pytest.fixture\ndef number():\n    return ' 12 '\n",
+        encoding="utf-8",
+    )
+    (inner / "test_nif.py").write_text(
+        "from pkg.es.nif import validate\n\n\n"
+        "def test_it(number):\n    assert validate(number) == '12'\n",
+        encoding="utf-8",
+    )
+
+
+def run_pytest(root: Path):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        cwd=root, capture_output=True, text=True,
+    )
+
+
+def test_a_suite_that_lives_inside_the_package_is_still_collected(tmp_path: Path):
+    build_suite_inside_package(tmp_path)
+    before = run_pytest(tmp_path)
+    assert "1 passed" in before.stdout, before.stdout[-1500:]
+
+    b2_hierarchy.apply(tmp_path)
+
+    after = run_pytest(tmp_path)
+    assert "1 passed" in after.stdout, after.stdout[-2000:]
+
+
+def test_a_directory_that_scopes_a_conftest_is_not_flattened(tmp_path: Path):
+    """Un `conftest.py` no es un módulo cualquiera: pytest lo busca por nombre
+    exacto y su directorio es el alcance de sus fixtures. Moverlo cambia qué
+    tests lo ven; renombrarlo lo hace invisible. Las dos cosas dejan la suite en
+    rojo por fontanería, no por la transformación."""
+    build_suite_inside_package(tmp_path)
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert (tmp_path / "pkg" / "testsuite" / "conftest.py").exists()
+    assert "pkg.testsuite.conftest" not in result.moves
+    # Y el código de verdad sí se aplana: la excepción es del alcance de pytest,
+    # no una puerta abierta para todo el paquete.
+    assert result.moves["pkg.es.nif"].startswith("pkg.m")

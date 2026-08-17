@@ -56,6 +56,78 @@ def _module_name(path: Path, root: Path) -> str:
     return ".".join(parts)
 
 
+DYNAMIC_IMPORTERS = ("__import__", "import_module")
+
+
+def _literal_head(node: cst.BaseExpression) -> str | None:
+    """La parte fija de un nombre de módulo que se termina de construir al correr.
+
+    None cuando el nombre es literal entero —ahí no hay nada dinámico— o cuando
+    no se puede leer nada fijo. Una cadena vacía significa «podría ser
+    cualquiera», y eso no es evidencia de que alcance a este repo: pint importa
+    clases de terceros con `import_module(module_name)`, y tratar eso como una
+    amenaza dejaría sin aplicar B2 al único finalista con jerarquía profunda.
+    """
+    if isinstance(node, cst.BinaryOperation) and isinstance(node.left, cst.SimpleString):
+        text = node.left.raw_value
+        if isinstance(node.operator, cst.Modulo):
+            return text.split("%")[0]
+        if isinstance(node.operator, cst.Add):
+            return text
+    if (
+        isinstance(node, cst.Call)
+        and isinstance(node.func, cst.Attribute)
+        and node.func.attr.value == "format"
+        and isinstance(node.func.value, cst.SimpleString)
+    ):
+        return node.func.value.raw_value.split("{")[0]
+    if isinstance(node, cst.FormattedString):
+        head = ""
+        for part in node.parts:
+            if not isinstance(part, cst.FormattedStringText):
+                return head
+            head += part.value
+        return None
+    return None
+
+
+class _CollectComputedPrefixes(cst.CSTVisitor):
+    def __init__(self) -> None:
+        self.prefixes: set[str] = set()
+
+    def visit_Call(self, node: cst.Call) -> None:
+        name = node.func.attr.value if isinstance(node.func, cst.Attribute) else None
+        if isinstance(node.func, cst.Name):
+            name = node.func.value
+        if name not in DYNAMIC_IMPORTERS or not node.args:
+            return
+        head = _literal_head(node.args[0].value)
+        # La cadena vacía es «cualquier módulo»: sin prefijo fijo no hay nada
+        # que diga que esta llamada alcanza a este repo.
+        if head:
+            self.prefixes.add(head)
+
+
+def computed_module_prefixes(root: Path) -> set[str]:
+    """Prefijos desde los que el repo arma nombres de módulo en ejecución.
+
+    Es público a propósito: un `moves` vacío tiene dos causas —no hay un paquete
+    raíz claro, o el repo se busca a sí mismo por nombre construido— y la dosis
+    real de una condición se declara con datos, no deduciéndola de un contador
+    que marca cero.
+    """
+    found: set[str] = set()
+    for path in iter_transformable_files(root):
+        try:
+            module = cst.parse_module(read_source(path))
+        except cst.ParserSyntaxError:
+            continue
+        collector = _CollectComputedPrefixes()
+        module.visit(collector)
+        found.update(collector.prefixes)
+    return found
+
+
 def plan_moves(root: Path) -> dict[str, str]:
     """Módulo original → módulo destino, todos colgando del paquete raíz.
 
@@ -70,6 +142,16 @@ def plan_moves(root: Path) -> dict[str, str]:
     if package is None:
         return {}
 
+    # Un módulo al que el repo llega por un nombre que no existe hasta que corre
+    # no se puede mover: no hay import que reescribir, porque no hay import.
+    # python-stdnum despacha por código de país con `__import__('stdnum.%s' % cc)`
+    # y su árbol de directorios *es* la tabla de búsqueda; medido, aplanarlo deja
+    # 10 tests en rojo. Es el criterio de §4.3.3 —lo indecidible queda fuera— y
+    # la política que dejó escrita la fase 1: se saca del diccionario lo que
+    # rompa y se declara la dosis real.
+    unreachable = computed_module_prefixes(root)
+    scoped = _conftest_scopes(package)
+
     moves: dict[str, str] = {}
     index = 0
     for path in iter_transformable_files(root):
@@ -79,9 +161,41 @@ def plan_moves(root: Path) -> dict[str, str]:
         # El paquete raíz es el punto de entrada y no se toca (§5.6).
         if module == package.name:
             continue
-        moves[module] = f"{package.name}.m{index}"
+        if any(module.startswith(prefix) for prefix in unreachable):
+            continue
+        if any(directory in path.parents for directory in scoped):
+            continue
+        moves[module] = f"{package.name}.{_opaque_name(path, index)}"
         index += 1
     return moves
+
+
+def _conftest_scopes(package: Path) -> set[Path]:
+    """Directorios cuya posición es una declaración para el ejecutor de tests.
+
+    Un `conftest.py` no es un módulo cualquiera: pytest lo busca por nombre
+    exacto y su directorio decide qué tests ven sus fixtures. Moverlo cambia ese
+    alcance y renombrarlo lo hace invisible, así que ni él ni lo que cuelga de
+    su directorio se aplanan. pint tiene dos dentro del paquete.
+    """
+    return {path.parent for path in package.rglob("conftest.py")}
+
+
+def _opaque_name(path: Path, index: int) -> str:
+    """El nombre nuevo del módulo, opaco pero todavía colectable.
+
+    pint tiene sus 35 ficheros de test dentro del paquete, y pytest los colecta
+    por el prefijo del nombre: renombrarlos a `mN.py` no los esconde, los saca
+    de la suite —cero tests, ningún fallo—. Se conserva solo lo que la
+    herramienta lee, igual que A2 no renombra las funciones de test y A4 no
+    borra los comentarios que lee una herramienta. Lo que decía de qué trata el
+    fichero se pierde igual, que es la dosis de B2.
+    """
+    if path.name.startswith("test_"):
+        return f"test_m{index}"
+    if path.stem.endswith("_test"):
+        return f"m{index}_test"
+    return f"m{index}"
 
 
 def _dotted(node: cst.BaseExpression) -> str:
