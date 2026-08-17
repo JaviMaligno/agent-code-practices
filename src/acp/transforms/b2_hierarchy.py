@@ -258,9 +258,18 @@ class _RewriteImports(cst.CSTTransformer):
     dos condiciones se miden por separado y se pueden cruzar.
     """
 
-    def __init__(self, moves: dict[str, str], package: str, current: str) -> None:
+    def __init__(
+        self,
+        moves: dict[str, str],
+        package: str,
+        current: str,
+        stationary: frozenset[str] = frozenset(),
+    ) -> None:
         self.moves = moves
         self.package = package
+        # Módulos del paquete que NO se mueven: hay que poder distinguirlos de
+        # un nombre cualquiera, porque se siguen alcanzando por su ruta de antes.
+        self.stationary = stationary
         # El paquete desde el que se cuentan los puntos de un import relativo.
         self.current = current
         # Los imports relativos solo se resuelven dentro del paquete: un
@@ -316,7 +325,9 @@ class _RewriteImports(cst.CSTTransformer):
         """
         try:
             module = cst.parse_module(code)
-            return module.visit(_RewriteImports(self.moves, self.package, self.current)).code
+            return module.visit(
+                _RewriteImports(self.moves, self.package, self.current, self.stationary)
+            ).code
         except (cst.ParserSyntaxError, cst.CSTValidationError):
             return None
 
@@ -378,32 +389,42 @@ class _RewriteImports(cst.CSTTransformer):
         if isinstance(updated.names, cst.ImportStar):
             return _absolute_import_from(updated, self.moves.get(base, base))
 
-        # Un submódulo importado por su nombre deja de colgar de donde colgaba:
-        # después de aplanar cuelga del paquete raíz, así que no puede venir del
-        # mismo sitio que un nombre definido en el `__init__`.
-        moved, kept = [], []
+        # Cada nombre de la lista puede tener que venir de un sitio distinto.
+        # Un submódulo que se movió cuelga ahora del paquete raíz. Uno que NO se
+        # movió sigue colgando de su directorio, así que hay que seguir yendo a
+        # buscarlo por la ruta de antes: rebasarlo al destino del padre lo manda
+        # a buscar un submódulo dentro de un fichero plano. Y un nombre normal
+        # —algo definido en el `__init__`— viene de donde fuera ese `__init__`.
+        moved, stationary, kept = [], [], []
         for alias in updated.names:
-            target = self.moves.get(f"{base}.{alias.name.value}")
-            if target is None:
-                kept.append(alias)
-                continue
-            moved.append(
-                alias.with_changes(
-                    name=cst.Name(target.split(".")[-1]),
-                    asname=alias.asname or cst.AsName(name=cst.Name(alias.name.value)),
-                    comma=cst.MaybeSentinel.DEFAULT,
+            full = f"{base}.{alias.name.value}"
+            target = self.moves.get(full)
+            if target is not None:
+                moved.append(
+                    alias.with_changes(
+                        name=cst.Name(target.split(".")[-1]),
+                        asname=alias.asname or cst.AsName(name=cst.Name(alias.name.value)),
+                        comma=cst.MaybeSentinel.DEFAULT,
+                    )
                 )
-            )
+            elif full in self.stationary:
+                stationary.append(alias)
+            else:
+                kept.append(alias)
 
-        # Nada que reagrupar: solo cambia de dónde viene. Se dejan los nombres
+        # Nada que repartir: solo cambia de dónde viene. Se dejan los nombres
         # exactamente como estaban, comas y saltos de línea incluidos. Rehacer
         # la lista aplastaría un `from x import (\n  a,\n  b)` en una sola
         # línea, que es formato —o sea A3— colándose dentro de B2, y dentro de
         # un doctest cambiar el número de líneas invalida el ejemplo entero.
-        if not moved:
+        if not moved and not stationary:
             return _absolute_import_from(updated, self.moves.get(base, base))
 
-        statements = [_absolute_import_from(updated, self.package, moved)]
+        statements = []
+        if moved:
+            statements.append(_absolute_import_from(updated, self.package, moved))
+        if stationary:
+            statements.append(_absolute_import_from(updated, base, stationary))
         if kept:
             statements.append(_absolute_import_from(updated, self.moves.get(base, base), kept))
         if len(statements) == 1:
@@ -429,13 +450,33 @@ def _absolute_import_from(node: cst.ImportFrom, base: str, names=None) -> cst.Im
     return node.with_changes(**changes)
 
 
-def _rewrite_file(path: Path, root: Path, moves: dict[str, str], package: str) -> bool:
+def stationary_modules(root: Path, moves: dict[str, str]) -> frozenset[str]:
+    """Los módulos del repo que B2 deja donde están.
+
+    Su ruta sigue siendo la buena, así que hay que poder reconocerlos: son la
+    diferencia entre `from pkg.m2 import loader` —que busca un submódulo dentro
+    de un fichero plano— y `from pkg.deep.inner import loader`, que es donde
+    `loader` sigue estando.
+    """
+    package = _package_root(root)
+    if package is None:
+        return frozenset()
+    return frozenset(
+        _module_name(path, root)
+        for path in iter_transformable_files(root)
+        if package in path.parents and _module_name(path, root) not in moves
+    )
+
+
+def _rewrite_file(
+    path: Path, root: Path, moves: dict[str, str], package: str, stationary: frozenset[str]
+) -> bool:
     source = read_source(path)
     try:
         module = cst.parse_module(source)
     except cst.ParserSyntaxError:
         return False
-    rewriter = _RewriteImports(moves, package, _containing_package(path, root))
+    rewriter = _RewriteImports(moves, package, _containing_package(path, root), stationary)
     transformed = module.visit(rewriter).code
     if transformed == source:
         return False
@@ -494,7 +535,8 @@ def apply(root: Path) -> TransformResult:
     # ejemplo importando por ruta de módulo, o sea 234 fallos si se quedan atrás.
     changed += _rewrite_configured_paths(root, moves)
 
-    rewriter = _RewriteImports(moves, package.name, "")
+    stationary = stationary_modules(root, moves)
+    rewriter = _RewriteImports(moves, package.name, "", stationary)
     for path in doctest_files(root):
         source = read_source(path)
         # El fichero entero es texto de doctest: no hay módulo que parsear.
@@ -506,7 +548,7 @@ def apply(root: Path) -> TransformResult:
     # Alcance repo-wide, tests del repo incluidos (§4.3.1): un import sin
     # reescribir en la suite se lee como suite en rojo, o sea como fracaso.
     for path in iter_transformable_files(root):
-        if _rewrite_file(path, root, moves, package.name):
+        if _rewrite_file(path, root, moves, package.name, stationary):
             changed += 1
 
     for original, target in moves.items():

@@ -607,3 +607,30 @@ def test_a_module_that_locates_data_from_its_own_file_does_not_move(tmp_path: Pa
     ran = run_in(tmp_path, "from pkg.deep.inner.loader import data; print(data())")
     assert ran.returncode == 0, ran.stderr
     assert ran.stdout.strip() == "hola"
+
+
+def test_a_stationary_submodule_is_still_reached_through_its_own_path(tmp_path: Path):
+    """Un módulo que no se mueve —porque se localiza a sí mismo— sigue colgando
+    de su directorio, no del paquete raíz. Su padre sí se mueve, así que rebasar
+    el import al destino del padre lo manda a buscar un submódulo dentro de un
+    fichero plano. No pasa en pint ni en python-stdnum; pasaría en cuanto un repo
+    mezcle las dos cosas, y en silencio."""
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "data.txt").write_text("hola\n", encoding="utf-8")
+    inner = tmp_path / "pkg" / "deep" / "inner"
+    (inner / "loader.py").write_text(
+        "from pathlib import Path\n\n\n"
+        "def data():\n"
+        "    return (Path(__file__).parent.parent.parent / 'data.txt').read_text().strip()\n",
+        encoding="utf-8",
+    )
+    (inner / "__init__.py").write_text(
+        "from . import loader\n\n\ndef run():\n    return loader.data()\n", encoding="utf-8"
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+    target = result.moves["pkg.deep.inner"].split(".")[-1]
+
+    ran = run_in(tmp_path, f"from pkg.{target} import run; print(run())")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == "hola"
