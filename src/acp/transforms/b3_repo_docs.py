@@ -28,7 +28,28 @@ from acp.transforms.docstrings import docstring_literal, only_doctests
 # README y la celda habría medido media dosis sin que nada lo cantara. Lo que
 # lleva algo detrás —`readme-for-packagers.md`— no es el README del repo.
 README_STEM = "readme"
-DOCS_DIRS = ("docs", "doc")
+
+# Mismo criterio que el README, por la misma razón: una lista cerrada de nombres
+# exactos falla en silencio. `("docs", "doc")` en minúsculas dejaba entero el
+# directorio de un repo que lo llamara `Doc/` —como CPython— y esa media dosis
+# no la canta nadie. Los cuatro repos del sustrato lo escriben `docs`, así que
+# esto no mueve ninguna condición medida; se hace porque la dosis que se pierde
+# sin avisar es la que estropea la comparación entre celdas.
+DOCS_NAMES = frozenset({"doc", "docs"})
+
+
+def is_docs_directory(path: Path) -> bool:
+    """Si ese directorio es la documentación del repo y no parte del programa.
+
+    Un directorio con `__init__.py` es un paquete que alguien importa: es el
+    mismo reparto que hace B4 al no confundir un paquete `testing` con la suite.
+    Llevárselo no escondería documentación, cambiaría el programa, y la
+    condición se leería como un agente que fracasa en vez de como la dosis que
+    es (§4.3).
+    """
+    if path.name.lower() not in DOCS_NAMES:
+        return False
+    return not (path / "__init__.py").exists()
 
 
 class _StripModuleDocstring(cst.CSTTransformer):
@@ -190,9 +211,12 @@ def apply(root: Path) -> TransformResult:
         if path.read_bytes():
             path.write_text("", encoding="utf-8")
             changed += 1
-    for name in DOCS_DIRS:
-        directory = root / name
-        if directory.is_dir():
+    # Se recorre el directorio en vez de construir el nombre: `root / "doc"`
+    # encuentra `Doc/` en el sistema de ficheros de macOS y no dentro del
+    # contenedor Linux donde corren las condiciones, y una transformación que
+    # depende de dónde se lanza no es una condición.
+    for directory in sorted(root.iterdir()):
+        if directory.is_dir() and is_docs_directory(directory):
             shutil.rmtree(directory)
             changed += 1
 

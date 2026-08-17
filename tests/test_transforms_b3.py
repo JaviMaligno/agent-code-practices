@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 from acp.transforms import b3_repo_docs
@@ -122,6 +123,45 @@ def test_the_readme_is_found_whatever_it_is_called(tmp_path: Path):
     assert (tmp_path / "Readme.markdown").read_text(encoding="utf-8") == ""
     assert (tmp_path / "readme.rst").read_text(encoding="utf-8") == ""
     assert (tmp_path / "readme-for-packagers.md").read_text(encoding="utf-8") != ""
+
+
+def test_the_docs_directory_is_recognised_whatever_it_is_spelled(tmp_path: Path):
+    """Al README ya se le aplicó esta lección: reconocerlo por una lista cerrada
+    de nombres exactos falla en silencio. El directorio de documentación seguía
+    reconociéndose por `("docs", "doc")` en minúsculas, así que un repo con
+    `Doc/` —como CPython— conservaba entera la mitad de la dosis de B3 sin que
+    nada lo cantara. Los cuatro repos del sustrato lo escriben `docs`, o sea que
+    esto no cambia ninguna condición medida; se arregla porque la dosis perdida
+    invisible es la que estropea la comparación entre celdas.
+
+    Se comprueba la regla y no el efecto sobre el disco a propósito: el
+    sistema de ficheros de esta máquina no distingue mayúsculas, así que borrar
+    `Doc/` buscando `doc/` funciona aquí y falla dentro del contenedor, que es
+    donde corren las condiciones. Un test que pasa por el sistema de ficheros
+    del anfitrión no prueba nada de lo que se ejecuta en Linux.
+    """
+    for name in ("docs", "doc", "Doc", "DOCS", "Docs"):
+        assert b3_repo_docs.is_docs_directory(tmp_path / name), name
+    # Nombres que empiezan igual pero no son el directorio de documentación.
+    for name in ("doctors", "docs-src", "docker"):
+        assert not b3_repo_docs.is_docs_directory(tmp_path / name), name
+
+
+def test_a_python_package_called_docs_is_program_not_documentation(tmp_path: Path):
+    """Mismo reparto que B4 hace con la suite: un directorio con `__init__.py`
+    es código que alguien importa, y llevárselo cambiaría el programa en vez de
+    esconder documentación. Sin esta línea, ensanchar el reconocimiento de
+    nombres arriba habría convertido una dosis perdida en una equivalencia rota,
+    que es el error caro.
+    """
+    build(tmp_path)
+    shutil.rmtree(tmp_path / "docs")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    b3_repo_docs.apply(tmp_path)
+
+    assert (tmp_path / "docs" / "__init__.py").exists()
 
 
 def test_a_readme_the_suite_asserts_on_is_left_alone(tmp_path: Path):
