@@ -248,6 +248,39 @@ def test_a_transformed_copy_installs_without_the_git_directory(tmp_path: Path):
     assert result.passed == 1
 
 
+def test_the_pretend_version_also_reaches_the_declared_extras(tmp_path: Path):
+    """El caso de sqlglot: la instalación base ya funcionaba, pero la estrategia
+    declarada —`pip install -e '.[dev]'`— volvía a construir el proyecto sin la
+    versión, así que sus dependencias de test no llegaban y la colecta moría con
+    ModuleNotFoundError. Un arreglo a medias aquí se lee igual que ninguno."""
+    (tmp_path / "pyproject.toml").write_text(
+        PYPROJECT.replace(
+            'requires = ["setuptools"]', 'requires = ["setuptools", "setuptools-scm"]'
+        ).replace('version = "0.1.0"', 'dynamic = ["version"]')
+        + "\n[tool.setuptools_scm]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+    # El test importa algo que solo trae el extra: si la estrategia no se aplica,
+    # la colecta falla.
+    (tmp_path / "tests" / "test_ok.py").write_text(
+        "import sortedcontainers  # noqa: F401\n\n\ndef test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        (tmp_path / "pyproject.toml").read_text(encoding="utf-8").replace(
+            'test = ["pytest"]', 'test = ["pytest", "sortedcontainers"]'
+        ),
+        encoding="utf-8",
+    )
+    assert not (tmp_path / ".git").exists()
+
+    result = run_suite_in_docker(tmp_path, timeout=900)
+
+    assert result.install_strategy == "extra:test", result.install_error
+    assert result.passed == 1
+
+
 def test_a_repo_that_needs_git_to_install_still_installs(tmp_path: Path):
     """La razón por la que la imagen no puede ser `slim`: varios candidatos
     derivan su versión del repositorio en tiempo de instalación."""

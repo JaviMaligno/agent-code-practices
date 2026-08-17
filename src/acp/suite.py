@@ -228,6 +228,18 @@ def needs_pretend_version(repo: Path) -> bool:
     return False
 
 
+def _install_command(pip: list[str], args: list[str], pretend: bool) -> list[str]:
+    """Comando de instalación, con la versión fingida si el repo la necesita."""
+    command = [*pip, *args]
+    if not pretend:
+        return command
+    return [
+        "sh", "-lc",
+        f"SETUPTOOLS_SCM_PRETEND_VERSION={PRETEND_VERSION} "
+        + " ".join(shlex.quote(part) for part in command),
+    ]
+
+
 def plugins_for_unrecognised(output: str) -> list[str]:
     """Plugins de pytest que hacen falta, deducidos de los flags rechazados."""
     match = UNRECOGNISED_PATTERN.search(output)
@@ -386,18 +398,18 @@ def install_and_collect(
     # lo hace— se lee como un repo que no declara nada.
     _run(runner.wrap([*pip, "--upgrade", "pip"]), repo, timeout)
 
-    install_editable = [*pip, "-e", "."]
-    if needs_pretend_version(repo):
-        # Se pasa por entorno y no escribiendo la versión en el pyproject: tocar
-        # el pyproject cambiaría el árbol que ve el agente, y esto es fontanería
-        # del pipeline, no parte de la condición.
-        install_editable = [
-            "sh", "-lc",
-            f"SETUPTOOLS_SCM_PRETEND_VERSION={PRETEND_VERSION} "
-            + " ".join(shlex.quote(part) for part in install_editable),
-        ]
+    # Se pasa por entorno y no escribiendo la versión en el pyproject: tocar el
+    # pyproject cambiaría el árbol que ve el agente, y esto es fontanería del
+    # pipeline, no parte de la condición. Envuelve TODOS los comandos de
+    # instalación, no solo el primero: las estrategias declaradas
+    # —`pip install -e '.[dev]'`— vuelven a construir el proyecto, y con el
+    # arreglo a medias sqlglot instalaba pero se quedaba sin dependencias de test.
+    pretend = needs_pretend_version(repo)
 
-    code, output, timed_out = _run(runner.wrap(install_editable), repo, timeout)
+    def installer(args: list[str]) -> list[str]:
+        return _install_command(pip, args, pretend)
+
+    code, output, timed_out = _run(runner.wrap(installer(["-e", "."])), repo, timeout)
     if code != 0 or timed_out:
         metrics.install_error = f"install -e .: {output[-800:]}"
         metrics.timed_out = timed_out
@@ -425,7 +437,7 @@ def install_and_collect(
     # la colecta como señal para no instalar nada deja suites rotas por
     # dependencias que el propio repo sí declaraba.
     for strategy in install_strategies(repo):
-        code, output, timed_out = _run(runner.wrap([*pip, *strategy.args]), repo, timeout)
+        code, output, timed_out = _run(runner.wrap(installer(strategy.args)), repo, timeout)
         if timed_out:
             metrics.timed_out = True
             break
@@ -488,7 +500,11 @@ def _restore_tree_under_test(repo: Path, runner, pip: list[str], timeout: int) -
     """
     if _tree_is_under_test(repo, runner, timeout):
         return True
-    _run(runner.wrap([*pip, "-e", "."]), repo, timeout)
+    # Vuelve a construir el proyecto, así que necesita la versión igual que la
+    # instalación inicial: sin ella la reinstalación falla en silencio y el árbol
+    # se queda midiendo el paquete de PyPI.
+    command = _install_command(pip, ["-e", "."], needs_pretend_version(repo))
+    _run(runner.wrap(command), repo, timeout)
     return _tree_is_under_test(repo, runner, timeout)
 
 
