@@ -83,6 +83,28 @@ def test_the_visible_name_is_read_back_from_the_transformed_tree(tmp_path: Path)
     assert relocated["pkg.core.Store.info"].current_name == "info"
 
 
+def test_a_module_whose_shape_changed_is_not_paired_by_guesswork(tmp_path: Path):
+    """Casar por posición vale mientras el árbol tenga las mismas definiciones.
+    Si alguna vez una transformación quita o añade una, las hermanas siguientes
+    se corren y cada símbolo heredaría el rango de otro: exactamente la
+    localización falsa que este mapa existe para no publicar. Antes de mentir,
+    callar."""
+    original = tmp_path / "repo" / "pkg"
+    original.mkdir(parents=True)
+    (original / "core.py").write_text(
+        "def alpha(x):\n    return x\n\n\ndef beta(x):\n    return x\n", encoding="utf-8"
+    )
+    symbols = build_symbol_map(tmp_path / "repo")
+
+    transformed = tmp_path / "work" / "pkg"
+    transformed.mkdir(parents=True)
+    (transformed / "core.py").write_text("def beta(x):\n    return x\n", encoding="utf-8")
+
+    relocated = relocate_symbols(symbols, tmp_path / "work")
+
+    assert "pkg.core.alpha" not in relocated
+
+
 def test_a_symbol_nobody_renamed_keeps_its_name(tmp_path: Path):
     original = tmp_path / "repo" / "pkg"
     original.mkdir(parents=True)

@@ -54,7 +54,11 @@ def relocate_symbols(symbols: dict[str, Location], root: Path) -> dict[str, Loca
 
     Lo que no aparece en el árbol transformado se cae del mapa: un rango que no
     se puede verificar contra lo que ve el agente no es procedencia, es ruido
-    con pinta de dato.
+    con pinta de dato. Y si el módulo no tiene la misma forma en los dos árboles
+    —alguien añadió o quitó una definición— no se publica ninguno de sus
+    símbolos: las hermanas que vienen detrás se habrían corrido un puesto y cada
+    una heredaría el rango de otra, que es justo la mentira que este mapa existe
+    para no contar. Antes de mentir, callar.
     """
     current = _definitions_by_module(root)
     relocated: dict[str, Location] = {}
@@ -65,10 +69,10 @@ def relocate_symbols(symbols: dict[str, Location], root: Path) -> dict[str, Loca
             for qualified, position in _positions(list(found)).items()
         }
         positions = _positions([qualified for _, qualified in entries])
+        if set(positions.values()) != set(by_position):
+            continue
         for key, qualified in entries:
-            location = by_position.get(positions[qualified])
-            if location is None:
-                continue
+            location = by_position[positions[qualified]]
             relocated[key] = replace(
                 symbols[key],
                 path=location.path,
