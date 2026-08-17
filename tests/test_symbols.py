@@ -141,6 +141,25 @@ def test_without_a_move_a_vanished_module_still_drops_out(tmp_path: Path):
     assert relocate_symbols(symbols, after) == {}
 
 
+def test_a_move_that_lands_nowhere_does_not_fall_back_to_the_old_module(tmp_path: Path):
+    """Seguir el movimiento no puede convertirse en buscar por ahí: si el
+    destino anunciado no está en el árbol, el símbolo se calla. Un rescate por
+    el nombre viejo publicaría el rango de un fichero que el agente no ve —o
+    peor, el de un módulo homónimo que la transformación dejó atrás."""
+    original = tmp_path / "before"
+    (original / "pkg").mkdir(parents=True)
+    (original / "pkg" / "core.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    symbols = build_symbol_map(original)
+
+    # El árbol transformado conserva `pkg/core.py`, pero el movimiento dice que
+    # ese símbolo se fue a `pkg.m3`, que no existe: no hay nada que publicar.
+    after = tmp_path / "after"
+    (after / "pkg").mkdir(parents=True)
+    (after / "pkg" / "core.py").write_text("def other():\n    return 2\n", encoding="utf-8")
+
+    assert relocate_symbols(symbols, after, moves={"pkg.core": "pkg.m3"}) == {}
+
+
 def test_a_symbol_nobody_renamed_keeps_its_name(tmp_path: Path):
     original = tmp_path / "repo" / "pkg"
     original.mkdir(parents=True)
