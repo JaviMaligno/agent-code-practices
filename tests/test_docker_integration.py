@@ -359,3 +359,61 @@ def test_a_tree_without_its_suite_is_still_verifiable(tmp_path: Path):
     # El árbol del anfitrión no se toca: si la suite reapareciera aquí, B4
     # dejaría de esconder nada en la corrida siguiente.
     assert not (tmp_path / "tests").exists()
+
+
+PYPROJECT_SUITE_INSIDE = """\
+[project]
+name = "demo"
+version = "0.1.0"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["demo", "demo.testsuite"]
+"""
+
+
+def build_repo_whose_suite_lives_inside_the_package(root: Path) -> None:
+    """La forma real de pint: la suite es `pint/testsuite/`, dentro del paquete.
+
+    Ahí B4 no encuentra nada que llevarse —un directorio de tests dentro del
+    paquete lo puede importar el propio código fuente— y por eso no deja
+    directorio guardado.
+    """
+    (root / "pyproject.toml").write_text(PYPROJECT_SUITE_INSIDE, encoding="utf-8")
+    (root / "demo").mkdir()
+    (root / "demo" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "demo" / "testsuite").mkdir()
+    (root / "demo" / "testsuite" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "demo" / "testsuite" / "test_value.py").write_text(
+        "import demo\n\n\ndef test_value():\n    assert demo.VALUE == 1\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_repo_that_had_no_suite_to_hide_is_still_verifiable(tmp_path: Path):
+    """Comprobado contra pint: su suite vive dentro del paquete, así que B4 no
+    se lleva nada y no deja directorio guardado.
+
+    Quien corre la celda B4 pasa `kept_suite_path` sin poder saber si existe
+    —solo el repo lo decide—, y si una ruta ausente abortase la corrida, la
+    celda se leería como un fracaso total del agente cuando lo que pasa es que
+    aquí no había suite que esconder. Es exactamente la fontanería rota
+    disfrazada de resultado que prohíbe §5.6.
+    """
+    from acp.transforms import b4_tests
+
+    build_repo_whose_suite_lives_inside_the_package(tmp_path)
+    assert b4_tests.apply(tmp_path).files_changed == 0
+    kept = b4_tests.kept_suite_path(tmp_path)
+    assert not kept.exists()
+
+    result = run_suite_in_docker(tmp_path, timeout=900, tests_from=kept)
+
+    assert result.install_error == ""
+    assert result.passed == 1

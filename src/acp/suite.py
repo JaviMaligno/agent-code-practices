@@ -752,7 +752,17 @@ def run_suite_in_docker(
             metrics.install_seconds = time.monotonic() - started
             return metrics
 
-        if tests_from is not None:
+        # `is_dir()` y no solo `is not None`: B4 no deja directorio guardado
+        # cuando no encontró suite de raíz que esconder —la forma de pint, cuya
+        # suite vive dentro del paquete—, y quien corre la celda pasa igualmente
+        # `kept_suite_path`, porque solo el repo decide si existe. Sin este
+        # guardarraíl, `docker cp` falla con "no such file or directory" y la
+        # celda entera se lee como un fracaso total del agente cuando lo que
+        # pasa es que aquí no había nada que mover: fontanería rota disfrazada
+        # de resultado, justo lo que prohíbe §5.6. Saltárselo no puede esconder
+        # una ruta equivocada: sin la suite restaurada la colecta falla y la
+        # corrida lo dice.
+        if tests_from is not None and tests_from.is_dir():
             # Después de que el árbol esté en su sitio —si no, `docker cp` del
             # repo aplastaría lo restaurado— y antes de instalar, porque la
             # colecta tiene que encontrarla: la configuración de pytest de
