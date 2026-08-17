@@ -6,7 +6,7 @@ qué intentos de instalación tiene sentido hacer según lo que el repo declara,
 cómo distinguir "no se pudo preparar el entorno" de "la suite está en rojo".
 """
 
-from acp.suite import collection_failed, install_strategies
+from acp.suite import collection_failed, declared_dependencies, install_strategies
 
 PYPROJECT_WITH_EXTRAS = """\
 [project]
@@ -193,6 +193,51 @@ def test_dependency_groups_count_too(tmp_path):
     )
 
     assert declared_dependencies(tmp_path) == ["pytest"]
+
+
+def test_a_repo_without_pyproject_still_declares_dependencies(tmp_path):
+    """python-stdnum, que es finalista, no tiene `pyproject.toml`: lo declara
+    todo en setup.cfg. Leer solo el pyproject devuelve la lista vacía, y con el
+    repo sin instalar eso deja la suite sin sus dependencias — el fracaso de
+    fontanería que se lee como fracaso del agente que §5.6 existe para evitar.
+    """
+    (tmp_path / "setup.cfg").write_text(
+        "[metadata]\nname = demo\n\n"
+        "[options]\ninstall_requires =\n    requests>=2\n    click\n\n"
+        "[options.extras_require]\ntest =\n    pytest\n",
+        encoding="utf-8",
+    )
+
+    assert declared_dependencies(tmp_path) == ["click", "pytest", "requests>=2"]
+
+
+def test_dependencies_declared_in_setup_py_are_read_not_executed(tmp_path):
+    """Misma regla que en `install_strategies`: ejecutar el setup.py de un repo
+    de terceros para saber qué instalar destruiría el aislamiento que justifica
+    todo el ejecutor."""
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\n\n"
+        "raise SystemExit('este setup.py no se puede ejecutar')\n\n"
+        "setup(name='demo', install_requires=['requests>=2'],\n"
+        "      extras_require={'test': ['pytest']})\n",
+        encoding="utf-8",
+    )
+
+    assert declared_dependencies(tmp_path) == ["pytest", "requests>=2"]
+
+
+def test_a_repo_that_declares_no_dependencies_still_declares_none(tmp_path):
+    """La forma exacta de python-stdnum: `install_requires=[]`. Es lo que hoy
+    hace que el modo sin instalar funcione por suerte y no por diseño, así que
+    queda fijado para que el arreglo no invente dependencias donde no las hay."""
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\n\n"
+        "setup(name='demo', install_requires=[],\n"
+        "      extras_require={'SOAP': ['zeep']})\n",
+        encoding="utf-8",
+    )
+
+    assert declared_dependencies(tmp_path) == []
 
 
 def test_a_scm_versioned_repo_without_git_needs_a_pretend_version(tmp_path):

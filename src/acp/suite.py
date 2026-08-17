@@ -108,7 +108,20 @@ def declared_dependencies(repo: Path) -> list[str]:
     project = config.get("project", {})
     found = {item for item in project.get("dependencies", []) if isinstance(item, str)}
 
-    extras = project.get("optional-dependencies", {})
+    # Un repo puede no tener `pyproject.toml` en absoluto —python-stdnum, que es
+    # finalista, lo declara todo en setup.cfg—, y entonces leer solo el
+    # pyproject devuelve la lista vacía. Con el repo deliberadamente sin
+    # instalar, esa lista vacía deja la suite sin sus dependencias y la
+    # condición se lee como un fracaso del agente cuando es fontanería rota,
+    # que es exactamente lo que §5.6 manda evitar.
+    found.update(_setup_cfg_requirements(repo))
+    found.update(_setup_py_requirements(repo))
+
+    extras = {
+        **_setup_cfg_extras(repo),
+        **_setup_py_extras(repo),
+        **project.get("optional-dependencies", {}),
+    }
     for name in TEST_EXTRAS:
         found.update(item for item in extras.get(name, []) if isinstance(item, str))
 
@@ -155,8 +168,8 @@ def install_strategies(repo: Path) -> list[Strategy]:
     return strategies
 
 
-def _setup_py_extras(repo: Path) -> dict[str, list]:
-    """Nombres de extra declarados en `extras_require` dentro de setup.py.
+def _setup_py_tree(repo: Path) -> ast.AST | None:
+    """El setup.py parseado, o None si no hay o no se deja parsear.
 
     Se parsea con `ast`, no se ejecuta: correr el setup.py de un repositorio de
     terceros para averiguar qué instalar echaría abajo el aislamiento que
@@ -164,39 +177,111 @@ def _setup_py_extras(repo: Path) -> dict[str, list]:
     """
     path = repo / "setup.py"
     if not path.exists():
-        return {}
+        return None
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8-sig", errors="replace"))
+        return ast.parse(path.read_text(encoding="utf-8-sig", errors="replace"))
     except (SyntaxError, ValueError, OSError):
-        return {}
+        return None
 
+
+def _string_list(node: ast.AST) -> list[str]:
+    """Los literales de texto de una lista, ignorando lo que no lo sea.
+
+    Un `install_requires` construido con una variable o una comprensión no se
+    puede leer sin ejecutar el fichero: se devuelve lo que sí es literal en vez
+    de inventarlo o de abortar.
+    """
+    if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return []
+    return [
+        element.value
+        for element in node.elts
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    ]
+
+
+def _setup_keyword(repo: Path, name: str) -> ast.AST | None:
+    """El valor de un argumento con nombre pasado a `setup(...)`."""
+    tree = _setup_py_tree(repo)
+    if tree is None:
+        return None
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         for keyword in node.keywords:
-            if keyword.arg != "extras_require" or not isinstance(keyword.value, ast.Dict):
-                continue
-            return {
-                key.value: []
-                for key in keyword.value.keys
-                if isinstance(key, ast.Constant) and isinstance(key.value, str)
-            }
-    return {}
+            if keyword.arg == name:
+                return keyword.value
+    return None
 
 
-def _setup_cfg_extras(repo: Path) -> dict[str, list]:
-    """Nombres de extra declarados en `[options.extras_require]` de setup.cfg."""
+def _setup_py_requirements(repo: Path) -> list[str]:
+    """Dependencias de ejecución declaradas en `install_requires` del setup.py."""
+    value = _setup_keyword(repo, "install_requires")
+    return _string_list(value) if value is not None else []
+
+
+def _setup_py_extras(repo: Path) -> dict[str, list]:
+    """Extras declarados en `extras_require` dentro de setup.py, con su contenido.
+
+    Devuelve también los requisitos y no solo los nombres porque el modo sin
+    instalar el repo necesita instalarlos uno a uno: ahí no hay un
+    `pip install -e '.[test]'` que los resuelva por él.
+    """
+    value = _setup_keyword(repo, "extras_require")
+    if not isinstance(value, ast.Dict):
+        return {}
+    return {
+        key.value: _string_list(item)
+        for key, item in zip(value.keys, value.values)
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+
+
+def _cfg_lines(raw: str) -> list[str]:
+    """Los requisitos de un campo multilínea de setup.cfg, sin comentarios."""
+    found = []
+    for line in raw.splitlines():
+        item = line.split("#")[0].strip()
+        if item:
+            found.append(item)
+    return found
+
+
+def _read_setup_cfg(repo: Path) -> configparser.ConfigParser | None:
     path = repo / "setup.cfg"
     if not path.exists():
-        return {}
+        return None
     parser = configparser.ConfigParser()
     try:
         parser.read_string(path.read_text(encoding="utf-8-sig", errors="replace"))
     except (configparser.Error, OSError):
+        return None
+    return parser
+
+
+def _setup_cfg_requirements(repo: Path) -> list[str]:
+    """Dependencias de ejecución declaradas en `[options] install_requires`."""
+    parser = _read_setup_cfg(repo)
+    if parser is None:
+        return []
+    try:
+        return _cfg_lines(parser.get("options", "install_requires", fallback=""))
+    except configparser.Error:
+        return []
+
+
+def _setup_cfg_extras(repo: Path) -> dict[str, list]:
+    """Extras declarados en `[options.extras_require]` de setup.cfg, con su contenido."""
+    parser = _read_setup_cfg(repo)
+    if parser is None or not parser.has_section("options.extras_require"):
         return {}
-    if not parser.has_section("options.extras_require"):
-        return {}
-    return {name: [] for name in parser.options("options.extras_require")}
+    found = {}
+    for name in parser.options("options.extras_require"):
+        try:
+            found[name] = _cfg_lines(parser.get("options.extras_require", name, fallback=""))
+        except configparser.Error:
+            found[name] = []
+    return found
 
 
 def _tox_testenv_deps(repo: Path) -> list[str]:
