@@ -7,6 +7,7 @@ import libcst as cst
 
 from acp.metrics.size import read_source
 from acp.transforms.base import TransformResult, iter_transformable_files
+from acp.transforms.docstrings import docstring_literal, only_doctests
 
 # Comentarios que no le hablan al lector sino a una herramienta: coverage, el
 # linter, el type checker, el formateador. Quitarlos no quita una explicación,
@@ -94,10 +95,10 @@ def _without_docstring(body: cst.BaseSuite) -> cst.BaseSuite:
     if not isinstance(body, cst.IndentedBlock) or not body.body:
         return body
     first = body.body[0]
-    literal = _docstring_literal(first)
+    literal = docstring_literal(first)
     if literal is None:
         return body
-    kept = _only_doctests(literal)
+    kept = only_doctests(literal)
     if kept is not None:
         # Quedaban ejemplos: la docstring sigue ahí, sin la prosa.
         statement = first.with_changes(
@@ -110,92 +111,6 @@ def _without_docstring(body: cst.BaseSuite) -> cst.BaseSuite:
     # cabecera, de cierre, en clase y anidado). Lo que queda fijado es el
     # comportamiento —el fichero se ejecuta— y no cómo se escribe.
     return body.with_changes(body=list(body.body[1:]))
-
-
-def _docstring_literal(statement: cst.BaseStatement) -> cst.SimpleStatementLine | None:
-    """La sentencia si es una docstring, o None.
-
-    Se devuelve la sentencia entera y no la cadena porque quien llama necesita
-    reemplazarla dentro del bloque conservando su posición.
-    """
-    if (
-        isinstance(statement, cst.SimpleStatementLine)
-        and len(statement.body) == 1
-        and isinstance(statement.body[0], cst.Expr)
-        and isinstance(statement.body[0].value, cst.SimpleString)
-    ):
-        return statement
-    return None
-
-
-DOCTEST_PROMPT = ">>>"
-
-
-def _is_example_start(line: str) -> bool:
-    """Si la línea abre un ejemplo de doctest.
-
-    Misma regla de prompt que `a2_names._prompt`: `>>>x` no es un prompt porque
-    doctest exige el espacio, o nada detrás. Allí sirve para saber qué trozo del
-    ejemplo es código renombrable; aquí, para saber dónde empieza lo que no se
-    puede borrar.
-    """
-    stripped = line.lstrip(" ")
-    if not stripped.startswith(DOCTEST_PROMPT):
-        return False
-    rest = stripped[len(DOCTEST_PROMPT) :]
-    return not rest or rest.startswith(" ")
-
-
-def _example_blocks(lines: list[str]) -> list[list[str]]:
-    """Los ejemplos del texto: el `>>>`, sus continuaciones y su salida esperada.
-
-    Un ejemplo llega hasta la primera línea en blanco o hasta el final, que es
-    exactamente donde doctest da por terminada la salida esperada. Por eso la
-    prosa pegada bajo un resultado se conserva: para doctest no es prosa, es
-    parte de lo que el ejemplo espera, y quitarla haría fallar el test.
-    """
-    blocks: list[list[str]] = []
-    index = 0
-    while index < len(lines):
-        if not _is_example_start(lines[index]):
-            index += 1
-            continue
-        block = []
-        while index < len(lines) and lines[index].strip():
-            block.append(lines[index])
-            index += 1
-        blocks.append(block)
-    return blocks
-
-
-def _only_doctests(statement: cst.SimpleStatementLine) -> cst.SimpleString | None:
-    """La docstring recortada a sus ejemplos, o None si no tenía ninguno.
-
-    None significa «bórrala entera», que es el caso normal de A4. Cuando quedan
-    ejemplos se reconstruye el literal con el mismo prefijo y las mismas
-    comillas: la sangría original de cada línea viaja intacta porque doctest
-    compara la salida esperada contra el margen del `>>>`.
-    """
-    original = statement.body[0].value  # type: ignore[union-attr]
-    assert isinstance(original, cst.SimpleString)
-    lines = original.raw_value.split("\n")
-    blocks = _example_blocks(lines)
-    if not blocks:
-        return None
-    # Un ejemplo pegado a las comillas de apertura no tiene sangría propia:
-    # moverlo de línea cambiaría el margen contra el que doctest compara la
-    # salida. Es rarísimo y no vale el riesgo, así que esa docstring se queda
-    # como está.
-    if _is_example_start(lines[0]):
-        return original
-    # La última línea en blanco es la sangría de las comillas de cierre.
-    closing = lines[-1] if lines and not lines[-1].strip() else ""
-    rebuilt = "\n" + "\n\n".join("\n".join(block) for block in blocks) + "\n" + closing
-    if rebuilt == original.raw_value:
-        return original
-    return original.with_changes(
-        value=f"{original.prefix}{original.quote}{rebuilt}{original.quote}"
-    )
 
 
 def apply(root: Path) -> TransformResult:
