@@ -339,3 +339,23 @@ def test_a_repo_that_needs_git_to_install_still_installs(tmp_path: Path):
 
     assert result.install_ok is True, result.install_error
     assert result.passed == 1
+
+
+def test_a_tree_without_its_suite_is_still_verifiable(tmp_path: Path):
+    """Si esconder la suite impidiera verificar la equivalencia, B4 no sería
+    medible: los tests salen del árbol que ve el agente y siguen corriendo. La
+    suite vuelve solo dentro del contenedor, que es donde no hay agente."""
+    from acp.transforms import b4_tests
+
+    build_repo(tmp_path)
+    b4_tests.apply(tmp_path)
+    assert not (tmp_path / "tests").exists()
+
+    result = run_suite_in_docker(
+        tmp_path, timeout=900, tests_from=b4_tests.kept_suite_path(tmp_path)
+    )
+
+    assert result.passed == 1
+    # El árbol del anfitrión no se toca: si la suite reapareciera aquí, B4
+    # dejaría de esconder nada en la corrida siguiente.
+    assert not (tmp_path / "tests").exists()

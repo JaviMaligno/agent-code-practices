@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from acp.models import SuiteMetrics
-from acp.runners import DEFAULT_IMAGE, DockerRunner, VenvRunner
+from acp.runners import CONTAINER_WORKDIR, DEFAULT_IMAGE, DockerRunner, VenvRunner
 
 COUNT_PATTERN = re.compile(r"(\d+)\s+(passed|failed|errors|error|skipped)\b")
 
@@ -631,12 +631,18 @@ def run_suite_in_docker(
     timeout: int = 3600,
     prepare: str | None = None,
     install_repo: bool = True,
+    tests_from: Path | None = None,
 ) -> SuiteMetrics:
     """Prepara y pasa la suite dentro de un contenedor, y lo destruye siempre.
 
     Es el ejecutor de la campaña: aquí el aislamiento es de sistema, así que un
     repo que ensucie el entorno global no puede contaminar la corrida siguiente
     — el coste declarado del ejecutor sin contenedor (§5.6 del spec).
+
+    `tests_from` es lo que hace medible a B4: la suite que la transformación se
+    llevó fuera del árbol vuelve **solo aquí dentro**, que es donde no hay
+    agente. El árbol del anfitrión no se toca, así que la condición sigue siendo
+    la misma después de verificarla (§4.2).
     """
     repo, _ = resolve_locations(repo, None)
     runner = DockerRunner(repo=repo, image=image)
@@ -660,6 +666,24 @@ def run_suite_in_docker(
             metrics.timed_out = timed_out
             metrics.install_seconds = time.monotonic() - started
             return metrics
+
+        if tests_from is not None:
+            # Después de que el árbol esté en su sitio —si no, `docker cp` del
+            # repo aplastaría lo restaurado— y antes de instalar, porque la
+            # colecta tiene que encontrarla: la configuración de pytest de
+            # varios repos nombra `tests` como ruta, y sin restaurar la suite
+            # pytest aborta antes de colectar nada.
+            code, output, timed_out = _run(
+                ["docker", "cp", f"{tests_from}/.", f"{runner.container}:{CONTAINER_WORKDIR}"],
+                repo, timeout,
+            )
+            if code != 0 or timed_out:
+                # Sin la suite restaurada no hay nada que verificar, y una
+                # corrida sin tests se lee igual que una suite en rojo.
+                metrics.install_error = f"docker cp tests: {output[-800:]}"
+                metrics.timed_out = timed_out
+                metrics.install_seconds = time.monotonic() - started
+                return metrics
 
         _run(runner.trust_command(), repo, timeout)
         metrics = install_and_collect(
