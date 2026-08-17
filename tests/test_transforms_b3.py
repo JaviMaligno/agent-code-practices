@@ -105,6 +105,66 @@ def test_a_doctest_in_a_module_docstring_survives(tmp_path: Path):
     assert ">>> 1 + 1" in path.read_text(encoding="utf-8")
 
 
+def test_a_repo_that_publishes_its_docstrings_keeps_them(tmp_path: Path):
+    """En python-stdnum la docstring de módulo no es documentación, es un dato:
+    `stdnum.util.get_module_name()` la lee con `pydoc.getdoc()` para cada módulo
+    de número y la publica, y su suite lo comprueba (`tests/test_util.doctest`).
+    Borrarlas deja 412 de 413 tests y la cobertura por debajo del 100% exigido.
+    Mismo reparto que en A4 con los doctests: lo que el programa lee no es
+    documentación, así que se queda y la dosis real se declara.
+    """
+    path = build(tmp_path)
+    (tmp_path / "pkg" / "util.py").write_text(
+        "import pydoc\n"
+        "\n"
+        "\n"
+        "def name_of(module):\n"
+        "    return pydoc.splitdoc(pydoc.getdoc(module))[0]\n",
+        encoding="utf-8",
+    )
+
+    b3_repo_docs.apply(tmp_path)
+
+    assert "Validación de identificadores" in path.read_text(encoding="utf-8")
+    # El resto de B3 sí corre: lo que se declara es la dosis, no la condición.
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == ""
+    assert not (tmp_path / "docs").exists()
+
+
+def test_a_module_that_reads_its_own_docstring_keeps_it(tmp_path: Path):
+    """`tests/leakcheck.py` de sqlglot hace `__doc__.splitlines()[0]`: sin
+    docstring eso es un AttributeError sobre None. Es el mismo caso que el de
+    arriba, pero se ve fichero a fichero, así que solo cuesta esa docstring.
+    """
+    build(tmp_path)
+    reader = tmp_path / "pkg" / "script.py"
+    reader.write_text(
+        '"""Se lee a sí mismo."""\n\nSUBJECT = __doc__.splitlines()[0]\n', encoding="utf-8"
+    )
+    other = tmp_path / "pkg" / "plain.py"
+    other.write_text('"""Nadie me lee."""\n\nVALUE = 1\n', encoding="utf-8")
+
+    b3_repo_docs.apply(tmp_path)
+
+    assert "Se lee a sí mismo" in reader.read_text(encoding="utf-8")
+    assert "Nadie me lee" not in other.read_text(encoding="utf-8")
+
+
+def test_reading_a_class_docstring_is_not_reading_a_module_docstring(tmp_path: Path):
+    """holidays lee `cls.__doc__` en sus scripts de l10n. Eso es asunto de A4:
+    ensanchar la excepción a cualquier `__doc__` dejaría a B3 sin la mitad de su
+    dosis en un repo donde nadie lee la docstring de un módulo.
+    """
+    path = build(tmp_path)
+    (tmp_path / "pkg" / "l10n.py").write_text(
+        "def describe(cls):\n    return cls.__doc__ or ''\n", encoding="utf-8"
+    )
+
+    b3_repo_docs.apply(tmp_path)
+
+    assert "Validación de identificadores" not in path.read_text(encoding="utf-8")
+
+
 def test_b3_is_registered_as_a_transformation():
     """La condición se pide por su identificador del spec (§4.2): sin registro,
     B3 existe pero la campaña no puede lanzarla."""
