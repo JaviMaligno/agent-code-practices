@@ -156,6 +156,45 @@ def test_setup_py_that_cannot_be_parsed_does_not_crash_the_profiler(tmp_path):
     assert install_strategies(tmp_path) == []
 
 
+def test_declared_dependencies_are_read_without_installing_the_project(tmp_path):
+    """Aplanar la jerarquía invalida una instalación editable (§5.6), así que
+    hace falta poder instalar lo que el repo necesita sin instalarlo a él."""
+    from acp.suite import declared_dependencies
+
+    write_pyproject(
+        tmp_path,
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        'dependencies = ["requests>=2", "click"]\n\n'
+        '[project.optional-dependencies]\ntest = ["pytest", "hypothesis"]\n',
+    )
+
+    assert declared_dependencies(tmp_path) == ["click", "hypothesis", "pytest", "requests>=2"]
+
+
+def test_only_test_extras_count_as_dependencies(tmp_path):
+    from acp.suite import declared_dependencies
+
+    write_pyproject(
+        tmp_path,
+        '[project]\nname = "demo"\nversion = "0.1.0"\ndependencies = ["click"]\n\n'
+        '[project.optional-dependencies]\ndocs = ["sphinx"]\n',
+    )
+
+    assert declared_dependencies(tmp_path) == ["click"]
+
+
+def test_dependency_groups_count_too(tmp_path):
+    from acp.suite import declared_dependencies
+
+    write_pyproject(
+        tmp_path,
+        '[project]\nname = "demo"\nversion = "0.1.0"\n\n'
+        '[dependency-groups]\ntest = ["pytest"]\n',
+    )
+
+    assert declared_dependencies(tmp_path) == ["pytest"]
+
+
 def test_a_scm_versioned_repo_without_git_needs_a_pretend_version(tmp_path):
     """El árbol transformado no lleva `.git` —copiarlo le daría al agente el
     historial, y con él el código sin transformar—, pero sqlglot, pint,

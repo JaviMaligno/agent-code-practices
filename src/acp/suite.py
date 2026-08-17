@@ -93,6 +93,34 @@ def _read_pyproject(repo: Path) -> dict:
         return {}
 
 
+def declared_dependencies(repo: Path) -> list[str]:
+    """Lo que el repo necesita para correr su suite, sin instalarlo a él.
+
+    Se usa cuando la transformación ha destruido la estructura que el
+    `pyproject` declara —B2 aplana los directorios— y una instalación editable
+    ya no encontraría sus paquetes. El árbol se pone al alcance de pytest por
+    ruta, así que ninguna transformación puede invalidar el entorno (§5.6).
+
+    Se ordena el resultado porque la condición tiene que ser reproducible: dos
+    corridas de la misma celda deben instalar lo mismo en el mismo orden.
+    """
+    config = _read_pyproject(repo)
+    project = config.get("project", {})
+    found = {item for item in project.get("dependencies", []) if isinstance(item, str)}
+
+    extras = project.get("optional-dependencies", {})
+    for name in TEST_EXTRAS:
+        found.update(item for item in extras.get(name, []) if isinstance(item, str))
+
+    groups = config.get("dependency-groups", {})
+    for name in TEST_EXTRAS:
+        # Un grupo puede incluir a otro con `{include-group = "..."}`, que no es
+        # un requisito instalable: se descarta en vez de romper el pip.
+        found.update(item for item in groups.get(name, []) if isinstance(item, str))
+
+    return sorted(found)
+
+
 def install_strategies(repo: Path) -> list[Strategy]:
     """Intentos de instalación ordenados, derivados de lo que el repo declara.
 
