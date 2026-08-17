@@ -222,6 +222,36 @@ def shout(word):
     assert (results.attempted, results.failed) == (1, 0)
 
 
+def test_a_comment_that_a_tool_reads_is_not_prose(tmp_path: Path):
+    """`# pragma: no cover`, `# noqa` y `# type: ignore` no le explican nada a
+    quien lee: le hablan a coverage, al linter y al type checker. python-stdnum
+    tiene 29 pragmas y `fail_under = 100` en su setup.cfg, así que borrarlos
+    pone su suite en rojo sin que falle un solo test — el agente vería rojo en
+    las dos condiciones de la celda A4 sin haber tocado nada."""
+    path = write(
+        tmp_path,
+        "from typing import TYPE_CHECKING\n"
+        "import os  # noqa: F401\n"
+        "\n"
+        "if TYPE_CHECKING:  # pragma: no cover\n"
+        "    import sys\n"
+        "\n"
+        "\n"
+        "def rate(value):\n"
+        "    # la regla viene de la norma\n"
+        "    total = value * 2  # type: ignore[assignment]\n"
+        "    return total\n",
+    )
+
+    a4_docs.apply(tmp_path)
+
+    result = path.read_text(encoding="utf-8")
+    assert "import os  # noqa: F401" in result
+    assert "if TYPE_CHECKING:  # pragma: no cover" in result
+    assert "total = value * 2  # type: ignore[assignment]" in result
+    assert "# la regla viene de la norma" not in result
+
+
 def test_it_reports_how_many_files_changed(tmp_path: Path):
     write(tmp_path)
     (tmp_path / "pkg" / "sin_docs.py").write_text("x = 1\n", encoding="utf-8")

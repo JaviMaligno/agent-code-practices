@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import libcst as cst
 
 from acp.metrics.size import read_source
 from acp.transforms.base import TransformResult, iter_transformable_files
+
+# Comentarios que no le hablan al lector sino a una herramienta: coverage, el
+# linter, el type checker, el formateador. Quitarlos no quita una explicación,
+# cambia lo que hace la cadena de herramientas del repo; en python-stdnum, con
+# `fail_under = 100`, borrar sus 29 `# pragma: no cover` tira la suite entera
+# sin que falle un test. La lista peca de conservadora a propósito: dejar de más
+# cuesta un poco de dosis, dejar de menos cuesta la equivalencia (§4.3).
+DIRECTIVE_COMMENT = re.compile(
+    r"#\s*(noqa|type\s*:|pragma\s*:|pylint\s*:|mypy\s*:|pyright\s*:|flake8\s*:"
+    r"|ruff\s*:|isort\s*:|fmt\s*:|yapf|nosec|nocov|coverage\s*:)",
+    re.IGNORECASE,
+)
+
+
+def _is_directive(comment: cst.Comment | None) -> bool:
+    return comment is not None and DIRECTIVE_COMMENT.match(comment.value) is not None
 
 
 class _StripDocs(cst.CSTTransformer):
@@ -22,11 +39,16 @@ class _StripDocs(cst.CSTTransformer):
     prosa que explica— y lo que deja es lo ejecutable.
     """
 
-    def leave_Comment(self, original: cst.Comment, updated: cst.Comment) -> cst.RemovalSentinel:
+    def leave_Comment(self, original: cst.Comment, updated: cst.Comment):
+        if _is_directive(updated):
+            return updated
         return cst.RemoveFromParent()
 
     def leave_TrailingWhitespace(self, original, updated):
-        if original.comment is None:
+        # `updated.comment`, no `original.comment`: si el comentario se conservó
+        # sigue ahí, y pegarlo al código (`import os# noqa`) es un cambio de
+        # formato que el linter del repo canta como error.
+        if updated.comment is not None or original.comment is None:
             return updated
         # El comentario ya se fue, pero los espacios que lo separaban del código
         # se quedan al final de la línea. Trailing whitespace es formato (A3):
@@ -35,7 +57,9 @@ class _StripDocs(cst.CSTTransformer):
         return updated.with_changes(whitespace=cst.SimpleWhitespace(""))
 
     def leave_EmptyLine(self, original, updated):
-        if original.comment is None:
+        # Igual que arriba: una directiva en su propia línea conserva su sangría,
+        # porque `# fmt: off` o `# type: ignore` sueltos se leen por posición.
+        if updated.comment is not None or original.comment is None:
             return updated
         # Una línea de comentario se queda en blanco en vez de desaparecer, para
         # no desplazar los rangos de línea del mapa de símbolos. En blanco de
