@@ -90,6 +90,25 @@ def test_the_kept_suite_mirrors_the_tree_so_it_can_be_put_back(tmp_path: Path):
     ]
 
 
+def test_the_kept_suite_keeps_files_that_are_not_python(tmp_path: Path):
+    """Comprobado contra python-stdnum: de los 170 ficheros de su suite, **ni
+    uno solo es `.py`** —169 son `.doctest` y uno es un `.dat` binario—, así que
+    una B4 que moviera solo módulos de Python se llevaría un directorio vacío y
+    dejaría la suite entera sin restaurar. Nada lo pinchaba: el test del espejo
+    compara nombres de ruta sobre un fixture que solo tiene `.py`.
+    """
+    root = tmp_path / "work"
+    build(root)
+    (root / "tests" / "test_nif.doctest").write_text(">>> 1 + 1\n2\n", encoding="utf-8")
+    (root / "tests" / "numdb-test.dat").write_bytes(b"\x00\x01binario\xff")
+
+    b4_tests.apply(root)
+
+    kept = b4_tests.kept_suite_path(root) / "tests"
+    assert kept.joinpath("test_nif.doctest").read_text(encoding="utf-8") == ">>> 1 + 1\n2\n"
+    assert kept.joinpath("numdb-test.dat").read_bytes() == b"\x00\x01binario\xff"
+
+
 def test_a_repo_without_a_suite_keeps_nothing(tmp_path: Path):
     """Un directorio guardado vacío es peor que ninguno: la verificación lo
     volcaría sin restaurar nada y la corrida se leería como una suite que no
