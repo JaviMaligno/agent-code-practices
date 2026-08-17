@@ -156,6 +156,58 @@ def test_setup_py_that_cannot_be_parsed_does_not_crash_the_profiler(tmp_path):
     assert install_strategies(tmp_path) == []
 
 
+def test_a_scm_versioned_repo_without_git_needs_a_pretend_version(tmp_path):
+    """El árbol transformado no lleva `.git` —copiarlo le daría al agente el
+    historial, y con él el código sin transformar—, pero sqlglot, pint,
+    jsonschema y dateutil derivan su versión del repositorio: sin `.git`,
+    `pip install -e .` aborta y TODAS sus condiciones, T0 incluida, salen NO
+    EVALUABLE."""
+    from acp.suite import needs_pretend_version
+
+    write_pyproject(
+        tmp_path,
+        '[project]\nname = "demo"\ndynamic = ["version"]\n\n'
+        '[build-system]\nrequires = ["setuptools", "setuptools-scm"]\n\n'
+        "[tool.setuptools_scm]\n",
+    )
+
+    assert needs_pretend_version(tmp_path) is True
+
+
+def test_a_repo_that_still_has_its_git_directory_does_not(tmp_path):
+    """Con `.git` presente setuptools-scm deriva la versión de verdad, y fijarla
+    a mano daría una distinta de la del árbol original."""
+    from acp.suite import needs_pretend_version
+
+    write_pyproject(
+        tmp_path,
+        '[project]\nname = "demo"\ndynamic = ["version"]\n\n[tool.setuptools_scm]\n',
+    )
+    (tmp_path / ".git").mkdir()
+
+    assert needs_pretend_version(tmp_path) is False
+
+
+def test_a_repo_with_a_static_version_does_not(tmp_path):
+    from acp.suite import needs_pretend_version
+
+    write_pyproject(tmp_path, PYPROJECT_BARE)
+
+    assert needs_pretend_version(tmp_path) is False
+
+
+def test_use_scm_version_in_setup_py_counts_too(tmp_path):
+    """El estilo antiguo: `setup(use_scm_version=True)` sin nada en pyproject."""
+    from acp.suite import needs_pretend_version
+
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\n\nsetup(name='demo', use_scm_version=True)\n",
+        encoding="utf-8",
+    )
+
+    assert needs_pretend_version(tmp_path) is True
+
+
 def test_broken_pyproject_does_not_crash_the_profiler(tmp_path):
     write_pyproject(tmp_path, "[project\nname = broken")
 

@@ -21,6 +21,7 @@ import ast
 import configparser
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -194,6 +195,39 @@ def _tox_testenv_deps(repo: Path) -> list[str]:
     return deps
 
 
+# Versión que se le da a un repo que ya no puede derivarla de su repositorio.
+# El valor da igual mientras sea válido: ninguna métrica del experimento lo usa,
+# y lo que se compara entre condiciones es el resultado de la suite.
+PRETEND_VERSION = "0.0.0"
+
+
+def needs_pretend_version(repo: Path) -> bool:
+    """Si hay que decirle su versión porque ya no puede deducirla.
+
+    El árbol transformado se copia sin `.git` a propósito: llevarlo dentro le
+    daría al agente el historial del repositorio y, con `git checkout .`, el
+    código sin transformar — todas las condiciones se volverían T0. Pero varios
+    candidatos derivan su versión del repositorio al instalarse, y sin `.git`
+    `pip install -e .` aborta, con lo que hasta la baseline saldría NO EVALUABLE.
+    """
+    if (repo / ".git").exists():
+        return False
+    config = _read_pyproject(repo)
+    if "setuptools_scm" in config.get("tool", {}):
+        return True
+    if any(
+        "setuptools" in requirement and "scm" in requirement
+        for requirement in config.get("build-system", {}).get("requires", [])
+    ):
+        return True
+    setup_py = repo / "setup.py"
+    if setup_py.exists():
+        text = setup_py.read_text(encoding="utf-8-sig", errors="replace")
+        if "use_scm_version" in text:
+            return True
+    return False
+
+
 def plugins_for_unrecognised(output: str) -> list[str]:
     """Plugins de pytest que hacen falta, deducidos de los flags rechazados."""
     match = UNRECOGNISED_PATTERN.search(output)
@@ -352,7 +386,18 @@ def install_and_collect(
     # lo hace— se lee como un repo que no declara nada.
     _run(runner.wrap([*pip, "--upgrade", "pip"]), repo, timeout)
 
-    code, output, timed_out = _run(runner.wrap([*pip, "-e", "."]), repo, timeout)
+    install_editable = [*pip, "-e", "."]
+    if needs_pretend_version(repo):
+        # Se pasa por entorno y no escribiendo la versión en el pyproject: tocar
+        # el pyproject cambiaría el árbol que ve el agente, y esto es fontanería
+        # del pipeline, no parte de la condición.
+        install_editable = [
+            "sh", "-lc",
+            f"SETUPTOOLS_SCM_PRETEND_VERSION={PRETEND_VERSION} "
+            + " ".join(shlex.quote(part) for part in install_editable),
+        ]
+
+    code, output, timed_out = _run(runner.wrap(install_editable), repo, timeout)
     if code != 0 or timed_out:
         metrics.install_error = f"install -e .: {output[-800:]}"
         metrics.timed_out = timed_out

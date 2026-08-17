@@ -224,6 +224,30 @@ def test_a_build_step_that_fails_is_recorded(tmp_path: Path):
     assert result.prepare_command == "python no_existe.py"
 
 
+def test_a_transformed_copy_installs_without_the_git_directory(tmp_path: Path):
+    """Es la forma exacta que produce `copy_tree`: el árbol transformado nunca
+    lleva `.git`, porque dárselo al agente le dejaría recuperar el código sin
+    transformar con un `git checkout .`. Pero sqlglot, pint, jsonschema y
+    dateutil derivan su versión del repositorio, y sin `.git` no se instalan:
+    verificado sobre sqlglot, donde hasta una copia SIN transformar nada fallaba
+    y dejaba todas sus condiciones —T0 incluida— en NO EVALUABLE.
+    """
+    build_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        PYPROJECT.replace(
+            'requires = ["setuptools"]', 'requires = ["setuptools", "setuptools-scm"]'
+        ).replace('version = "0.1.0"', 'dynamic = ["version"]')
+        + "\n[tool.setuptools_scm]\n",
+        encoding="utf-8",
+    )
+    assert not (tmp_path / ".git").exists()
+
+    result = run_suite_in_docker(tmp_path, timeout=900)
+
+    assert result.install_ok is True, result.install_error
+    assert result.passed == 1
+
+
 def test_a_repo_that_needs_git_to_install_still_installs(tmp_path: Path):
     """La razón por la que la imagen no puede ser `slim`: varios candidatos
     derivan su versión del repositorio en tiempo de instalación."""
