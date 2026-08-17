@@ -165,9 +165,32 @@ def plan_moves(root: Path) -> dict[str, str]:
             continue
         if any(directory in path.parents for directory in scoped):
             continue
+        if _locates_itself(path):
+            continue
         moves[module] = f"{package.name}.{_opaque_name(path, index)}"
         index += 1
     return moves
+
+
+# Lo que un módulo usa para saber dónde está él mismo. `__name__` no entra: casi
+# siempre es identidad —el nombre del logger— y excluir por él dejaría a B2 sin
+# aplicar en casi todo el árbol.
+SELF_LOCATING = ("__file__", "__package__")
+
+
+def _locates_itself(path: Path) -> bool:
+    """Si el módulo resuelve rutas contando desde su propia posición.
+
+    pint carga su registro de unidades con
+    `Path(__file__).parent.parent.parent / "default_en.txt"`: los tres saltos son
+    la profundidad del fichero, o sea justo lo que B2 cambia. Movido a la raíz
+    del paquete, la cuenta se sale del árbol. Medido sobre el clon: 2.024 tests
+    pasan a 623 con 1.289 errores, todos de ahí. Ajustar los saltos sería
+    adivinar —hay muchas formas de escribir esa cuenta y equivocarse rompe en
+    silencio—, así que el módulo se queda donde está y se declara la dosis.
+    """
+    source = read_source(path)
+    return any(marker in source for marker in SELF_LOCATING)
 
 
 def _conftest_scopes(package: Path) -> set[Path]:

@@ -578,3 +578,32 @@ def test_a_test_file_without_a_conftest_beside_it_stays_collectable(tmp_path: Pa
     assert result.moves["pkg.checks.test_nif"].startswith("pkg.test_m")
     after = run_pytest(tmp_path)
     assert "1 passed" in after.stdout, after.stdout[-2000:]
+
+
+def test_a_module_that_locates_data_from_its_own_file_does_not_move(tmp_path: Path):
+    """pint carga su registro de unidades con
+    `Path(__file__).parent.parent.parent / "default_en.txt"`: la profundidad del
+    fichero es parte del programa. Movido a la raíz del paquete, esa cuenta de
+    saltos se sale del árbol y busca en `/default_en.txt`. Medido sobre el clon
+    real: 2.024 tests pasan a 623, con 1.289 errores, todos del mismo sitio.
+
+    Un módulo así no se mueve. Es lo mismo que hace §4.3.3 con lo que no resuelve
+    estáticamente: aquí la ruta sí se lee, pero depende de dónde está el fichero,
+    y eso es exactamente lo que B2 cambia.
+    """
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "data.txt").write_text("hola\n", encoding="utf-8")
+    inner = tmp_path / "pkg" / "deep" / "inner"
+    (inner / "loader.py").write_text(
+        "from pathlib import Path\n\n\n"
+        "def data():\n"
+        "    return (Path(__file__).parent.parent.parent / 'data.txt').read_text().strip()\n",
+        encoding="utf-8",
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert "pkg.deep.inner.loader" not in result.moves
+    ran = run_in(tmp_path, "from pkg.deep.inner.loader import data; print(data())")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == "hola"
