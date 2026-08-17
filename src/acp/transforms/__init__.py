@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from acp.transforms import a1_types, a2_names, a3_format, a4_docs
+from acp.transforms import a1_types, a2_names, a3_format, a4_docs, b3_repo_docs
 from acp.transforms.base import TransformResult
 
 TRANSFORMS: dict[str, Callable[[Path], TransformResult]] = {
@@ -11,4 +11,5 @@ TRANSFORMS: dict[str, Callable[[Path], TransformResult]] = {
     "A2": a2_names.apply,
     "A3": a3_format.apply,
     "A4": a4_docs.apply,
+    "B3": b3_repo_docs.apply,
 }
