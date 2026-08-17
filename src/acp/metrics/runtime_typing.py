@@ -11,6 +11,13 @@ from acp.transforms.base import iter_transformable_files
 RUNTIME_TYPING_MODULES = {
     "pydantic", "attrs", "attr", "marshmallow", "cattrs", "typeguard",
     "beartype", "trafaret", "schematics", "msgspec", "typedload",
+    # Estas no validan: DERIVAN la interfaz de la firma. La anotación de un
+    # parámetro es el tipo de un argumento de CLI (typer), el contrato de una
+    # petición (fastapi) o un campo del esquema GraphQL (strawberry), así que
+    # quitarla no relaja una comprobación: cambia qué acepta el programa.
+    "fastapi", "typer", "strawberry",
+    # pydantic entrando por otro nombre: un fichero puede importar solo estos.
+    "sqlmodel", "pydantic_settings",
 }
 RUNTIME_TYPING_CALLS = {"get_type_hints", "validate_arguments", "validate_call"}
 # Stdlib, así que ningún import de tercero los delata: `register` elige la

@@ -152,3 +152,46 @@ def test_what_no_transform_will_ever_touch_is_not_screened(tmp_path):
     result = measure(tmp_path)
 
     assert result.uses_runtime_typing is False
+
+
+def test_flags_a_cli_whose_arguments_are_the_annotations(tmp_path):
+    """Typer no valida: CONSTRUYE la interfaz leyendo la firma. Quitar `count:
+    int` no relaja una comprobación, cambia qué acepta el programa, y en
+    `Annotated[str, typer.Option(...)]` se lleva la opción entera. Es el mismo
+    caso que pydantic para el criterio §3.2.4, solo que con otro import."""
+    write(
+        tmp_path,
+        "import typer\n"
+        "\n"
+        "app = typer.Typer()\n"
+        "\n"
+        "\n"
+        "@app.command()\n"
+        "def main(name: str, count: int = 1):\n"
+        "    print(name * count)\n",
+    )
+
+    result = measure(tmp_path)
+
+    assert result.uses_runtime_typing is True
+    assert any("typer" in item for item in result.evidence)
+
+
+def test_flags_a_route_whose_contract_is_the_annotations(tmp_path):
+    """En FastAPI la anotación del parámetro es el contrato de la petición: sin
+    ella el endpoint deja de parsear el cuerpo y responde otra cosa."""
+    write(
+        tmp_path,
+        "from fastapi import FastAPI\n"
+        "\n"
+        "app = FastAPI()\n"
+        "\n"
+        "\n"
+        "@app.get('/items/{item_id}')\n"
+        "def read(item_id: int):\n"
+        "    return item_id\n",
+    )
+
+    result = measure(tmp_path)
+
+    assert result.uses_runtime_typing is True
