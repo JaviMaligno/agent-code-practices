@@ -49,13 +49,20 @@ def profile_repo(
     return profile
 
 
-# A3 va la última porque es la única que otra puede deshacer: A1 y A2
-# reconstruyen nodos (`x: int = 1` sale de A1 como una asignación nueva) y LibCST
-# los escribe con el espaciado por defecto, así que cualquier cosa que corra
-# después de A3 devuelve parte del formato que A3 había quitado. El resto del
-# orden se fija por reproducibilidad: la condición tiene que ser la misma
+# A3 va la última de la familia A porque es la única que otra puede deshacer: A1
+# y A2 reconstruyen nodos (`x: int = 1` sale de A1 como una asignación nueva) y
+# LibCST los escribe con el espaciado por defecto, así que cualquier cosa que
+# corra después de A3 devuelve parte del formato que A3 había quitado. El resto
+# del orden se fija por reproducibilidad: la condición tiene que ser la misma
 # aunque los flags lleguen en otro orden.
-CANONICAL_ORDER = ("A1", "A2", "A4", "A3")
+#
+# B3 antes que B4 por una dependencia real, no por gusto: B3 mira la suite para
+# decidir si el README es contrato del repo —holidays verifica en sus tests que
+# las tablas del README están completas— y B4 se lleva la suite fuera del árbol.
+# Al revés, B3 no encuentra ningún test, vacía un README que la suite comprueba,
+# y el fallo aparece en la corrida de validación —donde la suite sí existe— en
+# vez de en el árbol, que es el sitio donde nadie lo busca.
+CANONICAL_ORDER = ("A1", "A2", "A4", "A3", "B3", "B4")
 
 
 def _application_order(transform_ids: list[str]) -> list[str]:

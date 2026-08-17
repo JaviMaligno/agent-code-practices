@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from acp.cli import transform_repo
 from acp.transforms import b4_tests
 
 
@@ -138,3 +139,35 @@ def test_the_dose_can_be_declared_before_applying(tmp_path: Path):
         "conftest.py",
         "tests",
     ]
+
+
+def build_with_a_readme_the_suite_verifies(root: Path) -> None:
+    """La forma de holidays: su suite comprueba que las tablas del README listan
+    todo lo soportado, así que ahí el README es contrato y B3 no lo toca."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "core.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (root / "README.md").write_text("# demo\n\n| país |\n", encoding="utf-8")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_docs.py").write_text(
+        "from pathlib import Path\n"
+        "\n"
+        "\n"
+        "def test_the_readme_lists_everything():\n"
+        "    assert 'país' in Path('README.md').read_text(encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+
+def test_b3_still_sees_the_suite_when_b4_is_asked_for_first(tmp_path: Path):
+    """B4 esconde la suite, y B3 decide mirándola si el README es contrato: en
+    el orden en que se piden, `--apply B4,B3` deja a B3 sin nada que mirar,
+    vacía un README que la suite verifica, y el fallo aparece en la corrida de
+    validación —donde la suite sí existe— y no en el árbol. El orden canónico es
+    parte de la condición, no del capricho de quien escribe los flags."""
+    source = tmp_path / "repo"
+    build_with_a_readme_the_suite_verifies(source)
+
+    work = transform_repo(source, ["B4", "B3"], tmp_path / "work")
+
+    assert (tmp_path / "work.acp-tests" / "tests" / "test_docs.py").exists()
+    assert "país" in (work / "README.md").read_text(encoding="utf-8")
