@@ -258,13 +258,17 @@ class _RewriteImports(cst.CSTTransformer):
                 )
             )
 
-        statements = []
-        if moved:
-            statements.append(_absolute_import_from(updated, self.package, moved))
+        # Nada que reagrupar: solo cambia de dónde viene. Se dejan los nombres
+        # exactamente como estaban, comas y saltos de línea incluidos. Rehacer
+        # la lista aplastaría un `from x import (\n  a,\n  b)` en una sola
+        # línea, que es formato —o sea A3— colándose dentro de B2, y dentro de
+        # un doctest cambiar el número de líneas invalida el ejemplo entero.
+        if not moved:
+            return _absolute_import_from(updated, self.moves.get(base, base))
+
+        statements = [_absolute_import_from(updated, self.package, moved)]
         if kept:
             statements.append(_absolute_import_from(updated, self.moves.get(base, base), kept))
-        if not statements:
-            return _absolute_import_from(updated, self.moves.get(base, base))
         if len(statements) == 1:
             return statements[0]
         return cst.FlattenSentinel(statements)
@@ -306,6 +310,40 @@ def _module_path(root: Path, module: str) -> Path:
     return root / Path(*module.split(".")).with_suffix(".py")
 
 
+# Donde pytest lee su configuración. Son los únicos ficheros que pueden nombrar
+# una ruta y con ella cambiar lo que la suite colecta.
+PYTEST_CONFIG_FILES = ("setup.cfg", "pytest.ini", "tox.ini", "pyproject.toml")
+
+
+def _rewrite_configured_paths(root: Path, moves: dict[str, str]) -> int:
+    """Las rutas de fichero que la configuración de la suite nombra.
+
+    Un import roto se ve: falla un test. Una ruta rota en la configuración no,
+    y es peor. python-stdnum ignora `stdnum/iso9362.py` por ruta —es un módulo
+    que se sustituye a sí mismo en `sys.modules`—; al aplanar, esa ruta deja de
+    existir, el `--ignore` no tapa nada, pytest lo colecta y la corrida entera
+    muere en la colecta. Medido: 413 tests pasan a 0 sin que falle ninguno, y la
+    condición se leería como un repositorio que el agente destrozó.
+    """
+    replacements = {
+        "/".join(original.split(".")) + ".py": "/".join(target.split(".")) + ".py"
+        for original, target in moves.items()
+    }
+    changed = 0
+    for name in PYTEST_CONFIG_FILES:
+        path = root / name
+        if not path.exists():
+            continue
+        source = read_source(path)
+        transformed = source
+        for old, new in replacements.items():
+            transformed = transformed.replace(old, new)
+        if transformed != source:
+            path.write_text(transformed, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def apply(root: Path) -> TransformResult:
     moves = plan_moves(root)
     if not moves:
@@ -317,6 +355,8 @@ def apply(root: Path) -> TransformResult:
     # Los ficheros de doctest no son .py y no los recoge `iter_transformable_files`,
     # pero la suite del repo los ejecuta: en python-stdnum son 234 líneas de
     # ejemplo importando por ruta de módulo, o sea 234 fallos si se quedan atrás.
+    changed += _rewrite_configured_paths(root, moves)
+
     rewriter = _RewriteImports(moves, package.name, "")
     for path in doctest_files(root):
         source = read_source(path)

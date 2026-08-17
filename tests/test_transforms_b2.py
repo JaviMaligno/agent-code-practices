@@ -100,7 +100,10 @@ def test_the_moves_travel_with_the_result(tmp_path: Path):
 
 FORMS = {
     "pkg/__init__.py": "",
-    "pkg/util.py": "def clean(x):\n    return x.strip()\n",
+    "pkg/util.py": (
+        'SUFFIX = "!"\n\n\ndef clean(x):\n    return x.strip()\n\n\n'
+        "def shout(x):\n    return x.upper()\n"
+    ),
     "pkg/es/__init__.py": 'COUNTRY = "es"\n',
     "pkg/es/nif.py": (
         "from pkg.util import clean\n\n\ndef validate(number):\n    return clean(number)\n"
@@ -369,3 +372,68 @@ def test_prose_that_merely_mentions_a_module_is_left_alone(tmp_path: Path):
 
     kept = (tmp_path / "pkg" / f"{target}.py").read_text(encoding="utf-8")
     assert "use pkg.es.nif instead" in kept
+
+
+def test_a_test_configuration_that_names_a_file_follows_the_move(tmp_path: Path):
+    """python-stdnum ignora un fichero por ruta (`--ignore=stdnum/iso9362.py`,
+    que se sustituye a sí mismo en `sys.modules`). Al aplanar, esa ruta deja de
+    existir, el `--ignore` no tapa nada, pytest lo colecta y la corrida entera
+    muere en la colecta: 413 tests pasan a 0 sin que falle un solo test.
+
+    Medido sobre el clon real: es el único fallo que B2 tenía contra
+    python-stdnum, y ningún fixture pequeño lo enseña.
+    """
+    import subprocess
+    import sys
+
+    (tmp_path / "setup.cfg").write_text(
+        "[tool:pytest]\naddopts = --doctest-modules --ignore=pkg/broken.py pkg tests\n",
+        encoding="utf-8",
+    )
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "broken.py").write_text(
+        "raise ImportError('a este no hay que colectarlo')\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_ok.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    ran = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert ran.returncode == 0, ran.stdout[-2000:]
+
+
+MULTILINE_DOCTEST = """\
+Utilidades.
+
+>>> from pkg.util import (
+...     clean, shout,
+...     SUFFIX)
+>>> clean(' 12 ') + SUFFIX + shout('x')
+'12!X'
+"""
+
+
+def test_a_multi_line_import_inside_a_doctest_is_rewritten(tmp_path: Path):
+    """`tests/test_util.doctest` de python-stdnum importa seis nombres repartidos
+    en tres líneas. Rehacer la lista de nombres los junta en una, el ejemplo
+    cambia de número de líneas y la red de seguridad lo deja sin tocar: el
+    doctest se queda importando un módulo que ya no existe, en silencio.
+    """
+    build_with_doctests(tmp_path)
+    (tmp_path / "tests" / "util.doctest").write_text(MULTILINE_DOCTEST, encoding="utf-8")
+
+    b2_hierarchy.apply(tmp_path)
+
+    ran = run_in(
+        tmp_path,
+        "import doctest, sys;"
+        "r = doctest.testfile('tests/util.doctest', module_relative=False);"
+        "sys.exit(r.failed)",
+    )
+    assert ran.returncode == 0, ran.stdout + ran.stderr
