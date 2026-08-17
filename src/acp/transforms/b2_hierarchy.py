@@ -152,6 +152,18 @@ class _RewriteImports(cst.CSTTransformer):
         convierte un test en un fallo, y la condición se leería como un repo
         roto.
         """
+        # Una cadena que es exactamente el nombre de un módulo del repo es una
+        # ruta de import, no prosa: `stdnum/gs1_128.py` guarda las suyas en un
+        # diccionario y las pasa a `__import__`. Resuelve estáticamente, así que
+        # §4.3.3 no la excluye —excluye lo indecidible— y es el mismo criterio
+        # con el que A2 sigue las cadenas de `__all__`. Se exige coincidencia
+        # exacta: una frase que menciona el módulo es documentación, y
+        # reescribirla sería B3 colándose dentro de B2.
+        target = self.moves.get(updated.raw_value)
+        if target is not None:
+            return updated.with_changes(
+                value=f"{updated.prefix}{updated.quote}{target}{updated.quote}"
+            )
         if DOCTEST_PROMPT not in updated.value:
             return updated
         # Se opera sobre el literal entero, comillas incluidas: los prompts van

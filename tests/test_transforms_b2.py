@@ -330,3 +330,42 @@ def test_a_doctest_inside_a_docstring_keeps_importing_something_that_exists(tmp_
         "sys.exit(r.failed or (r.attempted == 0))",
     )
     assert ran.returncode == 0, ran.stdout + ran.stderr
+
+
+def test_a_module_path_written_as_a_string_follows_the_move(tmp_path: Path):
+    """`stdnum/gs1_128.py` guarda rutas de módulo en un diccionario y las importa
+    con `__import__(_ai_validators[ai])`. La cadena resuelve estáticamente —es
+    exactamente el nombre de un módulo del repo—, así que §4.3.3 no la excluye:
+    excluye lo *indecidible*, y dejarla atrás deja al importador sin el módulo.
+    Es el mismo criterio con el que A2 sigue las cadenas de `__all__`.
+    """
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "byname.py").write_text(
+        "VALIDATORS = {'01': 'pkg.es.nif'}\n\n\n"
+        "def run(number):\n"
+        "    mod = __import__(VALIDATORS['01'], globals(), locals(), ['validate'])\n"
+        "    return mod.validate(number)\n",
+        encoding="utf-8",
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+    target = result.moves["pkg.byname"].split(".")[-1]
+
+    ran = run_in(tmp_path, f"from pkg.{target} import run; print(run(' 12 '))")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == "12"
+
+
+def test_prose_that_merely_mentions_a_module_is_left_alone(tmp_path: Path):
+    """La cadena tiene que ser el nombre del módulo y nada más. Una frase que lo
+    menciona es documentación, y reescribirla sería B3 colándose dentro de B2."""
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "prose.py").write_text(
+        "MESSAGE = 'use pkg.es.nif instead'\n", encoding="utf-8"
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+    target = result.moves["pkg.prose"].split(".")[-1]
+
+    kept = (tmp_path / "pkg" / f"{target}.py").read_text(encoding="utf-8")
+    assert "use pkg.es.nif instead" in kept
