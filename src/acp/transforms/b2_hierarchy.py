@@ -21,6 +21,7 @@ import libcst as cst
 
 from acp.metrics.size import read_source
 from acp.transforms.base import TransformResult, iter_transformable_files
+from acp.transforms.doctests import DOCTEST_PROMPT, doctest_files, rewrite_examples
 
 
 def _package_root(root: Path) -> Path | None:
@@ -139,6 +140,36 @@ class _RewriteImports(cst.CSTTransformer):
 
     def visit_ImportFrom(self, node: cst.ImportFrom) -> bool:
         return False
+
+    def leave_SimpleString(
+        self, original: cst.SimpleString, updated: cst.SimpleString
+    ) -> cst.SimpleString:
+        """Los ejemplos de doctest que hay dentro de una docstring.
+
+        Un doctest no es documentación: es suite. `stdnum/__init__.py` importa
+        `stdnum.isbn` desde un ejemplo de su propia docstring, y el paquete raíz
+        no se mueve pero el módulo que importa sí. Dejar el ejemplo atrás
+        convierte un test en un fallo, y la condición se leería como un repo
+        roto.
+        """
+        if DOCTEST_PROMPT not in updated.value:
+            return updated
+        # Se opera sobre el literal entero, comillas incluidas: los prompts van
+        # por dentro, así que los escapes quedan intactos.
+        rewritten = rewrite_examples(updated.value, self.rewrite_snippet)
+        return updated if rewritten == updated.value else updated.with_changes(value=rewritten)
+
+    def rewrite_snippet(self, code: str) -> str | None:
+        """El mismo reescrito sobre un trozo suelto, o None si no cuela.
+
+        LibCST valida al construir el nodo, y esa excepción no es de parseo: sin
+        capturarla, un ejemplo raro dejaría el fichero a medio transformar.
+        """
+        try:
+            module = cst.parse_module(code)
+            return module.visit(_RewriteImports(self.moves, self.package, self.current)).code
+        except (cst.ParserSyntaxError, cst.CSTValidationError):
+            return None
 
     def leave_Attribute(
         self, original: cst.Attribute, updated: cst.Attribute
@@ -271,6 +302,18 @@ def apply(root: Path) -> TransformResult:
     package = _package_root(root)
     assert package is not None  # `plan_moves` ya devolvió vacío si no lo había
     changed = 0
+    # Los ficheros de doctest no son .py y no los recoge `iter_transformable_files`,
+    # pero la suite del repo los ejecuta: en python-stdnum son 234 líneas de
+    # ejemplo importando por ruta de módulo, o sea 234 fallos si se quedan atrás.
+    rewriter = _RewriteImports(moves, package.name, "")
+    for path in doctest_files(root):
+        source = read_source(path)
+        # El fichero entero es texto de doctest: no hay módulo que parsear.
+        transformed = rewrite_examples(source, rewriter.rewrite_snippet)
+        if transformed != source:
+            path.write_text(transformed, encoding="utf-8")
+            changed += 1
+
     # Alcance repo-wide, tests del repo incluidos (§4.3.1): un import sin
     # reescribir en la suite se lee como suite en rojo, o sea como fracaso.
     for path in iter_transformable_files(root):
