@@ -245,3 +245,42 @@ def test_an_unknown_transform_is_rejected(tmp_path: Path):
         assert "Z9" in str(error)
     else:
         raise AssertionError("debería haber fallado")
+
+
+def test_the_manifest_keeps_the_symbols_of_a_transform_that_moved_them(
+    tmp_path: Path, monkeypatch
+):
+    """Los movimientos tienen que llegar del resultado al mapa de identidad.
+
+    La familia B mueve símbolos ENTRE módulos, no dentro de cada uno. Si el CLI
+    no acumulara `result.moves`, `relocate_symbols` iría a buscarlos al módulo
+    original —que la transformación ya renombró— y el manifiesto saldría sin un
+    solo símbolo. Y saldría en verde: la métrica de localización (§5.4.2) se
+    quedaría sin datos sin que nada se queje, que es la forma más cara de
+    perder una corrida.
+
+    La transformación es fingida a propósito: esto pincha la fontanería del
+    CLI, y atarla a la B2 real haría fallar este test por motivos de B2.
+    """
+    import shutil
+
+    from acp.transforms import TRANSFORMS
+    from acp.transforms.base import TransformResult
+
+    source = tmp_path / "repo"
+    (source / "pkg").mkdir(parents=True)
+    (source / "pkg" / "nif.py").write_text(
+        "def validate(number):\n    return number\n", encoding="utf-8"
+    )
+
+    def flatten(root: Path) -> TransformResult:
+        shutil.move(str(root / "pkg" / "nif.py"), str(root / "pkg" / "m0.py"))
+        return TransformResult(files_changed=1, moves={"pkg.nif": "pkg.m0"})
+
+    monkeypatch.setitem(TRANSFORMS, "B9", flatten)
+
+    destination = transform_repo(source, ["B9"], tmp_path / "work")
+
+    manifest = json.loads(manifest_path_for(destination).read_text(encoding="utf-8"))
+    assert manifest["symbols"]["pkg.nif.validate"]["path"] == "pkg/m0.py"
+    assert manifest["symbols"]["pkg.nif.validate"]["current_name"] == "validate"
