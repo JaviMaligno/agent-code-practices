@@ -93,35 +93,166 @@ def _dotted(node: cst.BaseExpression) -> str:
     return ""
 
 
+def _containing_package(path: Path, root: Path) -> str:
+    """El paquete al que pertenece el fichero, en forma de módulo con puntos.
+
+    Es lo que hace falta para resolver un import relativo: `from ..util import
+    clean` no significa nada sin saber desde dónde se cuenta.
+    """
+    parts = path.relative_to(root).with_suffix("").parts
+    # El `__init__` no está *en* su paquete: es su paquete.
+    return ".".join(parts[:-1])
+
+
 class _RewriteImports(cst.CSTTransformer):
     """Reescribe los imports para que apunten a donde va a estar cada módulo.
 
     Se hace antes de mover nada: el diccionario de destinos ya está decidido, y
     reescribir primero evita tener que reconstruirlo leyendo un árbol a medio
     mover.
+
+    Los alias locales se conservan (`from pkg.es import nif` sale como
+    `from pkg import m3 as nif`) por dos razones. La primera es que sin ellos el
+    repo no arranca: el nombre corto está usado en el cuerpo del fichero. La
+    segunda es que ahí no está la dosis de B2. Lo que B2 destruye es la señal de
+    **qué fichero abrir** —el árbol ya no dice dónde está nada—; el nombre con
+    el que un fichero ya abierto llama a lo que importa es materia de A2, y las
+    dos condiciones se miden por separado y se pueden cruzar.
     """
 
-    def __init__(self, moves: dict[str, str]) -> None:
+    def __init__(self, moves: dict[str, str], package: str, current: str) -> None:
         self.moves = moves
+        self.package = package
+        # El paquete desde el que se cuentan los puntos de un import relativo.
+        self.current = current
+        # Los imports relativos solo se resuelven dentro del paquete: un
+        # `from . import x` en un directorio de tests de la raíz sigue siendo
+        # válido después, porque ese fichero no se mueve.
+        self.inside = current == package or current.startswith(f"{package}.")
 
-    def leave_ImportFrom(
-        self, original: cst.ImportFrom, updated: cst.ImportFrom
-    ) -> cst.ImportFrom:
-        if updated.module is None:
+    # Los hijos de un import no se visitan: la ruta de módulo se reescribe
+    # entera aquí, con el contexto del import, y dejar que `leave_Attribute`
+    # la tocara antes haría que la búsqueda en el diccionario ya no encontrara
+    # nada.
+    def visit_Import(self, node: cst.Import) -> bool:
+        return False
+
+    def visit_ImportFrom(self, node: cst.ImportFrom) -> bool:
+        return False
+
+    def leave_Attribute(
+        self, original: cst.Attribute, updated: cst.Attribute
+    ) -> cst.BaseExpression:
+        """`stdnum.bic` usado como expresión, no dentro de un import.
+
+        Es lo que deja un `import stdnum.bic` sin alias: lo que queda ligado es
+        `stdnum`, y el módulo se nombra después por su ruta entera. Reescribir
+        solo la sentencia de import dejaría todos esos usos apuntando a un
+        módulo que ya no existe. Se resuelve de dentro afuera, así que en
+        `pkg.es.nif.validate` la cadena que se sustituye es `pkg.es.nif` y el
+        `.validate` de fuera se queda donde está.
+
+        La consulta se hace sobre el nodo **original** porque LibCST resuelve de
+        dentro afuera y el hijo ya viene sustituido: en `pkg.es.nif`, el `pkg.es`
+        de dentro también es un módulo que se movió, y preguntando por el nodo
+        ya reescrito la cadena entera dejaría de encontrarse. Preguntando por el
+        original gana siempre la coincidencia más larga, que es la correcta: el
+        módulo es el fichero, no el directorio que lo contenía.
+        """
+        target = self.moves.get(_dotted(original))
+        return cst.parse_expression(target) if target else updated
+
+    def leave_Import(self, original: cst.Import, updated: cst.Import) -> cst.Import:
+        names = [
+            alias.with_changes(name=cst.parse_expression(self.moves[dotted]))
+            if (dotted := _dotted(alias.name)) in self.moves
+            else alias
+            for alias in updated.names
+        ]
+        return updated.with_changes(names=names)
+
+    def _absolute_base(self, node: cst.ImportFrom) -> str | None:
+        """De dónde importa esta sentencia, en absoluto, o None si no se sabe."""
+        tail = _dotted(node.module) if node.module is not None else ""
+        if not node.relative:
+            return tail or None
+        if not self.inside:
+            return None
+        parts = self.current.split(".")
+        # Un punto es el paquete propio; cada punto de más sube uno.
+        kept = len(parts) - (len(node.relative) - 1)
+        if kept < 1:
+            return None
+        base = parts[:kept]
+        return ".".join([*base, *tail.split(".")]) if tail else ".".join(base)
+
+    def leave_ImportFrom(self, original: cst.ImportFrom, updated: cst.ImportFrom):
+        base = self._absolute_base(updated)
+        if base is None:
             return updated
-        target = self.moves.get(_dotted(updated.module))
-        if target is None:
+        # Fuera del paquete no hay nada que reescribir, y un import relativo de
+        # un fichero que no se mueve sigue siendo correcto tal cual.
+        if not (base == self.package or base.startswith(f"{self.package}.")):
             return updated
-        return updated.with_changes(module=cst.parse_expression(target))
+
+        if isinstance(updated.names, cst.ImportStar):
+            return _absolute_import_from(updated, self.moves.get(base, base))
+
+        # Un submódulo importado por su nombre deja de colgar de donde colgaba:
+        # después de aplanar cuelga del paquete raíz, así que no puede venir del
+        # mismo sitio que un nombre definido en el `__init__`.
+        moved, kept = [], []
+        for alias in updated.names:
+            target = self.moves.get(f"{base}.{alias.name.value}")
+            if target is None:
+                kept.append(alias)
+                continue
+            moved.append(
+                alias.with_changes(
+                    name=cst.Name(target.split(".")[-1]),
+                    asname=alias.asname or cst.AsName(name=cst.Name(alias.name.value)),
+                    comma=cst.MaybeSentinel.DEFAULT,
+                )
+            )
+
+        statements = []
+        if moved:
+            statements.append(_absolute_import_from(updated, self.package, moved))
+        if kept:
+            statements.append(_absolute_import_from(updated, self.moves.get(base, base), kept))
+        if not statements:
+            return _absolute_import_from(updated, self.moves.get(base, base))
+        if len(statements) == 1:
+            return statements[0]
+        return cst.FlattenSentinel(statements)
 
 
-def _rewrite_file(path: Path, moves: dict[str, str]) -> bool:
+def _absolute_import_from(node: cst.ImportFrom, base: str, names=None) -> cst.ImportFrom:
+    """El mismo import, en forma absoluta y apuntando a `base`.
+
+    Siempre absoluto: al aplanar, todos los ficheros pasan a colgar del paquete
+    raíz, así que cualquier import relativo de más de un punto se saldría del
+    paquete. El nombre del paquete raíz es lo único que sigue siendo válido
+    (§5.6), y por eso es la referencia desde la que se reescribe todo.
+    """
+    changes = {"module": cst.parse_expression(base), "relative": []}
+    if names is not None:
+        # La última no lleva coma: `with_changes` no la quita sola.
+        changes["names"] = [
+            *[alias.with_changes(comma=cst.MaybeSentinel.DEFAULT) for alias in names[:-1]],
+            names[-1].with_changes(comma=cst.MaybeSentinel.DEFAULT),
+        ]
+    return node.with_changes(**changes)
+
+
+def _rewrite_file(path: Path, root: Path, moves: dict[str, str], package: str) -> bool:
     source = read_source(path)
     try:
         module = cst.parse_module(source)
     except cst.ParserSyntaxError:
         return False
-    transformed = module.visit(_RewriteImports(moves)).code
+    rewriter = _RewriteImports(moves, package, _containing_package(path, root))
+    transformed = module.visit(rewriter).code
     if transformed == source:
         return False
     path.write_text(transformed, encoding="utf-8")
@@ -137,11 +268,13 @@ def apply(root: Path) -> TransformResult:
     if not moves:
         return TransformResult()
 
+    package = _package_root(root)
+    assert package is not None  # `plan_moves` ya devolvió vacío si no lo había
     changed = 0
     # Alcance repo-wide, tests del repo incluidos (§4.3.1): un import sin
     # reescribir en la suite se lee como suite en rojo, o sea como fracaso.
     for path in iter_transformable_files(root):
-        if _rewrite_file(path, moves):
+        if _rewrite_file(path, root, moves, package.name):
             changed += 1
 
     for original, target in moves.items():
