@@ -77,16 +77,27 @@ def test_the_code_still_runs(tmp_path: Path):
     assert namespace["rate"](21) == 42
 
 
-def test_a_function_whose_body_is_only_a_docstring_keeps_a_body(tmp_path: Path):
-    """Sin esto queda `def f():` sin cuerpo, que no compila: la condición se
-    leería como un fracaso total del agente cuando es fontanería rota."""
-    path = write(tmp_path, 'def noop():\n    """Nada."""\n')
+def test_a_body_that_was_only_a_docstring_still_runs(tmp_path: Path):
+    """Sin cuerpo, `def f():` no compila: la condición se leería como un fracaso
+    total del agente cuando es fontanería rota.
+
+    La aserción es de comportamiento a propósito. La versión anterior pedía que
+    la cadena `pass` estuviera en el fichero, y eso no podía fallar: el `pass`
+    lo escribe el renderizador de libcst para cualquier bloque vacío, así que el
+    test daba verde con la implementación puesta y quitada. Ejecutar el
+    resultado sí distingue las dos cosas."""
+    path = write(
+        tmp_path,
+        'def noop():\n    """Nada."""\n\n\nclass Empty:\n    """Nada tampoco."""\n',
+    )
 
     a4_docs.apply(tmp_path)
 
-    source = path.read_text(encoding="utf-8")
-    compile(source, "core.py", "exec")
-    assert "pass" in source
+    namespace: dict = {}
+    exec(compile(path.read_text(encoding="utf-8"), "core.py", "exec"), namespace)
+    assert namespace["noop"]() is None
+    assert namespace["noop"].__doc__ is None
+    assert namespace["Empty"]().__doc__ is None
 
 
 def test_removing_a_comment_leaves_no_whitespace_behind(tmp_path: Path):

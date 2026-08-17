@@ -104,11 +104,12 @@ def _without_docstring(body: cst.BaseSuite) -> cst.BaseSuite:
             body=[first.body[0].with_changes(value=kept)]  # type: ignore[union-attr]
         )
         return body.with_changes(body=[statement, *body.body[1:]])
-    remaining = list(body.body[1:])
-    # Un cuerpo vacío no compila: si la docstring era todo, hace falta un `pass`.
-    if not remaining:
-        remaining = [cst.SimpleStatementLine(body=[cst.Pass()])]
-    return body.with_changes(body=remaining)
+    # Si la docstring era todo el cuerpo, el bloque se queda vacío y `def f():`
+    # sin cuerpo no compila. No hace falta insertar un `Pass()`: libcst escribe
+    # `pass` al renderizar un IndentedBlock vacío (comprobado con comentario de
+    # cabecera, de cierre, en clase y anidado). Lo que queda fijado es el
+    # comportamiento —el fichero se ejecuta— y no cómo se escribe.
+    return body.with_changes(body=list(body.body[1:]))
 
 
 def _docstring_literal(statement: cst.BaseStatement) -> cst.SimpleStatementLine | None:
