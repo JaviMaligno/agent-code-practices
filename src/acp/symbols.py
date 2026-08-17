@@ -46,6 +46,12 @@ def relocate_symbols(symbols: dict[str, Location], root: Path) -> dict[str, Loca
     transformación añade ni quita definiciones, así que la posición es una
     identidad estable frente a las cuatro.
 
+    Y el nombre visible se lee del código, no se deduce del diccionario de
+    renombrados: A2 renombra por ámbito y restaura lo que define el cuerpo de
+    una clase, así que el mismo nombre desnudo puede haber cambiado en un sitio
+    y no en otro. Un manifiesto que anuncia `f1` donde el fichero sigue diciendo
+    `info` señala un símbolo que no existe.
+
     Lo que no aparece en el árbol transformado se cae del mapa: un rango que no
     se puede verificar contra lo que ve el agente no es procedencia, es ruido
     con pinta de dato.
@@ -68,6 +74,7 @@ def relocate_symbols(symbols: dict[str, Location], root: Path) -> dict[str, Loca
                 path=location.path,
                 start=location.start,
                 end=location.end,
+                current_name=location.current_name,
             )
     return relocated
 
@@ -140,13 +147,3 @@ def _walk_definitions(tree: ast.Module) -> list[tuple[_Definition, str]]:
 
     visit(tree, "")
     return found
-
-
-def apply_renames(
-    symbols: dict[str, Location], renames: dict[str, str]
-) -> dict[str, Location]:
-    """Actualiza el nombre visible sin tocar la identidad."""
-    return {
-        key: replace(location, current_name=renames.get(location.current_name, location.current_name))
-        for key, location in symbols.items()
-    }

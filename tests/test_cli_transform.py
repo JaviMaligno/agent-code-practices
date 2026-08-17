@@ -111,6 +111,29 @@ def test_the_symbol_range_ends_where_the_definition_ends(tmp_path: Path):
     assert not any("class Widget" in line for line in region)
 
 
+def test_the_published_name_is_the_one_written_in_the_code(tmp_path: Path):
+    """A2 deja los métodos como estaban a propósito (renombrar `self.algo` deja
+    un AttributeError que se lee como un agente que fracasa). Si el manifiesto
+    los renombra igualmente porque comparten nombre con una función de módulo,
+    publica un nombre que no existe en ningún fichero, y la localización
+    resuelve el símbolo equivocado (§5.4.2)."""
+    source = tmp_path / "repo"
+    pkg = source / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "report.py").write_text("def info(rows):\n    return rows\n", encoding="utf-8")
+    (pkg / "store.py").write_text(
+        "class Store:\n    def info(self):\n        return 1\n", encoding="utf-8"
+    )
+
+    destination = transform_repo(source, ["A2"], tmp_path / "work")
+
+    symbols = json.loads(manifest_path_for(destination).read_text(encoding="utf-8"))["symbols"]
+    for key, location in symbols.items():
+        assert location["current_name"] in declared_line(destination, location), key
+    assert symbols["pkg.store.Store.info"]["current_name"] == "info"
+    assert symbols["pkg.report.info"]["current_name"] != "info"
+
+
 def test_the_transformed_tree_gains_nothing_that_the_original_did_not_have(tmp_path: Path):
     """El árbol transformado es lo que explora el agente: cualquier fichero que
     el pipeline deje dentro es material del experimento filtrado al sujeto de
