@@ -174,3 +174,23 @@ def test_a_symbol_nobody_renamed_keeps_its_name(tmp_path: Path):
     renamed = relocate_symbols(symbols, tmp_path / "work")
 
     assert renamed["pkg.billing.total"].current_name == "total"
+
+
+def test_a_package_is_named_by_how_it_is_imported_not_by_its_file(tmp_path: Path):
+    """`pkg/sub/__init__.py` se importa como `pkg.sub`, y esa es la única forma
+    del nombre que sirve: es la clave con la que la familia B anuncia sus
+    movimientos (`_module_name` en b2_hierarchy). Nombrarlo `pkg.sub.__init__`
+    aquí hace que la búsqueda en `moves` falle siempre para los `__init__.py`, y
+    los símbolos que declaran —el API pública del subpaquete— se caen del mapa
+    sin una sola queja."""
+    root = tmp_path / "repo"
+    (root / "pkg" / "sub").mkdir(parents=True)
+    (root / "pkg" / "sub" / "__init__.py").write_text(
+        "class Widget:\n    def render(self):\n        return 1\n", encoding="utf-8"
+    )
+
+    symbols = build_symbol_map(root)
+
+    assert sorted(symbols) == ["pkg.sub.Widget", "pkg.sub.Widget.render"]
+    assert symbols["pkg.sub.Widget"].module == "pkg.sub"
+    assert symbols["pkg.sub.Widget"].path == "pkg/sub/__init__.py"

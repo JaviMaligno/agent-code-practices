@@ -22,6 +22,7 @@ from pathlib import Path
 
 import libcst as cst
 
+from acp.metrics.size import module_name as _module_name
 from acp.metrics.size import read_source
 from acp.transforms.base import TransformResult, iter_transformable_files
 from acp.transforms.doctests import DOCTEST_PROMPT, doctest_files, rewrite_examples
@@ -43,21 +44,11 @@ def _package_root(root: Path) -> Path | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _module_name(path: Path, root: Path) -> str:
-    """El módulo que este fichero es, en la forma en que se importa.
-
-    Se calcula relativo a la raíz del árbol porque es lo que hay en
-    `sys.path` cuando la suite corre —el repo se alcanza por ruta, no por
-    instalación (§5.6)—, y también es la clave con la que `build_symbol_map`
-    nombra los módulos: si las dos formas no coincidieran, el mapa de identidad
-    no podría seguir ningún movimiento.
-    """
-    relative = path.relative_to(root).with_suffix("")
-    parts = relative.parts
-    if parts[-1] == "__init__":
-        parts = parts[:-1]
-    return ".".join(parts)
-
+# El nombre del módulo se calcula relativo a la raíz del árbol porque es lo que
+# hay en `sys.path` cuando la suite corre —el repo se alcanza por ruta, no por
+# instalación (§5.6)—, y se comparte con `build_symbol_map`: es la clave con la
+# que el mapa de identidad sigue los movimientos que se anuncian aquí, así que
+# las dos formas tienen que ser la misma función, no dos que se parezcan.
 
 DYNAMIC_IMPORTERS = ("__import__", "import_module")
 

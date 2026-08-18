@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from acp.cli import main, manifest_path_for, transform_repo
+from acp.symbols import build_symbol_map
 
 
 def relative_paths(root: Path) -> set[str]:
@@ -318,3 +319,48 @@ def test_the_transformed_tree_never_names_the_suite_that_b4_hid(tmp_path: Path):
     )
     assert naming_the_suite == []
     assert sorted(relative_paths(destination)) == ["pkg", "pkg/core.py"]
+
+
+def test_the_manifest_keeps_the_symbols_that_b2_moved_with_a_package_init(tmp_path: Path):
+    """La forma real: el API pública de un subpaquete vive en su `__init__.py`.
+
+    pint define `Formatter` en `pint/delegates/formatter/__init__.py` y
+    `DaskQuantity` en `pint/facets/dask/__init__.py`, y B2 mueve los dos
+    ficheros. Son justo los símbolos que a un agente se le va a pedir que
+    localice, y se caían del manifiesto enteros y en silencio —18 de 902 en
+    pint— porque el mapa nombraba ese módulo `pkg.formatter.__init__` mientras
+    B2 anunciaba el movimiento de `pkg.formatter`: la búsqueda en `moves` no
+    encontraba nada, se caía al nombre viejo, y el nombre viejo ya no existe en
+    el árbol aplanado. Un símbolo que no está en el mapa es un objetivo de tarea
+    que nunca se podrá dar por localizado (§5.4.2).
+    """
+    source = tmp_path / "repo"
+    (source / "pkg" / "formatter").mkdir(parents=True)
+    (source / "pkg" / "__init__.py").write_text(
+        "from pkg.formatter import Formatter\n\n\n__all__ = [\"Formatter\"]\n", encoding="utf-8"
+    )
+    (source / "pkg" / "formatter" / "__init__.py").write_text(
+        "from pkg.formatter.base import Base\n"
+        "\n"
+        "\n"
+        "class Formatter(Base):\n"
+        "    def render(self, value):\n"
+        "        return value\n",
+        encoding="utf-8",
+    )
+    (source / "pkg" / "formatter" / "base.py").write_text(
+        "class Base:\n    pass\n", encoding="utf-8"
+    )
+    original = build_symbol_map(source)
+
+    destination = transform_repo(source, ["B2"], tmp_path / "work")
+
+    manifest = json.loads(manifest_path_for(destination).read_text(encoding="utf-8"))
+    published = manifest["symbols"]
+    # Ningún símbolo se cae por el camino: B2 mueve ficheros, no definiciones.
+    assert sorted(published) == sorted(original)
+    formatter = published["pkg.formatter.Formatter"]
+    assert formatter["current_name"] == "Formatter"
+    # Y apunta al fichero aplanado, que es el que el agente puede abrir.
+    assert formatter["path"] != "pkg/formatter/__init__.py"
+    assert "class Formatter" in (destination / formatter["path"]).read_text(encoding="utf-8")

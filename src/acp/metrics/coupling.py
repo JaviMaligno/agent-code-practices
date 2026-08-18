@@ -5,14 +5,8 @@ from collections import defaultdict
 from pathlib import Path
 
 from acp.metrics.size import iter_source_files, parse_source
+from acp.metrics.size import module_name as _module_name
 from acp.models import CouplingMetrics
-
-
-def _module_name(path: Path, root: Path) -> str:
-    parts = list(path.relative_to(root).with_suffix("").parts)
-    if parts[-1] == "__init__":
-        parts.pop()
-    return ".".join(parts)
 
 
 def _resolve(candidate: str, known: set[str]) -> str | None:

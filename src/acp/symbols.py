@@ -4,7 +4,7 @@ import ast
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from acp.metrics.size import iter_source_files, parse_source
+from acp.metrics.size import iter_source_files, module_name, parse_source
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,10 @@ def _definitions_by_module(root: Path) -> dict[str, dict[str, Location]]:
         tree = parse_source(path)
         if tree is None:
             continue
-        module = ".".join(path.relative_to(root).with_suffix("").parts)
+        # El mismo nombre que usa la familia B para anunciar sus movimientos: si
+        # las dos formas no coinciden, `moves` no encuentra nada y el módulo
+        # entero se cae del mapa (`relocate_symbols`).
+        module = module_name(path, root)
         relative = path.relative_to(root).as_posix()
         located: dict[str, Location] = {}
         for node, qualified in _walk_definitions(tree):
