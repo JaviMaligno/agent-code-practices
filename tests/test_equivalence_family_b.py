@@ -24,6 +24,7 @@ REPOS = {
     "python-stdnum": "https://github.com/arthurdejong/python-stdnum",
     "pint": "https://github.com/hgrecco/pint",
     "sqlglot": "https://github.com/tobymao/sqlglot",
+    "holidays": "https://github.com/vacanza/holidays",
 }
 
 # Lo que no se compara nunca: no es del repositorio, lo escribe el clonado o el
@@ -172,6 +173,38 @@ def test_b2_does_not_apply_to_a_package_addressed_by_computed_name(tmp_path: Pat
     # sabe leer—, que es la que se acaba de arreglar y no es correcta.
     assert b2_hierarchy._package_root(clone) == clone / "stdnum"
     assert b2_hierarchy.computed_module_prefixes(clone) == {"stdnum."}
+    assert b2_hierarchy.plan_moves(clone) == {}
+
+
+def test_b2_does_not_apply_to_holidays_whose_catalogue_is_addressed_by_computed_name(
+    tmp_path: Path,
+):
+    """La otra dosis cero de B2 en el sustrato, la que cambió de causa sin cambiar
+    de resultado.
+
+    holidays es el caso que este fichero existe para separar. Antes,
+    `_package_root` contaba `scripts/` y `tests/` como paquetes de primer nivel,
+    no encontraba raíz, y B2 era un no-op silencioso: la causa mala, la misma
+    que dejaba a sqlglot sin dosis. Ahora la raíz sí se encuentra y la dosis
+    sigue siendo cero, pero por la causa buena: `holidays/registry.py` construye
+    `f"holidays.{prefix}.{module}.{entity}"` y se lo pasa a `import_module`, así
+    que el árbol de directorios *es* su catálogo de países. Desde el resultado
+    —árbol idéntico— las dos causas se leen igual, y sin esto un cambio en la
+    guarda de prefijos devolvería la celda a la causa mala sin que nadie lo
+    viera.
+
+    Que la guarda hace falta está medido, no supuesto: desactivándola, B2 mueve
+    327 módulos y el paquete deja de importarse en la primera llamada pública
+    —`ModuleNotFoundError: No module named 'holidays.countries'`— mientras que
+    el mismo árbol sin aplanar responde.
+    """
+    clone = clone_repo(REPOS["holidays"], tmp_path / "repo")
+
+    # Que la raíz SÍ se encuentre es la mitad que se arregló, y va primero: si
+    # volviera a ser None la dosis seguiría siendo cero, así que un test que
+    # solo mirara `plan_moves` pasaría con la transformación otra vez muerta.
+    assert b2_hierarchy._package_root(clone) == clone / "holidays"
+    assert "holidays." in b2_hierarchy.computed_module_prefixes(clone)
     assert b2_hierarchy.plan_moves(clone) == {}
 
 
