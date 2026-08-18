@@ -24,6 +24,10 @@ EXCLUDED_DIR_PATTERN = re.compile(r"^(?:tests?_.+|.+_tests?|tests?suite)$")
 # Ficheros de test sueltos, que no cuelgan de ningún directorio de tests.
 EXCLUDED_FILE_PATTERN = re.compile(r"^(?:test_.+|.+_test|tests?|conftest)$")
 
+# El directorio del layout `src/`: no es un paquete ni un directorio excluido,
+# es el punto desde el que se cuentan los nombres de módulo (`module_name`).
+SOURCE_DIR = "src"
+
 
 def is_test_dir(name: str) -> bool:
     """Si un directorio es la suite del repo.
@@ -92,10 +96,22 @@ def module_name(path: Path, root: Path) -> str:
     como `pkg.sub.__init__`, se importa como `pkg.sub` —el fichero *es* el
     paquete—, y ese es el nombre por el que un agente lo pide y por el que la
     tarea se puede dar por localizada.
+
+    Y en layout `src/` el nombre empieza DEBAJO de ese directorio: `src` no es
+    un paquete —no tiene `__init__.py`—, es dónde empieza la ruta de importación,
+    así que `src/pkg/foo.py` se importa como `pkg.foo` y nunca como
+    `src.pkg.foo`. Contarlo desde la raíz del árbol no era un detalle
+    cosmético: es el nombre con el que se cruzan los movimientos de la familia
+    B, el mapa de identidad (§5.4.2) y el grafo de acoplamiento, y una segunda
+    forma del mismo nombre es exactamente lo que ya dejó todo un paquete fuera
+    del mapa. Un repo que sí tenga un paquete llamado `src` queda fuera de la
+    excepción, porque ahí el directorio sí es parte del nombre.
     """
     parts = path.relative_to(root).with_suffix("").parts
     if parts and parts[-1] == "__init__":
         parts = parts[:-1]
+    if parts and parts[0] == SOURCE_DIR and not (root / SOURCE_DIR / "__init__.py").exists():
+        parts = parts[1:]
     return ".".join(parts)
 
 

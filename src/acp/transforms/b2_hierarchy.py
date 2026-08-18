@@ -22,7 +22,7 @@ from pathlib import Path
 
 import libcst as cst
 
-from acp.metrics.size import is_excluded_dir, is_test_file
+from acp.metrics.size import SOURCE_DIR, is_excluded_dir, is_test_file
 from acp.metrics.size import module_name as _module_name
 from acp.metrics.size import read_source
 from acp.transforms.base import (
@@ -56,9 +56,26 @@ def _package_root(root: Path) -> Path | None:
     criterio en vez de inventar otro, porque dos respuestas distintas a la misma
     pregunta es justo lo que produjo esto.
     """
+    package = _single_package_in(root)
+    if package is not None:
+        return package
+    # Layout `src/`: ahí no hay NINGÚN candidato en la raíz —el paquete cuelga
+    # de un directorio que no es paquete—, así que el criterio de arriba no
+    # devolvía nada y B2 se volvía un no-op silencioso en una de las dos formas
+    # de repo más comunes que hay. Solo se mira cuando la raíz no ofrece
+    # ninguno: con dos candidatos arriba el repo es ambiguo, y elegir el de
+    # `src/` sería adivinar en vez de declararlo no aplicable.
+    source = root / SOURCE_DIR
+    if source.is_dir() and not (source / "__init__.py").exists():
+        return _single_package_in(source)
+    return None
+
+
+def _single_package_in(directory: Path) -> Path | None:
+    """El único directorio de `directory` que es código del repo, si es uno."""
     candidates = [
         path
-        for path in sorted(root.iterdir())
+        for path in sorted(directory.iterdir())
         if path.is_dir()
         and (path / "__init__.py").exists()
         and not is_excluded_dir(path.name)
@@ -367,10 +384,15 @@ def _containing_package(path: Path, root: Path) -> str:
 
     Es lo que hace falta para resolver un import relativo: `from ..util import
     clean` no significa nada sin saber desde dónde se cuenta.
+
+    Se pregunta por el `__init__.py` del directorio en vez de recortar la ruta a
+    mano para que la respuesta la dé la MISMA función que nombra los módulos: en
+    layout `src/` el paquete de `src/pkg/es/nif.py` es `pkg.es`, y contarlo por
+    partes desde la raíz daría `src.pkg.es`, o sea un import relativo que se
+    resuelve fuera del paquete y no se reescribe.
     """
-    parts = path.relative_to(root).with_suffix("").parts
     # El `__init__` no está *en* su paquete: es su paquete.
-    return ".".join(parts[:-1])
+    return _module_name(path.parent / "__init__.py", root)
 
 
 class _RewriteImports(cst.CSTTransformer):
@@ -632,11 +654,18 @@ def _rewrite_file(
     return True
 
 
-def _module_path(root: Path, module: str) -> Path:
-    return root / Path(*module.split(".")).with_suffix(".py")
+def _module_path(base: Path, module: str) -> Path:
+    """El fichero de un módulo, contando desde donde empieza su nombre.
+
+    `base` es el directorio que contiene al paquete raíz —la raíz del árbol, o
+    `src/` en un layout `src/`—: es el inverso exacto de `module_name`, y
+    tomarlo de la raíz del árbol mandaría a `pkg/m0.py` un fichero que tiene que
+    acabar en `src/pkg/m0.py`.
+    """
+    return base / Path(*module.split(".")).with_suffix(".py")
 
 
-def _rewrite_configured_paths(root: Path, moves: dict[str, str]) -> int:
+def _rewrite_configured_paths(root: Path, base: Path, moves: dict[str, str]) -> int:
     """Las rutas de fichero que la configuración de la suite nombra.
 
     Un import roto se ve: falla un test. Una ruta rota en la configuración no,
@@ -646,8 +675,15 @@ def _rewrite_configured_paths(root: Path, moves: dict[str, str]) -> int:
     muere en la colecta. Medido: 413 tests pasan a 0 sin que falle ninguno, y la
     condición se leería como un repositorio que el agente destrozó.
     """
+    # La configuración nombra RUTAS, relativas a la raíz del árbol; los
+    # movimientos hablan de módulos, que en layout `src/` se cuentan un nivel
+    # más abajo. Sin el prefijo, `--ignore=src/pkg/iso9362.py` no coincide con
+    # nada y la ruta se queda nombrando un fichero que ya no existe.
+    prefix = base.relative_to(root).as_posix()
+    prefix = "" if prefix == "." else f"{prefix}/"
     replacements = {
-        "/".join(original.split(".")) + ".py": "/".join(target.split(".")) + ".py"
+        prefix + "/".join(original.split(".")) + ".py": prefix
+        + "/".join(target.split(".")) + ".py"
         for original, target in moves.items()
     }
     changed = 0
@@ -904,7 +940,7 @@ _SECTION_HEADER = re.compile(r"\s*\[\[?([^\]]*)\]")
 _PACKAGE_LIST_LINE = re.compile(rf"\s*{PACKAGE_LIST_KEY}\s*=")
 
 
-def _surviving_packages(root: Path, names: list[str]) -> list[str]:
+def _surviving_packages(base: Path, names: list[str]) -> list[str]:
     """De los nombres declarados, los que todavía son un directorio del árbol.
 
     Es exactamente lo que setuptools comprueba —`build_py.check_package` falla
@@ -922,11 +958,11 @@ def _surviving_packages(root: Path, names: list[str]) -> list[str]:
         name
         for name in names
         if not all(part.isidentifier() for part in name.split("."))
-        or (root / Path(*name.split("."))).is_dir()
+        or (base / Path(*name.split("."))).is_dir()
     ]
 
 
-def _prune_toml_package_list(root: Path) -> int:
+def _prune_toml_package_list(root: Path, base: Path) -> int:
     """`[tool.setuptools] packages = [...]` en pyproject.toml."""
     path = root / "pyproject.toml"
     if not path.exists():
@@ -942,7 +978,7 @@ def _prune_toml_package_list(root: Path) -> int:
     # construir y sigue resolviendo bien con el árbol aplanado.
     if not isinstance(declared, list) or not all(isinstance(name, str) for name in declared):
         return 0
-    kept = _surviving_packages(root, declared)
+    kept = _surviving_packages(base, declared)
     if kept == declared:
         return 0
     lines = source.splitlines(keepends=True)
@@ -965,7 +1001,7 @@ def _prune_toml_package_list(root: Path) -> int:
     return 0
 
 
-def _prune_cfg_package_list(root: Path) -> int:
+def _prune_cfg_package_list(root: Path, base: Path) -> int:
     """`[options] packages = ...` en setup.cfg, en sus dos escrituras."""
     path = root / "setup.cfg"
     if not path.exists():
@@ -980,7 +1016,7 @@ def _prune_cfg_package_list(root: Path) -> int:
     if declared is None:
         return 0
     names = [name.strip() for name in re.split(r"[,\n]", declared) if name.strip()]
-    kept = _surviving_packages(root, names)
+    kept = _surviving_packages(base, names)
     if kept == names:
         return 0
     one_per_line = declared.startswith("\n")
@@ -1016,8 +1052,8 @@ class _PrunePackageList(cst.CSTTransformer):
     criterio.
     """
 
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self, base: Path) -> None:
+        self.base = base
 
     def leave_Arg(self, original: cst.Arg, updated: cst.Arg) -> cst.Arg:
         if original.keyword is None or original.keyword.value != PACKAGE_LIST_KEY:
@@ -1029,7 +1065,7 @@ class _PrunePackageList(cst.CSTTransformer):
             for element in updated.value.elements
             if not isinstance(element.value, cst.SimpleString)
             or not isinstance(name := element.value.evaluated_value, str)
-            or _surviving_packages(self.root, [name])
+            or _surviving_packages(self.base, [name])
         ]
         if len(elements) == len(updated.value.elements):
             return updated
@@ -1041,7 +1077,7 @@ class _PrunePackageList(cst.CSTTransformer):
         return updated.with_changes(value=updated.value.with_changes(elements=elements))
 
 
-def _prune_setup_script_package_list(root: Path) -> int:
+def _prune_setup_script_package_list(root: Path, base: Path) -> int:
     path = root / SETUP_SCRIPT
     if not path.exists():
         return 0
@@ -1050,14 +1086,14 @@ def _prune_setup_script_package_list(root: Path) -> int:
         module = cst.parse_module(source)
     except cst.ParserSyntaxError:
         return 0
-    transformed = module.visit(_PrunePackageList(root)).code
+    transformed = module.visit(_PrunePackageList(base)).code
     if transformed == source:
         return 0
     path.write_text(transformed, encoding="utf-8")
     return 1
 
 
-def _prune_declared_packages(root: Path) -> int:
+def _prune_declared_packages(root: Path, base: Path) -> int:
     """Los paquetes que el empaquetado declara y que ya no existen.
 
     Un import roto se ve y una ruta rota en la configuración de la suite no
@@ -1072,9 +1108,9 @@ def _prune_declared_packages(root: Path) -> int:
     directorios que quedaron vacíos ya se borraron.
     """
     return (
-        _prune_toml_package_list(root)
-        + _prune_cfg_package_list(root)
-        + _prune_setup_script_package_list(root)
+        _prune_toml_package_list(root, base)
+        + _prune_cfg_package_list(root, base)
+        + _prune_setup_script_package_list(root, base)
     )
 
 
@@ -1118,11 +1154,15 @@ def apply(root: Path) -> TransformResult:
 
     package = _package_root(root)
     assert package is not None  # `plan_moves` ya devolvió vacío si no lo había
+    # Desde dónde se cuentan los nombres de módulo, que es también donde hay que
+    # ir a buscar y dejar los ficheros: la raíz del árbol, o `src/` si el
+    # paquete cuelga de ahí.
+    base = package.parent
     changed = 0
     # Los ficheros de doctest no son .py y no los recoge `iter_transformable_files`,
     # pero la suite del repo los ejecuta: en python-stdnum son 234 líneas de
     # ejemplo importando por ruta de módulo, o sea 234 fallos si se quedan atrás.
-    changed += _rewrite_configured_paths(root, moves)
+    changed += _rewrite_configured_paths(root, base, moves)
     changed += _rewrite_entry_points(root, moves)
     changed += _rewrite_setup_script(root, moves)
 
@@ -1143,11 +1183,11 @@ def apply(root: Path) -> TransformResult:
             changed += 1
 
     for original, target in moves.items():
-        source_path = _module_path(root, original)
+        source_path = _module_path(base, original)
         if not source_path.exists():
             # Un paquete es su `__init__.py`, no un fichero con su nombre.
-            source_path = root / Path(*original.split(".")) / "__init__.py"
-        destination = _module_path(root, target)
+            source_path = base / Path(*original.split(".")) / "__init__.py"
+        destination = _module_path(base, target)
         if source_path != destination and source_path.exists():
             shutil.move(str(source_path), str(destination))
             changed += 1
@@ -1161,6 +1201,6 @@ def apply(root: Path) -> TransformResult:
             if directory.is_dir() and not any(directory.iterdir()):
                 directory.rmdir()
 
-    changed += _prune_declared_packages(root)
+    changed += _prune_declared_packages(root, base)
 
     return TransformResult(files_changed=changed, moves=moves)

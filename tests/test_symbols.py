@@ -194,3 +194,30 @@ def test_a_package_is_named_by_how_it_is_imported_not_by_its_file(tmp_path: Path
     assert sorted(symbols) == ["pkg.sub.Widget", "pkg.sub.Widget.render"]
     assert symbols["pkg.sub.Widget"].module == "pkg.sub"
     assert symbols["pkg.sub.Widget"].path == "pkg/sub/__init__.py"
+
+
+def test_in_a_src_layout_the_map_follows_the_move_like_anywhere_else(tmp_path: Path):
+    """El mismo cruce de nombres, en el layout donde el paquete no cuelga de la
+    raíz. `src/pkg/es/nif.py` se importa como `pkg.es.nif`, y esa tiene que ser
+    también la clave del mapa: si aquí se llamara `src.pkg.es.nif` y la familia
+    B anunciara `pkg.es.nif`, la búsqueda en `moves` no encontraría nada y todos
+    los símbolos del paquete se caerían del mapa a la vez —callar donde §5.4.2
+    pide procedencia—."""
+    from acp.transforms import b2_hierarchy
+
+    root = tmp_path / "repo"
+    package = root / "src" / "pkg" / "es"
+    package.mkdir(parents=True)
+    (root / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "nif.py").write_text(
+        "def validate(number):\n    return number.strip()\n", encoding="utf-8"
+    )
+    symbols = build_symbol_map(root)
+    assert "pkg.es.nif.validate" in symbols
+
+    moves = b2_hierarchy.apply(root).moves
+    relocated = relocate_symbols(symbols, root, moves=moves)
+
+    target = moves["pkg.es.nif"].split(".")[-1]
+    assert relocated["pkg.es.nif.validate"].path == f"src/pkg/{target}.py"

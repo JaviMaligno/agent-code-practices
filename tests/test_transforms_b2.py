@@ -1265,3 +1265,98 @@ def test_two_packages_of_the_repo_itself_still_leave_no_clear_root(tmp_path: Pat
 
     assert b2_hierarchy._package_root(tmp_path) is None
     assert b2_hierarchy.plan_moves(tmp_path) == {}
+
+
+# --- Las dos formas de repo en las que no había paquete raíz -----------------
+#
+# `_package_root` exige un candidato claro, y hay dos maneras muy comunes de no
+# dárselo: empaquetar la suite (`tests/__init__.py`, que añade un segundo
+# directorio con `__init__.py` en la raíz) y el layout `src/`, donde no hay
+# NINGUNO porque el paquete cuelga de un directorio que no es paquete. Las dos
+# dejaban B2 en no-op silencioso: moves vacío, árbol idéntico, celda en verde y
+# dosis cero, que es el fallo más caro que declara este módulo.
+
+
+def build_with_packaged_suite(root: Path) -> None:
+    build(root)
+    (root / "tests").mkdir()
+    (root / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "tests" / "test_nif.py").write_text(
+        "from pkg.es.nif import validate\n\n\ndef test_it():\n    assert validate(' 12 ') == '12'\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_repo_that_packages_its_suite_still_has_a_root_package(tmp_path: Path):
+    """`tests/__init__.py` es un segundo directorio con `__init__.py` en la
+    raíz, pero no es un candidato: quién es código del repositorio y quién no lo
+    contesta `acp.metrics.size` (`is_excluded_dir`), que es la misma pregunta y
+    tiene que tener una sola respuesta. Es la forma de sqlglot y de holidays."""
+    build_with_packaged_suite(tmp_path)
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert b2_hierarchy._package_root(tmp_path) == tmp_path / "pkg"
+    assert result.moves["pkg.es.nif"].startswith("pkg.m")
+    assert not (tmp_path / "pkg" / "es").exists()
+    # La suite empaquetada no es el paquete raíz y se queda donde está.
+    assert (tmp_path / "tests" / "test_nif.py").exists()
+
+
+SRC_PYPROJECT = """\
+[project]
+name = "demo"
+version = "0.1.0"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+"""
+
+
+def build_src_layout(root: Path) -> None:
+    (root / "pyproject.toml").write_text(SRC_PYPROJECT, encoding="utf-8")
+    pkg = root / "src" / "pkg"
+    (pkg / "es").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "util.py").write_text("def clean(x):\n    return x.strip()\n", encoding="utf-8")
+    (pkg / "es" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "es" / "nif.py").write_text(
+        "from pkg.util import clean\n\n\ndef validate(number):\n    return clean(number)\n",
+        encoding="utf-8",
+    )
+    (root / "tests").mkdir()
+    (root / "tests" / "test_nif.py").write_text(
+        "from pkg.es.nif import validate\n\n\ndef test_it():\n    assert validate(' 12 ') == '12'\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_src_layout_repo_is_flattened_and_its_suite_still_passes(tmp_path: Path):
+    """En layout `src/` no hay ningún directorio con `__init__.py` en la raíz,
+    así que no había candidato y B2 no hacía nada. El paquete está un nivel más
+    abajo, y su nombre de módulo se cuenta desde `src/` —`pkg.es.nif`, que es
+    como se importa—, no desde la raíz del árbol.
+
+    Se comprueba corriendo la suite: si los nombres se contaran desde la raíz,
+    el diccionario de movimientos hablaría de `src.pkg.es.nif`, ningún import
+    del repo coincidiría, los ficheros se moverían igual y el repo quedaría
+    roto en silencio.
+    """
+    build_src_layout(tmp_path)
+    before = run_pytest(tmp_path)
+    assert "1 passed" in before.stdout, before.stdout[-1500:]
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert result.moves["pkg.es.nif"].startswith("pkg.m")
+    assert not (tmp_path / "src" / "pkg" / "es").exists()
+    assert (tmp_path / "src" / "pkg" / "__init__.py").exists()
+    after = run_pytest(tmp_path)
+    assert "1 passed" in after.stdout, after.stdout[-2000:]
