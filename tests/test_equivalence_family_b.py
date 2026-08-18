@@ -59,6 +59,16 @@ class Cell:
 # python-stdnum B2 no aplica nada —ver
 # `test_b2_does_not_apply_to_a_package_addressed_by_computed_name`—, así que esa
 # celda solo compararía un árbol consigo mismo.
+#
+# Y B4 va sobre python-stdnum, no sobre pint, por el motivo simétrico: la suite
+# de pint vive dentro del paquete (`pint/testsuite/`) y B4 no la toca por
+# decisión declarada —ver
+# `test_b4_does_not_apply_to_a_suite_nested_inside_the_package`—, así que esa
+# celda tampoco mediría nada. Las dos ausencias están comprobadas
+# porque una celda que no aplica y una celda que aplica y sale igual se leen
+# idénticas desde el resultado, y solo la segunda es una prueba de
+# equivalencia. B3 sí tiene dosis en los dos repos; la matriz gasta un solo
+# repo por transformación y para B3 usa python-stdnum.
 CELLS = [
     Cell(repo="pint", transform="B2", install_repo=False),
     Cell(repo="python-stdnum", transform="B3"),
@@ -154,3 +164,30 @@ def test_b2_does_not_apply_to_a_package_addressed_by_computed_name(tmp_path: Pat
 
     assert b2_hierarchy.computed_module_prefixes(clone) == {"stdnum."}
     assert b2_hierarchy.plan_moves(clone) == {}
+
+
+def test_b4_does_not_apply_to_a_suite_nested_inside_the_package(tmp_path: Path):
+    """Por qué pint no está en la matriz de B4, escrito y comprobado.
+
+    La suite de pint es `pint/testsuite/` —dentro del paquete—, y ese es el
+    límite declarado de B4 (§4.2): un directorio de tests que el propio código
+    puede importar no se mueve, porque la verificación restaura la suite antes
+    de correr y un import roto por habérsela llevado no lo vería nadie.
+
+    Sin este test, la ausencia de la celda descansaba en un comentario. Y
+    `suite_paths` devolviendo `[]` tiene las mismas dos causas que un
+    `plan_moves` vacío en B2: que el repo no tenga suite, o que B4 no la haya
+    reconocido. Aquí se separan a mano: la suite existe, está un nivel adentro,
+    y ninguno de los nombres que B4 busca aparece en la raíz.
+    """
+    clone = clone_repo(REPOS["pint"], tmp_path / "repo")
+
+    suite = clone / "pint" / "testsuite"
+    nested = sorted(path.name for path in suite.glob("test_*.py"))
+    assert len(nested) > 20, f"pint ya no tiene su suite dentro del paquete: {nested}"
+    assert not [
+        name
+        for name in b4_tests.SUITE_DIRS + b4_tests.SUITE_FILES
+        if (clone / name).exists()
+    ]
+    assert b4_tests.suite_paths(clone) == []
