@@ -895,6 +895,189 @@ def _rewrite_setup_script(root: Path, moves: dict[str, str]) -> int:
     return 1
 
 
+# La otra cosa que el empaquetado nombra con puntos: la lista estática de
+# paquetes. `packages` es la clave en los tres ficheros —`[tool.setuptools]` en
+# pyproject, `[options]` en setup.cfg y el argumento de `setup()`—, y las tres
+# se leen igual de mal después de aplanar.
+PACKAGE_LIST_KEY = "packages"
+_SECTION_HEADER = re.compile(r"\s*\[\[?([^\]]*)\]")
+_PACKAGE_LIST_LINE = re.compile(rf"\s*{PACKAGE_LIST_KEY}\s*=")
+
+
+def _surviving_packages(root: Path, names: list[str]) -> list[str]:
+    """De los nombres declarados, los que todavía son un directorio del árbol.
+
+    Es exactamente lo que setuptools comprueba —`build_py.check_package` falla
+    con `package directory 'pkg/plugins' does not exist`—, y por eso se pregunta
+    por el directorio y no por el `__init__.py`: un directorio que sobrevive
+    porque guarda ficheros de datos ya no es un paquete importable, pero
+    declararlo no rompe la instalación y quitarlo cambiaría lo que se empaqueta.
+
+    Lo que no se parece a un paquete nombrado con puntos se deja como está: no
+    es algo que B2 haya movido, así que no es asunto suyo decidir si sobra. Ahí
+    entra el `packages = find:` de setup.cfg, que no nombra nada porque lo
+    resuelve setuptools al construir, y sigue resolviendo bien tras aplanar.
+    """
+    return [
+        name
+        for name in names
+        if not all(part.isidentifier() for part in name.split("."))
+        or (root / Path(*name.split("."))).is_dir()
+    ]
+
+
+def _prune_toml_package_list(root: Path) -> int:
+    """`[tool.setuptools] packages = [...]` en pyproject.toml."""
+    path = root / "pyproject.toml"
+    if not path.exists():
+        return 0
+    source = read_source(path)
+    try:
+        data = tomllib.loads(source)
+    except tomllib.TOMLDecodeError:
+        return 0
+    setuptools = (data.get("tool") or {}).get("setuptools") or {}
+    declared = setuptools.get(PACKAGE_LIST_KEY)
+    # Una tabla en vez de una lista es la forma `find`, que se resuelve al
+    # construir y sigue resolviendo bien con el árbol aplanado.
+    if not isinstance(declared, list) or not all(isinstance(name, str) for name in declared):
+        return 0
+    kept = _surviving_packages(root, declared)
+    if kept == declared:
+        return 0
+    lines = source.splitlines(keepends=True)
+    section = ""
+    for index, line in enumerate(lines):
+        header = _SECTION_HEADER.match(line)
+        if header is not None:
+            section = header.group(1).strip()
+            continue
+        if section != "tool.setuptools" or not _PACKAGE_LIST_LINE.match(line):
+            continue
+        end = index
+        while end < len(lines) - 1 and "]" not in lines[end]:
+            end += 1
+        indent = line[: len(line) - len(line.lstrip())]
+        rendered = ", ".join(f'"{name}"' for name in kept)
+        lines[index : end + 1] = [f"{indent}{PACKAGE_LIST_KEY} = [{rendered}]\n"]
+        path.write_text("".join(lines), encoding="utf-8")
+        return 1
+    return 0
+
+
+def _prune_cfg_package_list(root: Path) -> int:
+    """`[options] packages = ...` en setup.cfg, en sus dos escrituras."""
+    path = root / "setup.cfg"
+    if not path.exists():
+        return 0
+    source = read_source(path)
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(source)
+    except configparser.Error:
+        return 0
+    declared = parser.get("options", PACKAGE_LIST_KEY, fallback=None)
+    if declared is None:
+        return 0
+    names = [name.strip() for name in re.split(r"[,\n]", declared) if name.strip()]
+    kept = _surviving_packages(root, names)
+    if kept == names:
+        return 0
+    one_per_line = declared.startswith("\n")
+    lines = source.splitlines(keepends=True)
+    section = ""
+    for index, line in enumerate(lines):
+        header = _SECTION_HEADER.match(line)
+        if header is not None:
+            section = header.group(1).strip()
+            continue
+        if section != "options" or not _PACKAGE_LIST_LINE.match(line):
+            continue
+        # El valor multilínea sigue en las líneas indentadas de debajo.
+        end = index + 1
+        while end < len(lines) and lines[end][:1].isspace() and lines[end].strip():
+            end += 1
+        if one_per_line:
+            lines[index:end] = [f"{PACKAGE_LIST_KEY} =\n", *(f"    {name}\n" for name in kept)]
+        else:
+            lines[index:end] = [f"{PACKAGE_LIST_KEY} = " + ", ".join(kept) + "\n"]
+        path.write_text("".join(lines), encoding="utf-8")
+        return 1
+    return 0
+
+
+class _PrunePackageList(cst.CSTTransformer):
+    """`packages=[...]` como argumento de `setup()`.
+
+    Aquí la lista no se queda obsoleta, que sería lo esperable: la reescritura
+    de cadenas la sigue, así que `pkg.plugins` sale como `pkg.m0` y declara como
+    paquete lo que ahora es un módulo. Roto igual —`package directory 'pkg/m0'
+    does not exist`— y por el mismo sitio, así que se poda con el mismo
+    criterio.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def leave_Arg(self, original: cst.Arg, updated: cst.Arg) -> cst.Arg:
+        if original.keyword is None or original.keyword.value != PACKAGE_LIST_KEY:
+            return updated
+        if not isinstance(updated.value, cst.List):
+            return updated
+        elements = [
+            element
+            for element in updated.value.elements
+            if not isinstance(element.value, cst.SimpleString)
+            or not isinstance(name := element.value.evaluated_value, str)
+            or _surviving_packages(self.root, [name])
+        ]
+        if len(elements) == len(updated.value.elements):
+            return updated
+        if elements:
+            # La coma del último elemento es la que lleva pegado el formato del
+            # cierre: sin heredarla, podar el último deja el corchete colgando
+            # con la sangría del elemento que ya no está.
+            elements[-1] = elements[-1].with_changes(comma=updated.value.elements[-1].comma)
+        return updated.with_changes(value=updated.value.with_changes(elements=elements))
+
+
+def _prune_setup_script_package_list(root: Path) -> int:
+    path = root / SETUP_SCRIPT
+    if not path.exists():
+        return 0
+    source = read_source(path)
+    try:
+        module = cst.parse_module(source)
+    except cst.ParserSyntaxError:
+        return 0
+    transformed = module.visit(_PrunePackageList(root)).code
+    if transformed == source:
+        return 0
+    path.write_text(transformed, encoding="utf-8")
+    return 1
+
+
+def _prune_declared_packages(root: Path) -> int:
+    """Los paquetes que el empaquetado declara y que ya no existen.
+
+    Un import roto se ve y una ruta rota en la configuración de la suite no
+    —eso es `_rewrite_configured_paths`—; esto es un tercer escalón: el árbol
+    transformado ni siquiera se instala, y con eso se cae también el arreglo de
+    los entry points, que es el que necesita que la instalación llegue a
+    ocurrir. Medido con pip sobre el fixture: `error: package directory 'pkg/es'
+    does not exist`, `metadata-generation-failed`.
+
+    Va al final de `apply` a propósito: la pregunta es si el directorio existe
+    todavía, y eso solo se sabe cuando los ficheros ya se movieron y los
+    directorios que quedaron vacíos ya se borraron.
+    """
+    return (
+        _prune_toml_package_list(root)
+        + _prune_cfg_package_list(root)
+        + _prune_setup_script_package_list(root)
+    )
+
+
 def _drop_stale_bytecode(package: Path) -> None:
     """El bytecode compilado del árbol de antes, que es la dosis de B2 al revés.
 
@@ -977,5 +1160,7 @@ def apply(root: Path) -> TransformResult:
         for directory in sorted(package.rglob("*"), reverse=True):
             if directory.is_dir() and not any(directory.iterdir()):
                 directory.rmdir()
+
+    changed += _prune_declared_packages(root)
 
     return TransformResult(files_changed=changed, moves=moves)

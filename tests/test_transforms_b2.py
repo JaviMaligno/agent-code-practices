@@ -1012,6 +1012,134 @@ def test_prose_in_setup_py_is_not_an_entry_point(tmp_path: Path):
     assert "description='run pkg-check = pkg.es.nif:validate to check a number'" in text
 
 
+# --- La otra cosa que el empaquetado nombra con puntos ----------------------
+#
+# Un entry point no es lo único: la lista estática de paquetes también nombra
+# módulos con puntos, y aplanar deja ahí subpaquetes que ya no existen. El
+# fallo es más temprano y más tonto que el del entry point —el árbol
+# transformado ni siquiera se instala—, así que se lleva por delante el arreglo
+# de los entry points en los repos que la usan.
+
+
+def declared_packages_exist(root: Path, names) -> None:
+    for name in names:
+        assert (root / Path(*name.split("."))).is_dir(), name
+
+
+def test_the_static_package_list_in_pyproject_only_names_what_exists(tmp_path: Path):
+    """Medido con pip sobre el fixture: `pip install -e . --no-build-isolation`
+    muere con `error: package directory 'pkg/es' does not exist` y
+    `metadata-generation-failed`. La matriz de equivalencia corre B2 con
+    `install_repo=False`, así que la celda no lo vería nunca.
+    """
+    import tomllib
+
+    build(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "pkg"\nversion = "0.1.0"\n\n'
+        '[tool.setuptools]\npackages = ["pkg", "pkg.es", "pkg.iso"]\n',
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    declared = tomllib.loads((tmp_path / "pyproject.toml").read_text(encoding="utf-8"))
+    names = declared["tool"]["setuptools"]["packages"]
+    declared_packages_exist(tmp_path, names)
+    # Y el paquete raíz sigue declarado: la lista se poda, no se vacía.
+    assert names == ["pkg"]
+
+
+def test_the_static_package_list_in_setup_cfg_only_names_what_exists(tmp_path: Path):
+    """La misma lista en la otra forma, con los nombres separados por comas."""
+    build(tmp_path)
+    (tmp_path / "setup.cfg").write_text(
+        "[metadata]\nname = pkg\nversion = 0.1.0\n\n"
+        "[options]\npackages = pkg, pkg.es, pkg.iso\n",
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    text = (tmp_path / "setup.cfg").read_text(encoding="utf-8")
+    names = [name.strip() for name in text.split("packages =")[1].split("\n")[0].split(",")]
+    declared_packages_exist(tmp_path, [name for name in names if name])
+    assert [name for name in names if name] == ["pkg"]
+
+
+def test_a_package_list_written_one_per_line_survives_the_pruning(tmp_path: Path):
+    """La escritura multilínea de `setup.cfg`: el valor sigue siendo una lista,
+    y podarla no puede convertirla en otra cosa."""
+    import configparser
+
+    build(tmp_path)
+    (tmp_path / "setup.cfg").write_text(
+        "[metadata]\nname = pkg\nversion = 0.1.0\n\n"
+        "[options]\npackages =\n    pkg\n    pkg.es\n    pkg.iso\n"
+        "install_requires =\n    tomli\n",
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read_string((tmp_path / "setup.cfg").read_text(encoding="utf-8"))
+    names = [name for name in parser["options"]["packages"].split("\n") if name.strip()]
+    declared_packages_exist(tmp_path, [name.strip() for name in names])
+    assert [name.strip() for name in names] == ["pkg"]
+    # Lo de al lado no se toca: la clave siguiente sigue entera.
+    assert parser["options"]["install_requires"].split() == ["tomli"]
+    # Y sigue escrita una por línea: la dosis de B2 es la jerarquía, no el
+    # formato del fichero de empaquetado.
+    assert "\npackages =\n    pkg\n" in (tmp_path / "setup.cfg").read_text(encoding="utf-8")
+
+
+def test_the_package_list_in_setup_py_only_names_what_exists(tmp_path: Path):
+    """En `setup.py` la lista no se queda obsoleta: la reescritura de cadenas la
+    sigue, y `packages=['pkg', 'pkg.m0']` nombra un módulo como si fuera un
+    directorio. Medido con pip: `error: package directory 'pkg/m0' does not
+    exist`. Roto igual, y por el mismo sitio."""
+    import ast
+
+    build(tmp_path)
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "\n"
+        "setup(\n"
+        "    name='pkg',\n"
+        "    version='0.1.0',\n"
+        "    packages=['pkg', 'pkg.es', 'pkg.iso'],\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    tree = ast.parse((tmp_path / "setup.py").read_text(encoding="utf-8"))
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    names = next(
+        ast.literal_eval(keyword.value) for keyword in call.keywords if keyword.arg == "packages"
+    )
+    declared_packages_exist(tmp_path, names)
+    assert names == ["pkg"]
+
+
+def test_a_package_list_that_is_a_directive_is_left_alone(tmp_path: Path):
+    """`packages = find:` no nombra nada: lo resuelve setuptools al construir, y
+    después de aplanar sigue resolviendo bien. Podarlo sería quitarle al repo la
+    única declaración que tiene."""
+    build(tmp_path)
+    (tmp_path / "setup.cfg").write_text(
+        "[metadata]\nname = pkg\nversion = 0.1.0\n\n[options]\npackages = find:\n",
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    text = (tmp_path / "setup.cfg").read_text(encoding="utf-8")
+    assert "packages = find:" in text
+
+
 # --- La dosis en cero, en silencio ------------------------------------------
 #
 # La limpieza final solo borra los directorios que quedan **vacíos**, así que
