@@ -653,6 +653,39 @@ def _rewrite_entry_points(root: Path, moves: dict[str, str]) -> int:
     return changed
 
 
+def _drop_stale_bytecode(package: Path) -> None:
+    """El bytecode compilado del árbol de antes, que es la dosis de B2 al revés.
+
+    Un `__pycache__` guarda un fichero por módulo, nombrado como el módulo. Tras
+    aplanar, esos nombres son exactamente los que B2 acaba de destruir, y siguen
+    ahí en dos sitios que ningún borrado de vacíos alcanza: dentro de los
+    directorios originales —que precisamente por eso no quedan vacíos y
+    sobreviven enteros con su jerarquía— y dentro del paquete raíz, que sobrevive
+    por diseño (§5.6). Medido sobre el clon de pint compilado: 12 directorios sin
+    un solo .py dentro se salvan del borrado y `pint/__pycache__` conserva
+    `pint_convert`, `registry_helpers`, `babel_names`... Un `ls -R` reconstruye
+    el árbol que la condición dice haber quitado, o sea una celda con dosis cero
+    que se mide en verde: no mide la transformación, no mide nada.
+
+    Borrarlo es además lo correcto de por sí: un `.pyc` en `__pycache__` solo lo
+    usa Python si su `.py` sigue al lado, y el de un módulo movido ya no lo está.
+
+    Va aquí y no solo en `copy_tree` a propósito. El filtro de la copia protege
+    la única entrada que hay **hoy**; `apply` recibe un árbol y no sabe quién lo
+    preparó ni qué se importó dentro desde entonces —`run_suite_in_venv` corre
+    pytest con cwd en el repo—, y el modo de fallo del que se protege es el peor
+    del experimento: la celda no revienta, se lee como éxito con la dosis a cero.
+    Dos guardarraíles para eso no es redundancia.
+    """
+    for cache in sorted(package.rglob("__pycache__"), reverse=True):
+        if cache.is_dir():
+            shutil.rmtree(cache)
+    # El formato antiguo, junto al fuente: no lo hay en un repo moderno, pero
+    # nombra al módulo igual de bien.
+    for compiled in package.rglob("*.py[co]"):
+        compiled.unlink()
+
+
 def apply(root: Path) -> TransformResult:
     moves = plan_moves(root)
     if not moves:
@@ -695,6 +728,7 @@ def apply(root: Path) -> TransformResult:
 
     package = _package_root(root)
     if package is not None:
+        _drop_stale_bytecode(package)
         # Solo los que quedan vacíos: un directorio con ficheros de datos dentro
         # sigue haciendo falta, porque quien los abre lo hace por ruta.
         for directory in sorted(package.rglob("*"), reverse=True):

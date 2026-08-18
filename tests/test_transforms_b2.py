@@ -767,3 +767,76 @@ def test_prose_in_the_packaging_file_is_left_alone(tmp_path: Path):
 
     text = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
     assert 'description = "validate with pkg.es.nif"' in text
+
+
+# --- La dosis en cero, en silencio ------------------------------------------
+#
+# La limpieza final solo borra los directorios que quedan **vacíos**, así que
+# cualquier cosa que sobreviva dentro los mantiene vivos. El bytecode compilado
+# es exactamente eso, y encima está nombrado por el módulo de antes.
+
+
+def compile_tree(root: Path) -> None:
+    import compileall
+
+    compileall.compile_dir(str(root), quiet=2)
+
+
+def test_a_bytecode_cache_does_not_keep_the_original_hierarchy_alive(tmp_path: Path):
+    """Con un `__pycache__` dentro, ningún directorio queda vacío y B2 no aplana
+    nada: la jerarquía entera sobrevive y la celda mide cero en verde.
+
+    Medido sobre el clon de pint: pristino sobreviven 5 directorios, y tras un
+    `compileall` sobreviven 15 —`pint/delegates`, `pint/facets/numpy`,
+    `pint/facets/context`...—, doce de ellos sin un solo .py dentro.
+    """
+    build(tmp_path)
+    compile_tree(tmp_path)
+
+    b2_hierarchy.apply(tmp_path)
+
+    assert not (tmp_path / "pkg" / "es").exists()
+    assert not (tmp_path / "pkg" / "iso").exists()
+
+
+def test_no_stale_bytecode_keeps_naming_a_module_that_moved(tmp_path: Path):
+    """No es solo cuestión de directorios vacíos: `pint/__pycache__` cuelga del
+    paquete raíz, que sobrevive por diseño (§5.6), y dentro guarda
+    `pint_convert.cpython-312.pyc`, `registry_helpers.cpython-312.pyc`... o sea
+    los nombres de módulo que B2 acaba de destruir, en un directorio que ningún
+    borrado de vacíos alcanza. Un `ls -R` los recupera enteros.
+    """
+    build(tmp_path)
+    compile_tree(tmp_path)
+
+    b2_hierarchy.apply(tmp_path)
+
+    names = [path.name for path in (tmp_path / "pkg").rglob("*") if path.is_file()]
+    assert not [name for name in names if name.endswith((".pyc", ".pyo"))], names
+    assert not [name for name in names if name.startswith(("nif", "util", "mod97"))], names
+
+
+def test_the_flattened_package_still_imports_after_the_cache_is_dropped(tmp_path: Path):
+    """Borrar el bytecode no puede romper nada: Python solo usa un `.pyc` de
+    `__pycache__` si el `.py` sigue al lado, y el de los módulos movidos ya no
+    lo está."""
+    build(tmp_path)
+    compile_tree(tmp_path)
+
+    b2_hierarchy.apply(tmp_path)
+
+    ran = run_in(tmp_path, "import pkg; print('ok')")
+    assert ran.returncode == 0, ran.stderr
+
+
+def test_a_directory_with_data_files_still_survives(tmp_path: Path):
+    """El borrado sigue siendo solo de vacíos: quien abre un fichero de datos lo
+    hace por ruta, y llevarse su directorio rompería el repo. Lo que cambia es
+    que el bytecode ya no cuenta como contenido."""
+    build(tmp_path)
+    (tmp_path / "pkg" / "iso" / "table.dat").write_text("1\n", encoding="utf-8")
+    compile_tree(tmp_path)
+
+    b2_hierarchy.apply(tmp_path)
+
+    assert (tmp_path / "pkg" / "iso" / "table.dat").exists()
