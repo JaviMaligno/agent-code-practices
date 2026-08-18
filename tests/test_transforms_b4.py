@@ -514,3 +514,38 @@ def test_what_only_looks_like_the_suite_path_survives_the_rewrite(tmp_path: Path
         "[pytest]\n"
         "addopts = --cov=tests --ignore=tests/conftest.py tests-slow docs/tests\n"
     ), rewritten
+
+
+def test_the_artefacts_that_name_the_hidden_tests_do_not_survive_apply(tmp_path: Path):
+    """El segundo guardarraíl, el mismo que B2 tiene para su bytecode (9b5ddcf).
+
+    `.pytest_cache/v/cache/nodeids` lista los IDs de la suite y
+    `*.egg-info/SOURCES.txt` sus rutas: son los dos punteros que `NOT_COPYABLE`
+    nombra, y con la suite ya fuera del árbol siguen dentro diciendo cómo se
+    llamaban los tests. Un `grep` los encuentra. `copy_tree` los filtra, pero
+    `apply` recibe un árbol sin saber quién lo preparó ni qué se ha corrido
+    dentro desde entonces —`run_suite_in_venv` ejecuta pytest y pip con cwd en el
+    repo—, y el modo de fallo del que esto protege es el peor: la celda no
+    revienta, se lee como éxito con la dosis a cero."""
+    root = tmp_path / "work"
+    build(root)
+    cache = root / ".pytest_cache" / "v" / "cache"
+    cache.mkdir(parents=True)
+    (cache / "nodeids").write_text(
+        '["tests/test_core.py::test_f"]', encoding="utf-8"
+    )
+    (root / "src").mkdir()
+    (root / "src" / "pkg.egg-info").mkdir()
+    (root / "src" / "pkg.egg-info" / "SOURCES.txt").write_text(
+        "pkg/core.py\ntests/test_core.py\n", encoding="utf-8"
+    )
+
+    b4_tests.apply(root)
+
+    assert not (root / "tests").exists()
+    naming_the_suite = [
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and "tests/test_core.py" in path.read_text(encoding="utf-8")
+    ]
+    assert naming_the_suite == [], naming_the_suite

@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import re
 import shutil
+from fnmatch import fnmatch
 from pathlib import Path
 
 from acp.metrics.size import is_excluded_dir, is_test_dir, read_source
@@ -29,6 +30,14 @@ from acp.transforms.base import (
 # que ya produjo una celda a cero. Esta tupla se queda porque nombra la forma
 # habitual y es lo que se comprueba contra los repos reales.
 SUITE_DIRS = ("tests", "test", "testsuite")
+# Los artefactos que, con la suite ya fuera, la siguen nombrando desde dentro
+# del árbol: `.pytest_cache/v/cache/nodeids` lista los IDs de los tests y
+# `*.egg-info/SOURCES.txt` sus rutas. Son los dos que `NOT_COPYABLE` nombra por
+# esta misma razón; aquí se repiten sueltos y no se reutiliza aquella lista
+# porque aquella dice qué NO copiar y esta qué BORRAR de un árbol existente, y
+# entre lo que no se copia está `.git`.
+POINTERS_TO_THE_SUITE = (".pytest_cache", "*.egg-info")
+
 # El conftest de la raíz es maquinaria de la suite —fixtures, plugins, rutas—:
 # dejarlo enseña la mitad de lo que B4 esconde.
 SUITE_FILES = ("conftest.py",)
@@ -296,6 +305,28 @@ def _stop_naming_the_suite(root: Path, found: list[Path], destination: Path) -> 
     return changed
 
 
+def _drop_the_pointers_to_the_suite(root: Path) -> None:
+    """Los artefactos que nombran los tests que acaban de salir del árbol.
+
+    Deliberadamente un segundo guardarraíl, igual que el bytecode rancio de B2
+    (9b5ddcf): `copy_tree` filtra estos mismos artefactos en la única entrada que
+    el pipeline tiene **hoy**, pero `apply` recibe un árbol sin saber quién lo
+    preparó ni qué se ha corrido dentro desde entonces —`run_suite_in_venv`
+    ejecuta pytest y pip con cwd en el repo—. Y aquí lo que sobrevive no rompe
+    nada: un `nodeids` con `tests/test_core.py::test_f` dentro de un árbol sin
+    `tests/` deja la celda en verde con la condición sin aplicar del todo, que es
+    el peor modo de fallo del experimento porque se lee como éxito.
+
+    Borrarlos es además lo correcto de por sí: los dos describen un árbol que ya
+    no existe y los dos se regeneran solos en la siguiente corrida.
+    """
+    for path in sorted(root.rglob("*"), reverse=True):
+        if not path.is_dir() or path.is_symlink():
+            continue
+        if any(fnmatch(path.name, pattern) for pattern in POINTERS_TO_THE_SUITE):
+            shutil.rmtree(path)
+
+
 def apply(root: Path) -> TransformResult:
     found = suite_paths(root)
     if not found:
@@ -327,4 +358,8 @@ def apply(root: Path) -> TransformResult:
     # Después de mover: lo que se guarda es la configuración tal y como estaba
     # cuando la suite todavía existía.
     changed += _stop_naming_the_suite(root, found, destination)
+    # Y después de todo: lo que queda en el árbol no puede seguir nombrando lo
+    # que se acaba de esconder. No cuenta como fichero cambiado —no es dosis,
+    # es que la dosis sea la declarada—, igual que el bytecode en B2.
+    _drop_the_pointers_to_the_suite(root)
     return TransformResult(files_changed=changed)
