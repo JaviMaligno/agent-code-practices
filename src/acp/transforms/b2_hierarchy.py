@@ -794,6 +794,107 @@ def _rewrite_declared_line(line: str, moves: dict[str, str], values: set[str]) -
     return head + separator + tail.replace(match.group(), moved, 1) + newline
 
 
+# El tercer sitio donde un repo declara sus entry points, y el único que es
+# Python: `setup.py` los pasa como argumento de `setup()`. No está en
+# `PACKAGING_FILES` porque no se lee con un parser de formato — se lee con el
+# mismo libcst que el resto del árbol.
+SETUP_SCRIPT = "setup.py"
+ENTRY_POINTS_KEYWORD = "entry_points"
+
+# Un bloque de entry points trae una declaración por línea, y dentro de un
+# literal de Python el salto puede estar escrito (`\n`) en vez de ser real.
+_ENTRY_POINT_BREAK = re.compile(r"(\\n|\n)")
+
+
+def _rewrite_entry_point_block(text: str, moves: dict[str, str]) -> str:
+    """Un literal de `entry_points`, sea una línea o un bloque entero.
+
+    Se trabaja sobre el texto **crudo** del literal, comillas y escapes
+    incluidos, porque es lo que hay que devolverle a libcst sin tocar la forma en
+    que estaba escrito. Lo único que se sustituye dentro es el módulo del valor.
+    """
+    return "".join(
+        piece if _ENTRY_POINT_BREAK.fullmatch(piece) else _rewrite_entry_point_line(piece, moves)
+        for piece in _ENTRY_POINT_BREAK.split(text)
+    )
+
+
+def _rewrite_entry_point_line(line: str, moves: dict[str, str]) -> str:
+    """`nombre = módulo:objeto`, con lo que sobre de comillas a los lados."""
+    head, separator, tail = line.rpartition("=")
+    if not separator:
+        return line
+    written = tail.strip().lstrip("\"'")
+    match = _ENTRY_POINT_MODULE.match(written)
+    if match is None:
+        return line
+    moved = _moved_dotted(match.group(), moves)
+    if moved is None:
+        return line
+    return head + separator + tail.replace(match.group(), moved, 1)
+
+
+class _RewriteEntryPointStrings(cst.CSTTransformer):
+    """Las cadenas que cuelgan del argumento `entry_points` de `setup()`.
+
+    Qué es una declaración y qué es prosa lo decide aquí la posición, no un
+    parser: dentro de ese argumento todo valor es un entry point, y fuera no se
+    mira nada. Es la misma regla que en `pyproject.toml` —solo el valor
+    declarado—, expresada con lo único que hay en un fichero de Python.
+
+    El argumento admite las tres escrituras que usan los repos (diccionario de
+    listas, diccionario de cadenas y bloque con formato ini en una sola cadena),
+    y las tres se reducen a lo mismo: cada literal de cadena que cuelga de ahí
+    lleva cero o más líneas `nombre = módulo:objeto`.
+    """
+
+    def __init__(self, moves: dict[str, str]) -> None:
+        self.moves = moves
+        self.inside = 0
+
+    def visit_Arg(self, node: cst.Arg) -> None:
+        if node.keyword is not None and node.keyword.value == ENTRY_POINTS_KEYWORD:
+            self.inside += 1
+
+    def leave_Arg(self, original: cst.Arg, updated: cst.Arg) -> cst.Arg:
+        if original.keyword is not None and original.keyword.value == ENTRY_POINTS_KEYWORD:
+            self.inside -= 1
+        return updated
+
+    def leave_SimpleString(
+        self, original: cst.SimpleString, updated: cst.SimpleString
+    ) -> cst.BaseExpression:
+        if not self.inside:
+            return updated
+        rewritten = _rewrite_entry_point_block(updated.value, self.moves)
+        return updated if rewritten == updated.value else updated.with_changes(value=rewritten)
+
+
+def _rewrite_setup_script(root: Path, moves: dict[str, str]) -> int:
+    """Los entry points declarados en `setup.py`.
+
+    `_rewrite_entry_points` cubre los dos ficheros de configuración; este es el
+    mismo agujero en el fichero que los declara ejecutando código. Medido sobre
+    un fixture con `entry_points={'console_scripts': [...]}`: `pip install -e .`
+    sale bien —el `setup.py` se instala igual de roto— y el script que escribe
+    pip muere con `ModuleNotFoundError` al importar el módulo de antes. Ningún
+    test del repo lo ve, porque una suite no ejecuta sus entry points.
+    """
+    path = root / SETUP_SCRIPT
+    if not path.exists():
+        return 0
+    source = read_source(path)
+    try:
+        module = cst.parse_module(source)
+    except cst.ParserSyntaxError:
+        return 0
+    transformed = module.visit(_RewriteEntryPointStrings(moves)).code
+    if transformed == source:
+        return 0
+    path.write_text(transformed, encoding="utf-8")
+    return 1
+
+
 def _drop_stale_bytecode(package: Path) -> None:
     """El bytecode compilado del árbol de antes, que es la dosis de B2 al revés.
 
@@ -840,6 +941,7 @@ def apply(root: Path) -> TransformResult:
     # ejemplo importando por ruta de módulo, o sea 234 fallos si se quedan atrás.
     changed += _rewrite_configured_paths(root, moves)
     changed += _rewrite_entry_points(root, moves)
+    changed += _rewrite_setup_script(root, moves)
 
     stationary = stationary_modules(root, moves)
     rewriter = _RewriteImports(moves, package.name, "", stationary)

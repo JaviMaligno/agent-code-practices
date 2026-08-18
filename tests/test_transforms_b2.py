@@ -927,6 +927,91 @@ def test_prose_in_setup_cfg_that_repeats_an_entry_point_is_left_alone(tmp_path: 
     assert "    pkg-check = pkg.es.nif:validate\n" not in text
 
 
+def test_a_console_script_declared_in_setup_py_still_names_a_module(tmp_path: Path):
+    """El tercer sitio donde se declara lo mismo, y el más antiguo: `setup.py`
+    pasa los entry points como argumento de `setup()`. Medido sobre un fixture
+    con `entry_points={'console_scripts': [...]}`: `pip install -e .` va bien
+    —el fichero se instala igual— y el script instalado muere con
+    `ModuleNotFoundError` porque su `from pkg.cli import main` apunta al módulo
+    de antes. Es el mismo modo de fallo que ya se tapó para `pyproject.toml`,
+    invisible por la misma razón: la suite no ejecuta entry points.
+    """
+    build(tmp_path)
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import find_packages, setup\n"
+        "\n"
+        "setup(\n"
+        "    name='pkg',\n"
+        "    version='0.1.0',\n"
+        "    packages=find_packages(),\n"
+        "    entry_points={'console_scripts': ['pkg-check = pkg.es.nif:validate']},\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    text = (tmp_path / "setup.py").read_text(encoding="utf-8")
+    assert "pkg.es.nif" not in text
+    module = text.split("pkg-check = ")[1].split(":")[0].strip()
+    ran = run_in(tmp_path, f"from {module} import validate\nprint(validate(' 12 '))")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == "12"
+
+
+def test_an_entry_point_block_written_as_one_string_follows_the_move(tmp_path: Path):
+    """La otra escritura del mismo argumento: el bloque con formato ini, tal cual
+    se hereda de `setup.cfg`, en una sola cadena. Las líneas van dentro del
+    literal, así que encontrarlas exige partir también por el `\\n` escrito: se
+    declaran dos scripts a propósito, porque con uno solo el último `=` de la
+    cadena es siempre el bueno y la partición no haría falta."""
+    build(tmp_path)
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "\n"
+        "setup(\n"
+        "    name='pkg',\n"
+        "    version='0.1.0',\n"
+        "    entry_points='[console_scripts]\\n"
+        "pkg-check = pkg.es.nif:validate\\n"
+        "pkg-mod97 = pkg.iso.mod97:check\\n',\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    text = (tmp_path / "setup.py").read_text(encoding="utf-8")
+    for script, attribute in (("pkg-check", "validate"), ("pkg-mod97", "check")):
+        module = text.split(f"{script} = ")[1].split(":")[0].strip()
+        ran = run_in(tmp_path, f"from {module} import {attribute}\nprint({attribute}(' 12 '))")
+        assert ran.returncode == 0, ran.stderr
+        assert ran.stdout.strip() == "12"
+
+
+def test_prose_in_setup_py_is_not_an_entry_point(tmp_path: Path):
+    """Aquí no hay parser que declare valores, así que lo declarado se decide por
+    posición: dentro del argumento `entry_points` y en ningún otro sitio. El
+    argumento de al lado repite la misma cadena dentro de una frase."""
+    build(tmp_path)
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "\n"
+        "setup(\n"
+        "    name='pkg',\n"
+        "    version='0.1.0',\n"
+        "    description='run pkg-check = pkg.es.nif:validate to check a number',\n"
+        "    entry_points={'console_scripts': ['pkg-check = pkg.es.nif:validate']},\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    text = (tmp_path / "setup.py").read_text(encoding="utf-8")
+    assert "description='run pkg-check = pkg.es.nif:validate to check a number'" in text
+
+
 # --- La dosis en cero, en silencio ------------------------------------------
 #
 # La limpieza final solo borra los directorios que quedan **vacíos**, así que
