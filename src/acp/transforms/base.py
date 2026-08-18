@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 
 
@@ -23,23 +24,75 @@ class TransformResult:
     moves: dict[str, str] = field(default_factory=dict)
 
 
+# Lo que no entra en la copia. No es higiene: cada uno de estos artefactos
+# REINTRODUCE en el árbol justo lo que una condición acaba de quitar, y lo hace
+# en un sitio donde ninguna transformación vuelve a mirar.
+#   - `.pytest_cache/v/cache/nodeids` lista los IDs de la suite que B4 se lleva
+#     fuera, y `*.egg-info/SOURCES.txt` sus rutas: dos punteros a los tests
+#     escondidos dentro del árbol que el agente explora.
+#   - `__pycache__` conserva el árbol de módulos con los nombres previos a B2,
+#     y además mantiene vivos directorios que B2 querría vaciar.
+#   - `build/lib/**`, `.tox`, `.nox`, `.venv` y `.eggs` guardan una copia
+#     literal del fuente instalado: el original entero, sin transformar.
+#   - `.acp-*` y `*.acp-tests` son del propio pipeline; hoy viven fuera del
+#     árbol, pero copiarlos si alguna vez cayeran dentro sería enseñar el
+#     experimento —la misma fuga que ya tapó `_reject_manifest_inside_the_tree`—.
+# Se filtra en la copia, que es por donde entran todos: `iter_transformable_files`
+# los salta, pero saltarlos al transformar solo garantiza que llegan intactos.
+NOT_COPYABLE = frozenset({
+    ".git",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".pytype", ".hypothesis",
+    ".tox", ".nox", ".eggs", ".venv", "venv", "node_modules",
+    "build", "dist", ".coverage",
+})
+
+# Lo mismo, cuando lo que delata es la forma del nombre y no el nombre exacto.
+# `.coverage.*` son los ficheros de coverage en paralelo; `.coveragerc` NO cae
+# aquí a propósito: es configuración del repositorio y el agente la lee.
+NOT_COPYABLE_PATTERNS = ("*.egg-info", "*.pyc", "*.pyo", ".coverage.*", ".acp-*", "*.acp-tests")
+
+# Artefactos y dependencias ajenas. Es lo que no se copia más el código
+# vendorizado, que sí viaja —el repo lo importa— pero no se transforma. No
+# incluye los directorios de test: esos sí se transforman (§4.3.1), al revés
+# que en las métricas de la fase 0.
+NOT_TRANSFORMABLE = NOT_COPYABLE | {"site-packages", "vendor", "third_party"}
+
+
+def _is_coverage_report(path: Path) -> bool:
+    """Un informe HTML de coverage, se llame como se llame.
+
+    Empotra el fuente entero en HTML —nombres y docstrings originales, uno por
+    módulo—, así que es una fuga de las gordas; pero cada repo bautiza la
+    carpeta a su gusto (`htmlcov`, `coverage`, `cov_html`) y excluir el nombre
+    `coverage` a secas se llevaría por delante un paquete legítimo. Lo que sí
+    es inequívoco es el par que escribe coverage y nadie más.
+    """
+    return (path / "status.json").is_file() and (path / "index.html").is_file()
+
+
+def _artifacts_of_the_clone(directory: str, names: list[str]) -> set[str]:
+    parent = Path(directory)
+    return {
+        name
+        for name in names
+        if name in NOT_COPYABLE
+        or any(fnmatch(name, pattern) for pattern in NOT_COPYABLE_PATTERNS)
+        or _is_coverage_report(parent / name)
+    }
+
+
 def copy_tree(source: Path, destination: Path) -> Path:
-    """Copia desechable sobre la que se transforma.
+    """Copia desechable sobre la que se transforma, sin los restos del clon.
 
     El original nunca se toca: es el árbol de referencia contra el que se
     verifica la equivalencia, y la campaña reutiliza el mismo clon entre
-    condiciones.
+    condiciones. Reutilizarlo es justo lo que hace peligrosa la copia: el clon
+    llega con lo que dejaron las corridas anteriores —`run_suite_in_venv`
+    ejecuta pip y pytest con cwd en el repo—, y esos restos describen el árbol
+    de antes de transformar (ver `NOT_COPYABLE`).
     """
-    shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".git"))
+    shutil.copytree(source, destination, ignore=_artifacts_of_the_clone)
     return destination
-
-
-# Artefactos y dependencias ajenas. No incluye los directorios de test: esos sí
-# se transforman (§4.3.1), al revés que en las métricas de la fase 0.
-NOT_TRANSFORMABLE = {
-    "build", "dist", ".git", ".venv", "venv", "__pycache__", "node_modules", "site-packages",
-    "vendor", "third_party",
-}
 
 
 def iter_transformable_files(root: Path, pattern: str = "*.py") -> list[Path]:

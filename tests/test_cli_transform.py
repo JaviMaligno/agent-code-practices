@@ -284,3 +284,37 @@ def test_the_manifest_keeps_the_symbols_of_a_transform_that_moved_them(
     manifest = json.loads(manifest_path_for(destination).read_text(encoding="utf-8"))
     assert manifest["symbols"]["pkg.nif.validate"]["path"] == "pkg/m0.py"
     assert manifest["symbols"]["pkg.nif.validate"]["current_name"] == "validate"
+
+
+def test_the_transformed_tree_never_names_the_suite_that_b4_hid(tmp_path: Path):
+    """El defecto tal y como se ve desde fuera, que es como lo ve el agente.
+
+    B4 saca `tests/` del árbol, pero el clon sobre el que se corrió la suite se
+    quedó con `.pytest_cache/v/cache/nodeids` —los IDs de esos mismos tests— y
+    con `*.egg-info/SOURCES.txt` —sus rutas—. Copiados al árbol, un `grep` los
+    encuentra en dos sitios y la condición deja de medir lo que dice medir.
+    """
+    source = tmp_path / "repo"
+    (source / "pkg").mkdir(parents=True)
+    (source / "pkg" / "core.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (source / "tests").mkdir()
+    (source / "tests" / "test_core.py").write_text(
+        "from pkg.core import f\n\n\ndef test_secreto():\n    assert f() == 1\n", encoding="utf-8"
+    )
+    cache = source / ".pytest_cache" / "v" / "cache"
+    cache.mkdir(parents=True)
+    (cache / "nodeids").write_text('["tests/test_core.py::test_secreto"]', encoding="utf-8")
+    (source / "pkg.egg-info").mkdir()
+    (source / "pkg.egg-info" / "SOURCES.txt").write_text(
+        "pkg/core.py\ntests/test_core.py\n", encoding="utf-8"
+    )
+
+    destination = transform_repo(source, ["B4"], tmp_path / "work")
+
+    naming_the_suite = sorted(
+        path.relative_to(destination).as_posix()
+        for path in destination.rglob("*")
+        if path.is_file() and "test_secreto" in path.read_text(encoding="utf-8", errors="ignore")
+    )
+    assert naming_the_suite == []
+    assert sorted(relative_paths(destination)) == ["pkg", "pkg/core.py"]

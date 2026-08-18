@@ -28,6 +28,111 @@ def test_copy_tree_keeps_the_git_directory_out(tmp_path: Path):
     assert not (destination / ".git").exists()
 
 
+# Lo que un clon usado arrastra, con el rastro que cada cosa deja: no es una
+# lista de nombres feos, es una lista de fugas. `build/lib/**` es una copia
+# literal de las fuentes con los nombres y la jerarquía de antes de transformar;
+# `.pytest_cache/v/cache/nodeids` y `*.egg-info/SOURCES.txt` nombran los tests
+# que B4 acaba de sacar del árbol; `__pycache__` conserva el árbol de módulos
+# que B2 aplana; `.tox`/`.venv` traen el paquete instalado, es decir el código
+# original otra vez.
+ARTIFACTS = {
+    "__pycache__/core.cpython-312.pyc": "core original",
+    "pkg/__pycache__/core.cpython-312.pyc": "core original",
+    ".pytest_cache/v/cache/nodeids": '["tests/test_core.py::test_secreto"]',
+    ".mypy_cache/3.12/pkg/core.json": "{}",
+    ".ruff_cache/content": "x",
+    ".tox/py312/lib/pkg/core.py": "def f(): return 1",
+    ".nox/tests/lib/pkg/core.py": "def f(): return 1",
+    ".eggs/setuptools_scm.egg/scm.py": "x = 1",
+    ".venv/lib/pkg/core.py": "def f(): return 1",
+    "venv/lib/pkg/core.py": "def f(): return 1",
+    ".hypothesis/examples/deadbeef": "x",
+    ".coverage": "sqlite",
+    ".coverage.host.4242": "sqlite",
+    "build/lib/pkg/core.py": "def f(): return 1",
+    "dist/pkg-0.1.0.tar.gz": "tar",
+    "pkg.egg-info/SOURCES.txt": "tests/test_core.py",
+    "src/pkg.egg-info/SOURCES.txt": "tests/test_core.py",
+    # Del propio pipeline: el entorno y la suite apartada viven fuera del árbol,
+    # pero si alguna vez cayeran dentro, copiarlos sería enseñar el experimento.
+    ".acp-venv-repo/bin/python": "x",
+    ".acp-manifest.json": "{}",
+    "repo.acp-tests/tests/test_core.py": "def test_secreto(): pass",
+}
+
+# Contenido del repositorio que empieza por punto o que se parece a un
+# artefacto y sí tiene que viajar: sin `.coveragerc` o `.github` el árbol deja
+# de ser el repositorio, y `vendor/` es código del que el repo depende para
+# importar —no se transforma, pero borrarlo rompe la equivalencia—.
+REPOSITORY_CONTENT = {
+    "pkg/core.py": "def f():\n    return 1\n",
+    ".coveragerc": "[run]\n",
+    ".gitignore": "build/\n",
+    ".github/workflows/ci.yml": "name: ci\n",
+    "vendor/dep/__init__.py": "x = 1\n",
+}
+
+
+def write_tree(root: Path, files: dict[str, str]) -> None:
+    for relative, content in files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+
+def test_copy_tree_leaves_the_artifacts_of_a_used_clone_behind(tmp_path: Path):
+    """Un clon sobre el que ya se corrió la suite lleva encima lo que la
+    condición intenta quitar: copiarlo tal cual le devuelve al agente los
+    nombres, la jerarquía y hasta la lista de tests que la transformación acaba
+    de esconder."""
+    source = tmp_path / "repo"
+    write_tree(source, ARTIFACTS)
+    write_tree(source, REPOSITORY_CONTENT)
+
+    destination = copy_tree(source, tmp_path / "work")
+
+    leaked = sorted(name for name in ARTIFACTS if (destination / name).exists())
+    assert leaked == []
+
+
+def test_copy_tree_still_carries_the_repository_content(tmp_path: Path):
+    """El otro lado del mismo filtro: excluir de más deja al agente un repo que
+    no compila, y una celda rota no mide nada. `vendor/` es el caso claro —no se
+    transforma, pero el repo lo importa—."""
+    source = tmp_path / "repo"
+    write_tree(source, ARTIFACTS)
+    write_tree(source, REPOSITORY_CONTENT)
+
+    destination = copy_tree(source, tmp_path / "work")
+
+    missing = sorted(name for name in REPOSITORY_CONTENT if not (destination / name).exists())
+    assert missing == []
+
+
+def test_copy_tree_drops_a_coverage_report_whatever_it_is_called(tmp_path: Path):
+    """El HTML de coverage empotra el fuente entero: es el original con sus
+    docstrings y sus nombres, servido en una carpeta que cada repo bautiza como
+    quiere (`htmlcov`, `coverage`, ...). Por eso se reconoce por lo que contiene
+    —`status.json` junto a `index.html`, que solo escribe coverage— y no por el
+    nombre: un paquete que se llame `coverage` sí es del repositorio."""
+    source = tmp_path / "repo"
+    write_tree(
+        source,
+        {
+            "cobertura/status.json": "{}",
+            "cobertura/index.html": "<html>",
+            "cobertura/core_py.html": "<html>def f(): return 1",
+            "coverage/__init__.py": "x = 1\n",
+            "coverage/control.py": "x = 1\n",
+        },
+    )
+
+    destination = copy_tree(source, tmp_path / "work")
+
+    assert not (destination / "cobertura").exists()
+    assert (destination / "coverage" / "control.py").exists()
+
+
 def test_a_result_reports_nothing_changed_by_default():
     assert TransformResult().files_changed == 0
     assert TransformResult().renames == {}
