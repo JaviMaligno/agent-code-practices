@@ -24,7 +24,11 @@ import libcst as cst
 
 from acp.metrics.size import module_name as _module_name
 from acp.metrics.size import read_source
-from acp.transforms.base import TransformResult, iter_transformable_files
+from acp.transforms.base import (
+    PYTEST_CONFIG_FILES,
+    TransformResult,
+    iter_transformable_files,
+)
 from acp.transforms.doctests import DOCTEST_PROMPT, doctest_files, rewrite_examples
 
 
@@ -519,11 +523,6 @@ def _rewrite_file(
 
 def _module_path(root: Path, module: str) -> Path:
     return root / Path(*module.split(".")).with_suffix(".py")
-
-
-# Donde pytest lee su configuración. Son los únicos ficheros que pueden nombrar
-# una ruta y con ella cambiar lo que la suite colecta.
-PYTEST_CONFIG_FILES = ("setup.cfg", "pytest.ini", "tox.ini", "pyproject.toml")
 
 
 def _rewrite_configured_paths(root: Path, moves: dict[str, str]) -> int:

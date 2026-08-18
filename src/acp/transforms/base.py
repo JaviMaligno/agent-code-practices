@@ -112,3 +112,11 @@ def iter_transformable_files(root: Path, pattern: str = "*.py") -> list[Path]:
             continue
         found.append(path)
     return found
+
+
+# Donde pytest lee su configuración. Son los únicos ficheros que pueden nombrar
+# una ruta y con ella cambiar lo que la suite colecta, y dos transformaciones
+# distintas los necesitan por el mismo motivo: B2 porque mueve los ficheros que
+# la configuración nombra, B4 porque se lleva el directorio entero. Vive aquí, y
+# no en una de las dos, para que no puedan discrepar sobre dónde mirar.
+PYTEST_CONFIG_FILES = ("setup.cfg", "pytest.ini", "tox.ini", "pyproject.toml")

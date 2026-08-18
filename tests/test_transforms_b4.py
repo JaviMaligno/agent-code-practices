@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 from acp.cli import transform_repo
@@ -190,3 +191,153 @@ def test_b3_still_sees_the_suite_when_b4_is_asked_for_first(tmp_path: Path):
 
     assert (tmp_path / "work.acp-tests" / "tests" / "test_docs.py").exists()
     assert "país" in (work / "README.md").read_text(encoding="utf-8")
+
+
+def run_pytest(root: Path):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        cwd=root, capture_output=True, text=True,
+    )
+
+
+def build_like_python_stdnum(root: Path) -> None:
+    """La forma real de python-stdnum: sus `addopts` nombran `tests` como ruta
+    de colecta, al lado del paquete, de `--doctest-modules` y de un `--ignore`
+    por ruta de fichero."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "core.py").write_text(
+        'def f():\n    """\n    >>> f()\n    1\n    """\n    return 1\n', encoding="utf-8"
+    )
+    # Se colectaría y estallaría al importarse: está en el `--ignore`, así que
+    # si la reescritura tocara algo más que la ruta de la suite, se vería.
+    (root / "pkg" / "broken.py").write_text(
+        "raise ImportError('a este no hay que colectarlo')\n", encoding="utf-8"
+    )
+    (root / "setup.cfg").write_text(
+        "[tool:pytest]\n"
+        'addopts = --doctest-modules --doctest-glob="*.doctest" pkg tests'
+        " --ignore=pkg/broken.py\n"
+        "doctest_optionflags = NORMALIZE_WHITESPACE\n",
+        encoding="utf-8",
+    )
+    (root / "tests").mkdir()
+    (root / "tests" / "test_core.py").write_text(
+        "from pkg.core import f\n\n\ndef test_f():\n    assert f() == 1\n", encoding="utf-8"
+    )
+
+
+def test_the_tree_the_agent_sees_can_still_run_pytest(tmp_path: Path):
+    """Con la suite fuera, la configuración del repo sigue nombrando `tests`
+    como ruta de colecta y pytest **no arranca**: muere con `ERROR: file or
+    directory not found: tests` antes de colectar nada.
+
+    Medido sobre el clon real de python-stdnum: baseline 422 tests colectados,
+    árbol B4 0. Los 251 que se pierden de más son los doctests sobre `stdnum/`
+    —`--doctest-modules`—, que B4 nunca quiso esconder. La condición quita
+    entonces mucho más que su dosis declarada, y de paso le grita al agente que
+    algo le han quitado."""
+    root = tmp_path / "work"
+    build_like_python_stdnum(root)
+
+    b4_tests.apply(root)
+
+    ran = run_pytest(root)
+    # El aviso de la ruta que falta sale por stderr y el resumen por stdout: se
+    # miran los dos, porque el fallo es que pytest ni arranca.
+    assert "file or directory not found" not in ran.stderr, ran.stderr[-2000:]
+    # El doctest de `pkg/core.py`: lo que B4 no esconde tiene que seguir corriendo.
+    assert "1 passed" in ran.stdout, ran.stdout[-2000:] + ran.stderr[-2000:]
+
+
+def test_verification_gets_the_original_configuration_back(tmp_path: Path):
+    """La verificación restaura la suite volcando lo guardado sobre la raíz. Si
+    la configuración editada se quedara puesta, la corrida de equivalencia
+    colectaría los tests del repo pero no por la ruta que su `addopts` declara,
+    y la celda mediría una suite distinta de la del baseline."""
+    root = tmp_path / "work"
+    build_like_python_stdnum(root)
+
+    b4_tests.apply(root)
+    shutil.copytree(b4_tests.kept_suite_path(root), root, dirs_exist_ok=True)
+
+    ran = run_pytest(root)
+    # El doctest más el test del repo, igual que antes de transformar nada.
+    assert "2 passed" in ran.stdout, ran.stdout[-2000:]
+    assert (root / "setup.cfg").read_text(encoding="utf-8").count("tests") == 1
+
+
+def test_a_toml_configuration_stops_pointing_at_the_hidden_suite(tmp_path: Path):
+    """La forma real de holidays, y en la variante de clave con puntos que un
+    lector de secciones `[tool.pytest.ini_options]` no vería:
+
+        [tool.pytest]
+        ini_options.testpaths = [ "tests" ]
+
+    Aquí pytest no aborta —avisa y colecta recursivamente desde el directorio—,
+    así que no rompe la celda, pero el aviso nombra `tests` en cada corrida que
+    haga el agente y la colecta deja de ser la que el repo declara."""
+    root = tmp_path / "work"
+    build(root)
+    (root / "pyproject.toml").write_text(
+        "[project]\nname = \"demo\"\n\n"
+        "[tool.pytest]\n"
+        'ini_options.testpaths = [ "tests" ]\n'
+        'ini_options.addopts = [\n  "--strict-markers",\n]\n',
+        encoding="utf-8",
+    )
+
+    b4_tests.apply(root)
+
+    rewritten = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"tests"' not in rewritten, rewritten
+    assert '"--strict-markers"' in rewritten, rewritten
+    kept = b4_tests.kept_suite_path(root) / "pyproject.toml"
+    assert '"tests"' in kept.read_text(encoding="utf-8")
+
+
+def test_a_configuration_that_does_not_name_the_suite_is_left_alone(tmp_path: Path):
+    """B4 esconde la suite, no reescribe la configuración del repo: si nada
+    apunta a lo que se llevó, no hay nada que tocar y nada que restaurar."""
+    root = tmp_path / "work"
+    build(root)
+    (root / "setup.cfg").write_text(
+        "[tool:pytest]\naddopts = --strict-markers\n", encoding="utf-8"
+    )
+
+    b4_tests.apply(root)
+
+    assert (root / "setup.cfg").read_text(encoding="utf-8") == (
+        "[tool:pytest]\naddopts = --strict-markers\n"
+    )
+    assert not (b4_tests.kept_suite_path(root) / "setup.cfg").exists()
+
+
+def test_a_multiline_configuration_value_is_followed_to_its_last_line(tmp_path: Path):
+    """Cuando las opciones son muchas, `addopts` se escribe repartido en varias
+    líneas y la ruta de la suite cae en cualquiera de ellas. Mirando solo la
+    línea de la clave, la ruta se queda y pytest sigue sin arrancar; y lo que
+    queda tiene que seguir siendo configuración válida, no solo texto sin la
+    ruta."""
+    root = tmp_path / "work"
+    build_like_python_stdnum(root)
+    (root / "setup.cfg").write_text(
+        "[tool:pytest]\n"
+        "addopts =\n"
+        "    --doctest-modules\n"
+        "    --ignore=pkg/broken.py\n"
+        "    pkg\n"
+        "    tests\n",
+        encoding="utf-8",
+    )
+
+    b4_tests.apply(root)
+
+    ran = run_pytest(root)
+    assert "file or directory not found" not in ran.stderr, ran.stderr[-2000:]
+    # El `--ignore` de la línea de al lado sigue en pie: si la reescritura se
+    # hubiera comido la línea entera, `pkg/broken.py` estallaría al colectarse.
+    assert "1 passed" in ran.stdout, ran.stdout[-2000:] + ran.stderr[-2000:]
