@@ -378,16 +378,20 @@ packages = ["demo", "demo.testsuite"]
 """
 
 
-def build_repo_whose_suite_lives_inside_the_package(root: Path) -> None:
-    """La forma real de pint: la suite es `pint/testsuite/`, dentro del paquete.
+def build_repo_with_no_suite_to_hide(root: Path) -> None:
+    """Un directorio de tests que el propio programa importa.
 
-    Ahí B4 no encuentra nada que llevarse —un directorio de tests dentro del
-    paquete lo puede importar el propio código fuente— y por eso no deja
-    directorio guardado.
+    Estar anidado dentro del paquete ya no basta para que B4 lo deje —esa era la
+    forma de pint y es justo la celda que no medía nada—: lo que lo deja donde
+    está es que el código fuente dependa de él, o sea que sea parte del programa
+    (`_the_program_imports_it`). Aquí no hay entonces suite que esconder, y por
+    eso no queda directorio guardado.
     """
     (root / "pyproject.toml").write_text(PYPROJECT_SUITE_INSIDE, encoding="utf-8")
     (root / "demo").mkdir()
-    (root / "demo" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "demo" / "__init__.py").write_text(
+        "from demo import testsuite\n\nVALUE = 1\n", encoding="utf-8"
+    )
     (root / "demo" / "testsuite").mkdir()
     (root / "demo" / "testsuite" / "__init__.py").write_text("", encoding="utf-8")
     (root / "demo" / "testsuite" / "test_value.py").write_text(
@@ -397,8 +401,8 @@ def build_repo_whose_suite_lives_inside_the_package(root: Path) -> None:
 
 
 def test_a_repo_that_had_no_suite_to_hide_is_still_verifiable(tmp_path: Path):
-    """Comprobado contra pint: su suite vive dentro del paquete, así que B4 no
-    se lleva nada y no deja directorio guardado.
+    """Un repo cuyos tests son parte del programa: B4 no se lleva nada y no deja
+    directorio guardado.
 
     Quien corre la celda B4 pasa `kept_suite_path` sin poder saber si existe
     —solo el repo lo decide—, y si una ruta ausente abortase la corrida, la
@@ -408,7 +412,7 @@ def test_a_repo_that_had_no_suite_to_hide_is_still_verifiable(tmp_path: Path):
     """
     from acp.transforms import b4_tests
 
-    build_repo_whose_suite_lives_inside_the_package(tmp_path)
+    build_repo_with_no_suite_to_hide(tmp_path)
     assert b4_tests.apply(tmp_path).files_changed == 0
     kept = b4_tests.kept_suite_path(tmp_path)
     assert not kept.exists()
