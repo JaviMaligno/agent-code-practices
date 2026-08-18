@@ -14,7 +14,10 @@ comando de test; lo que se aplana es todo lo de dentro.
 
 from __future__ import annotations
 
+import configparser
+import re
 import shutil
+import tomllib
 from pathlib import Path
 
 import libcst as cst
@@ -231,6 +234,28 @@ def _dotted(node: cst.BaseExpression) -> str:
     return ""
 
 
+def _moved_dotted(text: str, moves: dict[str, str]) -> str | None:
+    """La misma ruta con puntos, apuntando a donde fue a parar su módulo.
+
+    None cuando no hay ningún módulo movido dentro. Se busca el prefijo **más
+    largo** que sea un módulo: en `pkg.es.nif.validate` lo que se sustituye es
+    `pkg.es.nif` —el fichero— y el `.validate` de la cola se queda como está,
+    porque es un nombre definido dentro, no una ruta.
+
+    Vive suelta porque la misma pregunta se hace desde dos sitios que no
+    comparten contexto: dentro de un `.py` (`_module_reference`) y en los
+    ficheros de empaquetado (`_rewrite_entry_points`), que no son Python.
+    """
+    parts = text.split(".")
+    if not all(part.isidentifier() for part in parts):
+        return None
+    for cut in range(len(parts), 0, -1):
+        target = moves.get(".".join(parts[:cut]))
+        if target is not None:
+            return ".".join([target, *parts[cut:]])
+    return None
+
+
 def _containing_package(path: Path, root: Path) -> str:
     """El paquete al que pertenece el fichero, en forma de módulo con puntos.
 
@@ -326,15 +351,13 @@ class _RewriteImports(cst.CSTTransformer):
         puntos, y se busca el prefijo de módulo **más largo**: una frase que
         menciona el módulo es documentación, y reescribirla sería B3 colándose
         dentro de B2.
+
+        Aquí sí se exigen dos partes como mínimo: dentro de un `.py`, una
+        palabra suelta que coincidiera con un módulo casi nunca es una ruta.
         """
-        parts = text.split(".")
-        if len(parts) < 2 or not all(part.isidentifier() for part in parts):
+        if len(text.split(".")) < 2:
             return None
-        for cut in range(len(parts), 1, -1):
-            target = self.moves.get(".".join(parts[:cut]))
-            if target is not None:
-                return ".".join([target, *parts[cut:]])
-        return None
+        return _moved_dotted(text, self.moves)
 
     def rewrite_snippet(self, code: str) -> str | None:
         """El mismo reescrito sobre un trozo suelto, o None si no cuela.
@@ -541,6 +564,95 @@ def _rewrite_configured_paths(root: Path, moves: dict[str, str]) -> int:
     return changed
 
 
+# Donde se declara el empaquetado. Es el otro sitio, además de los imports, en
+# el que el repo escribe el nombre de uno de sus módulos.
+PACKAGING_FILES = ("pyproject.toml", "setup.cfg")
+
+# El módulo de un entry point: lo que va delante de los dos puntos, o el valor
+# entero si no los hay (`pkg.plugin`). Los extras (`pkg.mod:main [cli]`) quedan
+# fuera del grupo, que es lo que se quiere: solo se toca el módulo.
+_ENTRY_POINT_MODULE = re.compile(r"[A-Za-z_]\w*(?:\.\w+)*")
+
+
+def _toml_entry_points(text: str) -> set[str]:
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return set()
+    project = data.get("project") or {}
+    groups = (project.get("entry-points") or {}).values()
+    poetry = (data.get("tool") or {}).get("poetry") or {}
+    tables = [project.get("scripts"), project.get("gui-scripts"), poetry.get("scripts"), *groups]
+    return {
+        value
+        for table in tables
+        if isinstance(table, dict)
+        for value in table.values()
+        if isinstance(value, str)
+    }
+
+
+def _cfg_entry_points(text: str) -> set[str]:
+    # Sin interpolación: un `%` en cualquier otra sección de setup.cfg haría
+    # estallar la lectura, y aquí solo se viene a mirar una sección.
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(text)
+    except configparser.Error:
+        return set()
+    values: set[str] = set()
+    for section in parser.sections():
+        if section != "options.entry_points":
+            continue
+        # Cada grupo es un valor multilínea con un `nombre = módulo:objeto`
+        # por línea.
+        for raw in parser[section].values():
+            for line in (raw or "").splitlines():
+                _, separator, target = line.partition("=")
+                if separator and target.strip():
+                    values.add(target.strip())
+    return values
+
+
+def _rewrite_entry_points(root: Path, moves: dict[str, str]) -> int:
+    """Los módulos que el empaquetado nombra con puntos, no con barras.
+
+    Es el mismo agujero que `_rewrite_configured_paths` tapa para las rutas de
+    fichero, en la otra forma y en los mismos ficheros. pint declara
+    `pint-convert = "pint.pint_convert:main"`; B2 mueve ese módulo a
+    `pint/m61.py` y el script que instala pip queda con un `from
+    pint.pint_convert import main` que ya no resuelve. Medido sobre el clon:
+    `pip install -e .` va bien y `pint-convert 1m` muere con ModuleNotFoundError.
+
+    Ningún test lo ve —la suite no ejecuta entry points—, así que sin esto la
+    celda se declara equivalente con la interfaz pública del repo rota, que es
+    justo lo que la comparación de suites no puede detectar.
+
+    Se reescribe solo lo que el fichero **declara** como entry point: se lee con
+    el parser del formato y se sustituye el valor exacto. La descripción del
+    proyecto puede mencionar un módulo, y reescribir eso sería B3 dentro de B2.
+    """
+    readers = {"pyproject.toml": _toml_entry_points, "setup.cfg": _cfg_entry_points}
+    changed = 0
+    for name in PACKAGING_FILES:
+        path = root / name
+        if not path.exists():
+            continue
+        source = read_source(path)
+        transformed = source
+        for value in readers[name](source):
+            match = _ENTRY_POINT_MODULE.match(value)
+            if match is None:
+                continue
+            moved = _moved_dotted(match.group(), moves)
+            if moved is not None:
+                transformed = transformed.replace(value, moved + value[match.end() :])
+        if transformed != source:
+            path.write_text(transformed, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def apply(root: Path) -> TransformResult:
     moves = plan_moves(root)
     if not moves:
@@ -553,6 +665,7 @@ def apply(root: Path) -> TransformResult:
     # pero la suite del repo los ejecuta: en python-stdnum son 234 líneas de
     # ejemplo importando por ruta de módulo, o sea 234 fallos si se quedan atrás.
     changed += _rewrite_configured_paths(root, moves)
+    changed += _rewrite_entry_points(root, moves)
 
     stationary = stationary_modules(root, moves)
     rewriter = _RewriteImports(moves, package.name, "", stationary)

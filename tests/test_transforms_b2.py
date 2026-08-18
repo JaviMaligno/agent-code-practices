@@ -675,3 +675,95 @@ def test_a_dotted_sentence_is_not_mistaken_for_a_module_path(tmp_path: Path):
 
     kept = (tmp_path / "pkg" / f"{target}.py").read_text(encoding="utf-8")
     assert "pkg.util is gone" in kept
+
+
+# --- Lo que declara el empaquetado ------------------------------------------
+#
+# `_rewrite_configured_paths` ya sigue las rutas de *fichero* que nombra la
+# configuración. Un entry point nombra lo mismo en la otra forma —módulo con
+# puntos— y vive en los mismos ficheros, así que dejarlo atrás rompe la interfaz
+# pública del repo sin que ningún test lo note.
+
+
+def test_a_console_script_still_names_a_module_that_exists(tmp_path: Path):
+    """pint declara `pint-convert = "pint.pint_convert:main"` y B2 mueve ese
+    módulo a `pint/m61.py`. Medido sobre el clon: `pip install -e .` va bien y
+    `pint-convert 1m` muere con `ModuleNotFoundError: No module named
+    'pint.pint_convert'`. La suite no ejecuta entry points, así que la celda se
+    lee 3/3 en verde con el CLI del repo roto.
+    """
+    import tomllib
+
+    build(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "pkg"\nversion = "0.1.0"\n\n'
+        '[project.scripts]\npkg-check = "pkg.es.nif:validate"\n',
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    value = tomllib.loads((tmp_path / "pyproject.toml").read_text(encoding="utf-8"))
+    target = value["project"]["scripts"]["pkg-check"]
+    module, _, attribute = target.partition(":")
+    # Exactamente lo que hace el script que escribe pip.
+    ran = run_in(tmp_path, f"from {module} import {attribute}\nprint({attribute}(' 12 '))")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == "12"
+
+
+def test_an_entry_point_group_follows_the_move_too(tmp_path: Path):
+    """Los grupos arbitrarios (`pytest11`, `console_scripts` de un plugin) se
+    resuelven igual que un script y se declaran en la misma tabla."""
+    import tomllib
+
+    build(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "pkg"\nversion = "0.1.0"\n\n'
+        '[project.entry-points."pkg.plugins"]\nnif = "pkg.es.nif"\n',
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    data = tomllib.loads((tmp_path / "pyproject.toml").read_text(encoding="utf-8"))
+    module = data["project"]["entry-points"]["pkg.plugins"]["nif"]
+    ran = run_in(tmp_path, f"import importlib; importlib.import_module('{module}')")
+    assert ran.returncode == 0, ran.stderr
+
+
+def test_an_entry_point_declared_in_setup_cfg_follows_the_move(tmp_path: Path):
+    """La otra forma de declararlo. Es el mismo fichero que ya se reescribe por
+    rutas, y ahí las dos formas conviven."""
+    build(tmp_path)
+    (tmp_path / "setup.cfg").write_text(
+        "[metadata]\nname = pkg\n\n"
+        "[options.entry_points]\nconsole_scripts =\n    pkg-check = pkg.es.nif:validate\n",
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    text = (tmp_path / "setup.cfg").read_text(encoding="utf-8")
+    assert "pkg.es.nif" not in text
+    module = text.split("pkg-check = ")[1].split(":")[0].strip()
+    ran = run_in(tmp_path, f"from {module} import validate\nprint(validate(' 12 '))")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == "12"
+
+
+def test_prose_in_the_packaging_file_is_left_alone(tmp_path: Path):
+    """Solo se sigue lo que está declarado como entry point. La descripción del
+    proyecto puede mencionar un módulo, y reescribirla sería B3 dentro de B2."""
+    build(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "pkg"\nversion = "0.1.0"\n'
+        'description = "validate with pkg.es.nif"\n\n'
+        '[project.scripts]\npkg-check = "pkg.es.nif:validate"\n',
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    text = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'description = "validate with pkg.es.nif"' in text
