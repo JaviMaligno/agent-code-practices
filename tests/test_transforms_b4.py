@@ -1,6 +1,8 @@
 import shutil
 from pathlib import Path
 
+import pytest
+
 from acp.cli import transform_repo
 from acp.transforms import b4_tests
 
@@ -392,3 +394,123 @@ def test_a_multiline_configuration_value_is_followed_to_its_last_line(tmp_path: 
     # El `--ignore` de la línea de al lado sigue en pie: si la reescritura se
     # hubiera comido la línea entera, `pkg/broken.py` estallaría al colectarse.
     assert "1 passed" in ran.stdout, ran.stdout[-2000:] + ran.stderr[-2000:]
+
+
+def test_a_subdirectory_of_the_suite_in_the_collect_paths_leaves_too(tmp_path: Path):
+    """Un repo que separa unitarios de integración no nombra `tests` en su
+    configuración: nombra `tests/unit`. Esa ruta desaparece del árbol igual que
+    la del directorio entero —se la lleva B4 dentro—, así que pytest muere con
+    `ERROR: file or directory not found: tests/unit` antes de colectar nada.
+
+    Es el mismo fallo que la ruta desnuda: la condición se lleva por delante lo
+    que nunca quiso esconder —aquí el doctest de `pkg/core.py`— y le anuncia al
+    agente que le han quitado algo."""
+    root = tmp_path / "work"
+    build_like_python_stdnum(root)
+    (root / "tests" / "unit").mkdir()
+    (root / "tests" / "test_core.py").rename(root / "tests" / "unit" / "test_core.py")
+    (root / "setup.cfg").write_text(
+        "[tool:pytest]\n"
+        "addopts = --doctest-modules pkg tests/unit --ignore=pkg/broken.py\n",
+        encoding="utf-8",
+    )
+
+    b4_tests.apply(root)
+
+    ran = run_pytest(root)
+    assert "file or directory not found" not in ran.stderr, ran.stderr[-2000:]
+    assert "1 passed" in ran.stdout, ran.stdout[-2000:] + ran.stderr[-2000:]
+
+
+def test_the_suite_named_with_a_leading_dot_slash_also_leaves_the_collect_paths(
+    tmp_path: Path,
+):
+    """`./tests` y `tests` son la misma ruta escrita de dos maneras, y las dos
+    apuntan a lo que B4 acaba de sacar del árbol. Reconocer solo la segunda deja
+    a pytest sin arrancar en cuanto el repo escribe la primera."""
+    root = tmp_path / "work"
+    build_like_python_stdnum(root)
+    (root / "setup.cfg").write_text(
+        "[tool:pytest]\n"
+        "addopts = --doctest-modules pkg ./tests --ignore=pkg/broken.py\n",
+        encoding="utf-8",
+    )
+
+    b4_tests.apply(root)
+
+    ran = run_pytest(root)
+    assert "file or directory not found" not in ran.stderr, ran.stderr[-2000:]
+    assert "1 passed" in ran.stdout, ran.stdout[-2000:] + ran.stderr[-2000:]
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ['["tests/", "pkg"]', '["tests/unit", "tests/integration", "pkg"]'],
+)
+def test_the_tree_stops_naming_the_suite_however_the_path_is_written(
+    tmp_path: Path, declared: str
+):
+    """Aquí pytest no revienta —un `testpaths` que falta lo tolera—, pero el
+    árbol se queda diciendo `testpaths = ["tests/"]`. La mitad declarada del
+    arreglo es que el árbol quede como el de un repo que nunca tuvo suite; un
+    agente que lee esa línea sabe que había tests y sabe cómo se llamaban.
+
+    La barra final y el subdirectorio son la misma ruta que el nombre desnudo,
+    escrita como la escribe el repo."""
+    root = tmp_path / "work"
+    build(root)
+    (root / "tests" / "unit").mkdir()
+    (root / "tests" / "integration").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname = \"demo\"\n\n"
+        "[tool.pytest.ini_options]\n"
+        f"testpaths = {declared}\n",
+        encoding="utf-8",
+    )
+
+    b4_tests.apply(root)
+
+    rewritten = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "tests" not in rewritten, rewritten
+    assert '"pkg"' in rewritten, rewritten
+    # Lo editado se guarda con la suite: la verificación restaura volcando lo
+    # guardado sobre la raíz, y sin esta copia la corrida de equivalencia
+    # colectaría por una ruta que el repo no declara.
+    kept = b4_tests.kept_suite_path(root) / "pyproject.toml"
+    assert declared in kept.read_text(encoding="utf-8")
+
+
+def test_what_only_looks_like_the_suite_path_survives_the_rewrite(tmp_path: Path):
+    """El contrapeso del reconocimiento por ruta, que es lo que puede pasarse de
+    largo. `tests-slow` no es la suite —lo dice `is_test_dir`, que es quien lo
+    decide, y por eso B4 no se lo lleva: lo que sigue en el árbol tiene que
+    seguir nombrado o la colecta pierde ficheros que están—; `docs/tests` es
+    otro sitio, que el nombre de la suite viene relativo a la raíz; y
+    `--cov=tests` y `--ignore=tests/conftest.py` son opciones con valor, que
+    apuntar a algo que ya no existe no rompe nada y reescribirlas sería
+    quitarle al repo una decisión suya.
+
+    Solo se va el elemento de la lista de colecta que nombra lo que B4 se llevó.
+    """
+    root = tmp_path / "work"
+    build(root)
+    (root / "tests-slow").mkdir()
+    (root / "tests-slow" / "test_slow.py").write_text(
+        "def test_slow():\n    assert True\n", encoding="utf-8"
+    )
+    (root / "docs").mkdir()
+    (root / "docs" / "tests").mkdir()
+    (root / "pytest.ini").write_text(
+        "[pytest]\n"
+        "addopts = --cov=tests --ignore=tests/conftest.py tests tests-slow docs/tests\n",
+        encoding="utf-8",
+    )
+
+    b4_tests.apply(root)
+
+    assert (root / "tests-slow" / "test_slow.py").exists()
+    rewritten = (root / "pytest.ini").read_text(encoding="utf-8")
+    assert rewritten == (
+        "[pytest]\n"
+        "addopts = --cov=tests --ignore=tests/conftest.py tests-slow docs/tests\n"
+    ), rewritten

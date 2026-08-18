@@ -162,16 +162,36 @@ _COLLECT_PATH_KEYS = re.compile(r"^\s*(?:ini_options\.)?(?:addopts|testpaths)\s*
 
 
 def _names_the_suite(name: str) -> re.Pattern[str]:
-    """La ruta de la suite como argumento suelto, y nada que se le parezca.
+    """La ruta de la suite como argumento suelto, escrita como la escriba el repo.
 
-    Lo que se quita es un elemento de la lista de colecta: `tests`, `"tests"`,
-    `tests,`. Lo que NO se quita, y por eso los dos lookarounds: `tests_helpers`
-    y `tests/slow` (otra ruta), `--cov=tests` y `--ignore=tests` (opciones con
-    valor, que apuntar a algo que ya no existe no rompe nada y reescribirlas
-    sería quitarle al repo una decisión suya).
+    Lo que se quita es un elemento de la lista de colecta que apunta a lo que B4
+    acaba de sacar del árbol, y ahí no cuenta la cadena exacta sino la ruta:
+    `tests`, `"tests"`, `tests,`, `./tests`, `tests/` y `tests/unit`. Las tres
+    últimas formas son las que hacían falta y no estaban. Un repo que separa
+    unitarios de integración no nombra el directorio, nombra sus hijos —`addopts
+    = "... pkg tests/unit"`— y ese hijo desaparece con el padre: pytest muere
+    con `ERROR: file or directory not found: tests/unit` antes de colectar nada,
+    o sea la condición quitando otra vez mucho más que su dosis. La barra final
+    y el `./` no rompen la colecta pero dejan el árbol diciendo `testpaths =
+    ["tests/"]`, que es la otra mitad del arreglo: el árbol tiene que parecer el
+    de un repo que nunca tuvo suite.
+
+    Lo que NO se quita, y por eso los dos lookarounds: `tests-slow` —que no es
+    la suite, lo dice `is_test_dir`, y por eso B4 no se lo lleva: lo que sigue en
+    el árbol tiene que seguir nombrado—, `docs/tests` (otro sitio, que el nombre
+    de la suite viene relativo a la raíz), y `--cov=tests` o `--ignore=tests`
+    (opciones con valor, que apuntar a algo que ya no existe no rompe nada y
+    reescribirlas sería quitarle al repo una decisión suya). Ojo con el ejemplo
+    fácil: `tests_helpers` SÍ se quita, porque `is_test_dir` lo cuenta como suite
+    y entonces B4 se lo ha llevado.
+
+    El subcamino se corta en lo que separa un argumento de otro —espacio,
+    comilla, coma, corchete—: dentro de la lista de colecta lo que sigue a la
+    ruta es siempre otro elemento, y comerse el de al lado sería reescribir la
+    configuración en vez de quitarle un elemento.
     """
     return re.compile(
-        rf"""(?<![\w./=:-])(["']?){re.escape(name)}\1(?![\w./-])[ \t]*,?[ \t]*"""
+        rf"""(?<![\w./=:-])(["']?)(?:\./)?{re.escape(name)}(?:/[^\s"',\]]*)?\1(?![\w./-])[ \t]*,?[ \t]*"""
     )
 
 
