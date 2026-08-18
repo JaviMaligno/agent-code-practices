@@ -25,7 +25,37 @@ EXCLUDED_DIR_PATTERN = re.compile(r"^(?:tests?_.+|.+_tests?|tests?suite)$")
 EXCLUDED_FILE_PATTERN = re.compile(r"^(?:test_.+|.+_test|tests?|conftest)$")
 
 
-def _is_excluded_dir(name: str) -> bool:
+def is_test_dir(name: str) -> bool:
+    """Si un directorio es la suite del repo.
+
+    `testing` NO entra a propósito, ni aquí ni en el patrón: un paquete
+    `testing` dentro del código fuente es parte del programa. Es público porque
+    la misma pregunta se hace desde B4 —qué se lleva— y desde B2 —qué texto es
+    el oráculo—, y dos respuestas distintas a la misma pregunta es lo que ya
+    dejó una celda entera sin medir.
+    """
+    return name in ("tests", "test") or bool(EXCLUDED_DIR_PATTERN.match(name))
+
+
+def is_test_file(path: Path, root: Path) -> bool:
+    """Si este fichero es de la suite, por su directorio o por su nombre."""
+    relative = path.relative_to(root)
+    if any(is_test_dir(part) for part in relative.parts[:-1]):
+        return True
+    return bool(EXCLUDED_FILE_PATTERN.match(path.stem))
+
+
+def is_excluded_dir(name: str) -> bool:
+    """Si un directorio NO es el código del repositorio que se estudia.
+
+    Es público porque la pregunta se hace desde dos sitios que no comparten
+    contexto y tienen que contestarla igual: aquí, para dejar la suite y las
+    utilidades fuera de las métricas, y en B2, para no confundirlas con
+    candidatas a paquete raíz. Mientras B2 lo deducía por su cuenta —"que haya
+    exactamente un directorio con `__init__.py`"— sqlglot y holidays, que
+    empaquetan sus tests y sus scripts, se quedaban sin paquete raíz y la
+    transformación se volvía un no-op silencioso.
+    """
     # Los ocultos entran enteros: .github trae scripts de CI que no son el repo.
     if name.startswith("."):
         return True
@@ -37,7 +67,7 @@ def iter_source_files(root: Path) -> list[Path]:
     found: list[Path] = []
     for path in sorted(root.rglob("*.py")):
         relative = path.relative_to(root)
-        if any(_is_excluded_dir(part) for part in relative.parts[:-1]):
+        if any(is_excluded_dir(part) for part in relative.parts[:-1]):
             continue
         if EXCLUDED_FILE_PATTERN.match(path.stem):
             continue

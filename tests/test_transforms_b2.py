@@ -486,6 +486,122 @@ def test_a_computed_import_of_someone_elses_package_changes_nothing(tmp_path: Pa
     assert result.moves["pkg.es.nif"].startswith("pkg.m")
 
 
+def test_a_package_that_imports_its_own_submodules_by_name_stays(tmp_path: Path):
+    """La forma de sqlglot, y lo que costó: 1.225 tests a 0 en el contenedor.
+
+    `sqlglot/optimizer/__init__.py` resuelve sus submódulos con
+    `importlib.import_module(f"{__name__}.{name}")`. Movido a `sqlglot/m66.py`,
+    `__name__` pasa a ser `sqlglot.m66`, el submódulo que construye no existe, y
+    el `__getattr__` que lo intenta se llama a sí mismo: RecursionError en la
+    colecta y la suite entera a cero.
+
+    Un hueco que empieza por `__name__` no es "podría ser cualquier módulo",
+    que es lo que dice un hueco cualquiera: es exactamente este módulo hablando
+    de sus propios hijos, la evidencia más fuerte que hay de que aquí el árbol
+    de directorios es la tabla de búsqueda.
+    """
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "opt").mkdir()
+    (tmp_path / "pkg" / "opt" / "__init__.py").write_text(
+        "import importlib\n"
+        "\n"
+        "\n"
+        "def __getattr__(name):\n"
+        "    return importlib.import_module(f'{__name__}.{name}')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pkg" / "opt" / "qualify.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    assert b2_hierarchy.computed_module_prefixes(tmp_path) == {"pkg.opt."}
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert "pkg.opt" not in result.moves
+    assert "pkg.opt.qualify" not in result.moves
+    assert (tmp_path / "pkg" / "opt" / "qualify.py").exists()
+
+
+def test_the_package_a_computed_name_hangs_from_does_not_move_either(tmp_path: Path):
+    """Mover el `__init__.py` de un paquete cuyos hijos se quedan lo deshace.
+
+    `sqlglot/dialects/__init__.py` construye `f"sqlglot.dialects.{name}"`, así
+    que sus hijos ya estaban protegidos; el fichero que los hace paquete, no.
+    Llevárselo a la raíz deja `sqlglot/dialects/` sin `__init__.py` —un paquete
+    de espacio de nombres— y sin nada de lo que ese fichero definía, mientras la
+    ruta que la cadena construye sigue apuntando ahí.
+    """
+    build_forms(tmp_path)
+    (tmp_path / "pkg" / "dial").mkdir()
+    (tmp_path / "pkg" / "dial" / "__init__.py").write_text(
+        "import importlib\n"
+        "\n"
+        "\n"
+        "def load(name):\n"
+        "    return importlib.import_module(f'pkg.dial.{name}')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pkg" / "dial" / "bigquery.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert "pkg.dial" not in result.moves
+    assert (tmp_path / "pkg" / "dial" / "__init__.py").exists()
+    assert (tmp_path / "pkg" / "dial" / "bigquery.py").exists()
+
+
+def test_a_module_whose_path_the_suite_pins_as_text_does_not_move(tmp_path: Path):
+    """La suite es el oráculo, y aquí escribe una ruta de módulo dentro de una frase.
+
+    sqlglot compara mensajes de error que llevan dentro el `repr` de una clase:
+    `"Failed to parse ... into <class 'sqlglot.expressions.query.Table'>"`. Ese
+    texto no es una ruta de módulo —es una frase que contiene una—, así que la
+    reescritura de cadenas no lo toca y no debe tocarlo; pero al mover el módulo
+    el `__module__` de la clase cambia, el mensaje que genera el programa deja de
+    coincidir con el que la suite espera y salen 7 tests en rojo donde el
+    baseline no tenía ninguno. Medido en contenedor.
+
+    Es el mismo criterio de §4.3.3 que ya deja quietos los módulos que se
+    localizan por `__file__`: lo que no se puede mover sin cambiar el veredicto
+    se saca del diccionario y se declara la dosis.
+    """
+    build(tmp_path)
+    (tmp_path / "pkg" / "es" / "nif.py").write_text(
+        "class Number:\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_repr.py").write_text(
+        "from pkg.es.nif import Number\n"
+        "\n"
+        "\n"
+        "def test_repr():\n"
+        "    assert repr(Number) == \"<class 'pkg.es.nif.Number'>\"\n",
+        encoding="utf-8",
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert "pkg.es.nif" not in result.moves
+    assert (tmp_path / "pkg" / "es" / "nif.py").exists()
+
+
+def test_a_module_the_source_merely_mentions_in_text_still_moves(tmp_path: Path):
+    """El límite del guardarraíl anterior, y por qué está donde está.
+
+    Una frase del código fuente que nombra un módulo no la compara nadie: pint
+    escribe rutas de módulo dentro de textos en 57 de sus 67 módulos movibles, y
+    tratar eso como una atadura dejaría su celda —la única con jerarquía
+    profunda— en dosis casi cero por una prosa que no decide nada. Lo que ata es
+    que lo escriba la suite, que es quien compara.
+    """
+    build(tmp_path)
+    (tmp_path / "pkg" / "doc.py").write_text(
+        'HELP = "el validador vive en pkg.es.nif y se usa asi"\n', encoding="utf-8"
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert result.moves["pkg.es.nif"].startswith("pkg.m")
+
+
 def test_the_reason_a_repo_is_not_flattened_can_be_asked(tmp_path: Path):
     """La dosis real se declara con datos, no se deduce de un contador a cero:
     un `moves` vacío tiene dos causas distintas y hay que poder distinguirlas."""
@@ -840,3 +956,57 @@ def test_a_directory_with_data_files_still_survives(tmp_path: Path):
     b2_hierarchy.apply(tmp_path)
 
     assert (tmp_path / "pkg" / "iso" / "table.dat").exists()
+
+
+# --- Cuál de los directorios de primer nivel es el paquete -------------------
+#
+# Medido sobre el sustrato: sqlglot tiene `benchmarks/`, `sqlglot/` y `tests/`
+# con `__init__.py`, y holidays tiene `holidays/`, `scripts/` y `tests/`. Con la
+# regla de "exactamente uno" B2 no se aplicaba en ninguno de los dos y la fila
+# entera de la campaña medía cero. La suite y las utilidades del repositorio no
+# son candidatas a paquete raíz, y quien ya sabe cuáles son es
+# `acp.metrics.size`, que las excluye de todas las métricas de fase 0.
+
+
+def test_the_suite_beside_the_package_is_not_a_second_candidate(tmp_path: Path):
+    """La forma de sqlglot y holidays: `tests/` es un paquete importable.
+
+    Contarlo como candidato deja el repo sin paquete raíz claro y B2 se vuelve
+    un no-op silencioso: árbol idéntico, celda en verde y dosis cero.
+    """
+    build(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "test_nif.py").write_text(
+        "from pkg.es.nif import validate\n\n\ndef test_it():\n    assert validate(' 1 ') == '1'\n",
+        encoding="utf-8",
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert result.moves, "sin paquete raíz reconocido B2 no aplica nada"
+    assert not (tmp_path / "pkg" / "es").exists()
+
+
+def test_the_repo_utilities_are_not_second_candidates_either(tmp_path: Path):
+    """`scripts/` (holidays) y `benchmarks/` (sqlglot) son utilidades del
+    repositorio, no el código que se estudia: el mismo criterio con el que
+    `acp.metrics.size` las deja fuera de la muestra de dominio."""
+    build(tmp_path)
+    for name in ("scripts", "benchmarks"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "__init__.py").write_text("", encoding="utf-8")
+
+    assert b2_hierarchy._package_root(tmp_path) == tmp_path / "pkg"
+
+
+def test_two_packages_of_the_repo_itself_still_leave_no_clear_root(tmp_path: Path):
+    """El guardarraíl que se conserva: con dos paquetes que sí son el programa
+    no está claro cuál es el punto de entrada, y aplanar el equivocado deja el
+    repo sin forma de importarse."""
+    build(tmp_path)
+    (tmp_path / "otherpkg").mkdir()
+    (tmp_path / "otherpkg" / "__init__.py").write_text("", encoding="utf-8")
+
+    assert b2_hierarchy._package_root(tmp_path) is None
+    assert b2_hierarchy.plan_moves(tmp_path) == {}

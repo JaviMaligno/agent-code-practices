@@ -22,6 +22,7 @@ from pathlib import Path
 
 import libcst as cst
 
+from acp.metrics.size import is_excluded_dir, is_test_file
 from acp.metrics.size import module_name as _module_name
 from acp.metrics.size import read_source
 from acp.transforms.base import (
@@ -35,15 +36,32 @@ from acp.transforms.doctests import DOCTEST_PROMPT, doctest_files, rewrite_examp
 def _package_root(root: Path) -> Path | None:
     """El directorio del paquete, que es lo único que no se aplana.
 
-    Se exige que haya exactamente uno: con dos paquetes de primer nivel no está
-    claro cuál es el punto de entrada que hay que conservar, y aplanar el
+    Se exige que haya exactamente un candidato: con dos paquetes de primer nivel
+    no está claro cuál es el punto de entrada que hay que conservar, y aplanar el
     equivocado deja el repo sin forma de importarse. Sin candidato claro, B2 no
     hace nada y la celda se declara como no aplicable a ese repo.
+
+    Candidato no es "directorio con `__init__.py`": la suite y las utilidades
+    del repositorio también lo tienen. Medido sobre el sustrato, contarlas
+    dejaba sin paquete raíz a los dos repos que empaquetan sus tests —sqlglot
+    (`benchmarks/`, `sqlglot/`, `tests/`) y holidays (`holidays/`, `scripts/`,
+    `tests/`)—, o sea árbol idéntico, celda en verde y dosis cero, que es el
+    fallo más caro que declara este módulo. Con el criterio bueno, sqlglot pasa
+    de 0 a 104 módulos movidos; holidays sigue a cero, pero ya por la otra
+    guarda y con razón —su propia suite construye los nombres de módulo con
+    `f"holidays.{prefix}.{module_name}"`, así que 313 de sus 329 módulos son
+    inalcanzables por ruta—, y esa diferencia es justo la que había que poder
+    ver. Quién es código del repo y quién no ya lo decide `acp.metrics.size`
+    para las métricas de fase 0, y es la misma pregunta: se reutiliza su
+    criterio en vez de inventar otro, porque dos respuestas distintas a la misma
+    pregunta es justo lo que produjo esto.
     """
     candidates = [
         path
         for path in sorted(root.iterdir())
-        if path.is_dir() and (path / "__init__.py").exists()
+        if path.is_dir()
+        and (path / "__init__.py").exists()
+        and not is_excluded_dir(path.name)
     ]
     return candidates[0] if len(candidates) == 1 else None
 
@@ -57,7 +75,7 @@ def _package_root(root: Path) -> Path | None:
 DYNAMIC_IMPORTERS = ("__import__", "import_module")
 
 
-def _literal_head(node: cst.BaseExpression) -> str | None:
+def _literal_head(node: cst.BaseExpression, module: str = "") -> str | None:
     """La parte fija de un nombre de módulo que se termina de construir al correr.
 
     None cuando el nombre es literal entero —ahí no hay nada dinámico— o cuando
@@ -65,6 +83,16 @@ def _literal_head(node: cst.BaseExpression) -> str | None:
     cualquiera», y eso no es evidencia de que alcance a este repo: pint importa
     clases de terceros con `import_module(module_name)`, y tratar eso como una
     amenaza dejaría sin aplicar B2 al único finalista con jerarquía profunda.
+
+    `module` es el nombre del fichero que se está leyendo, y hace falta por un
+    hueco que sí es fijo aunque no lo parezca: `f"{__name__}.{name}"`. Eso no es
+    «cualquier módulo», es este módulo hablando de sus propios hijos —la
+    evidencia más fuerte que hay de que aquí el árbol de directorios es la tabla
+    de búsqueda—. Medido sobre sqlglot, cuyo `sqlglot/optimizer/__init__.py` lo
+    usa como fallback de `__getattr__`: leído como hueco cualquiera, B2 lo
+    aplanaba, `__name__` pasaba a ser `sqlglot.m66`, el submódulo construido no
+    existía y el `__getattr__` se llamaba a sí mismo hasta el RecursionError.
+    1.225 tests a 0 en la colecta, medido en contenedor.
     """
     if isinstance(node, cst.BinaryOperation) and isinstance(node.left, cst.SimpleString):
         text = node.left.raw_value
@@ -82,16 +110,31 @@ def _literal_head(node: cst.BaseExpression) -> str | None:
     if isinstance(node, cst.FormattedString):
         head = ""
         for part in node.parts:
-            if not isinstance(part, cst.FormattedStringText):
-                return head
-            head += part.value
+            if isinstance(part, cst.FormattedStringText):
+                head += part.value
+                continue
+            if module and _is_own_module_name(part):
+                head += module
+                continue
+            return head
         return None
     return None
 
 
+def _is_own_module_name(part: cst.BaseFormattedStringContent) -> bool:
+    """Si este hueco de la f-string es `{__name__}`, o sea el módulo mismo."""
+    return (
+        isinstance(part, cst.FormattedStringExpression)
+        and isinstance(part.expression, cst.Name)
+        and part.expression.value == "__name__"
+    )
+
+
 class _CollectComputedPrefixes(cst.CSTVisitor):
-    def __init__(self) -> None:
+    def __init__(self, module: str = "") -> None:
         self.prefixes: set[str] = set()
+        # El módulo que se está leyendo: es lo que vale `__name__` cuando corra.
+        self.module = module
 
     def visit_Call(self, node: cst.Call) -> None:
         name = node.func.attr.value if isinstance(node.func, cst.Attribute) else None
@@ -99,7 +142,7 @@ class _CollectComputedPrefixes(cst.CSTVisitor):
             name = node.func.value
         if name not in DYNAMIC_IMPORTERS or not node.args:
             return
-        head = _literal_head(node.args[0].value)
+        head = _literal_head(node.args[0].value, self.module)
         # La cadena vacía es «cualquier módulo»: sin prefijo fijo no hay nada
         # que diga que esta llamada alcanza a este repo.
         if head:
@@ -120,9 +163,65 @@ def computed_module_prefixes(root: Path) -> set[str]:
             module = cst.parse_module(read_source(path))
         except cst.ParserSyntaxError:
             continue
-        collector = _CollectComputedPrefixes()
+        collector = _CollectComputedPrefixes(_module_name(path, root))
         module.visit(collector)
         found.update(collector.prefixes)
+    return found
+
+
+# Una ruta con puntos escrita dentro de un texto. Se busca así, y no partiendo
+# por espacios, porque lo que interesa es la ruta aunque venga pegada a otra
+# cosa: `<class 'sqlglot.expressions.query.Table'>` la trae entre comillas y
+# corchetes angulares.
+_DOTTED_IN_TEXT = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
+
+
+class _CollectTextMentions(cst.CSTVisitor):
+    """Rutas con puntos que aparecen DENTRO de una cadena, no como la cadena.
+
+    Una cadena que es exactamente una ruta de módulo ya la sigue
+    `_module_reference`: se reescribe y no ata a nadie. Las que atan son las
+    otras, las que llevan la ruta dentro de una frase, porque ahí nadie la
+    reescribe —hacerlo sería B3 dentro de B2— y el texto se queda nombrando un
+    módulo que se movió.
+    """
+
+    def __init__(self) -> None:
+        self.mentions: set[str] = set()
+
+    def visit_SimpleString(self, node: cst.SimpleString) -> None:
+        text = node.raw_value
+        if _DOTTED_IN_TEXT.fullmatch(text):
+            return
+        self.mentions.update(_DOTTED_IN_TEXT.findall(text))
+
+
+def modules_named_by_the_suite(root: Path) -> set[str]:
+    """Rutas de módulo que la suite escribe dentro de un texto suyo.
+
+    Es público por lo mismo que `computed_module_prefixes`: es una de las causas
+    por las que un módulo no se mueve, y la dosis real se declara con datos.
+
+    Solo cuenta lo que escribe la SUITE, y la diferencia no es de gusto. La
+    suite es el oráculo: si compara un mensaje que lleva dentro el `repr` de una
+    clase —sqlglot espera `<class 'sqlglot.expressions.query.Table'>`—, mover el
+    módulo cambia el `__module__` de la clase y con él el veredicto; medido, 7
+    tests en rojo donde el baseline no tenía ninguno. Una frase del código
+    fuente que menciona un módulo no la compara nadie, y tratarla igual costaría
+    la celda entera de pint: escribe rutas de módulo dentro de textos en 57 de
+    sus 67 módulos movibles.
+    """
+    found: set[str] = set()
+    for path in iter_transformable_files(root):
+        if not is_test_file(path, root):
+            continue
+        try:
+            module = cst.parse_module(read_source(path))
+        except cst.ParserSyntaxError:
+            continue
+        collector = _CollectTextMentions()
+        module.visit(collector)
+        found.update(collector.mentions)
     return found
 
 
@@ -148,6 +247,7 @@ def plan_moves(root: Path) -> dict[str, str]:
     # la política que dejó escrita la fase 1: se saca del diccionario lo que
     # rompa y se declara la dosis real.
     unreachable = computed_module_prefixes(root)
+    pinned = modules_named_by_the_suite(root)
     scoped = _conftest_scopes(package)
 
     moves: dict[str, str] = {}
@@ -160,6 +260,17 @@ def plan_moves(root: Path) -> dict[str, str]:
         if module == package.name:
             continue
         if any(module.startswith(prefix) for prefix in unreachable):
+            continue
+        # Y tampoco el paquete DEL QUE cuelgan esos nombres. Sus hijos se quedan
+        # donde están, así que llevarse el `__init__.py` a la raíz deja el
+        # directorio convertido en un paquete de espacio de nombres, sin nada de
+        # lo que ese fichero definía, mientras la cadena que se construye al
+        # correr sigue apuntando ahí. Es la forma de `sqlglot/dialects/`.
+        if any(prefix.startswith(f"{module}.") for prefix in unreachable):
+            continue
+        # Lo que la suite nombra dentro de un texto suyo: mover el módulo
+        # cambiaría lo que el programa imprime y ella compara.
+        if any(name == module or name.startswith(f"{module}.") for name in pinned):
             continue
         if any(directory in path.parents for directory in scoped):
             continue

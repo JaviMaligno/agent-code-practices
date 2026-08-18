@@ -10,27 +10,116 @@ condición fue equivalente (§4.3).
 
 from __future__ import annotations
 
+import ast
 import re
 import shutil
 from pathlib import Path
 
-from acp.metrics.size import read_source
-from acp.transforms.base import PYTEST_CONFIG_FILES, TransformResult
+from acp.metrics.size import is_excluded_dir, is_test_dir, read_source
+from acp.transforms.base import (
+    NOT_TRANSFORMABLE,
+    PYTEST_CONFIG_FILES,
+    TransformResult,
+    iter_transformable_files,
+)
 
-# Solo directorios de test de primer nivel y el conftest de la raíz.
-#
-# Dos límites, los dos deliberados. Un paquete `testing` dentro del código
-# fuente es parte del programa, no de la suite, y llevárselo cambiaría lo que se
-# está midiendo. Y un directorio de tests dentro del paquete —`pint/testsuite/`
-# es la forma real— tampoco se toca: el propio código fuente puede importarlo, y
-# como la verificación RESTAURA la suite antes de correr, un import roto por
-# habérsela llevado no lo vería nadie; el contenedor pasaría y el árbol que
-# explora el agente estaría roto en silencio. Se paga en dosis, nunca en
-# equivalencia, que es el mismo reparto que hace B3.
+# Los nombres desnudos con los que un repo llama a su suite. Reconocerlos es
+# `acp.metrics.size.is_test_dir`, que es también quien decide qué texto es de la
+# suite en B2: es la misma pregunta, y contestarla dos veces por separado es lo
+# que ya produjo una celda a cero. Esta tupla se queda porque nombra la forma
+# habitual y es lo que se comprueba contra los repos reales.
 SUITE_DIRS = ("tests", "test", "testsuite")
 # El conftest de la raíz es maquinaria de la suite —fixtures, plugins, rutas—:
 # dejarlo enseña la mitad de lo que B4 esconde.
 SUITE_FILES = ("conftest.py",)
+
+
+def _suite_dirs(root: Path) -> list[Path]:
+    """Los directorios de test del árbol, también los que viven dentro del código.
+
+    Mirar solo el primer nivel dejaba a pint leyéndose como un repo sin suite:
+    la suya es `pint/testsuite/` —29 ficheros `test_*.py`, 43 en total— y en la
+    raíz no hay ninguno de los nombres que se buscaban, así que la celda salía a
+    cero ficheros sacados, cero directorios y la condición «los tests no están»
+    sin aplicar.
+
+    Hacia dentro solo se busca por donde hay código. La suite escondida que esto
+    persigue vive dentro del paquete; un `tests/` de la documentación o de un
+    directorio de datos no es la suite del repo, y descender a todas partes es
+    exactamente cómo se cuelan. El filtro es el de `acp.metrics.size` otra vez:
+    lo que no es código del repo tampoco esconde su suite. Y no se desciende a
+    lo ya encontrado: lo que cuelga de un directorio de tests viaja con él.
+    """
+    found: list[Path] = []
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        for child in sorted(current.iterdir()):
+            if not child.is_dir() or child.is_symlink() or child.name.startswith("."):
+                continue
+            if child.name in NOT_TRANSFORMABLE:
+                continue
+            if is_test_dir(child.name):
+                found.append(child)
+            elif not is_excluded_dir(child.name) and any(child.glob("*.py")):
+                pending.append(child)
+    return found
+
+
+def _imported_modules(path: Path, root: Path) -> set[str]:
+    """Los módulos que este fichero importa, los relativos ya resueltos.
+
+    Se resuelven los relativos porque dentro de un paquete la forma normal de
+    depender de un subdirectorio es `from . import testsuite`, y buscar solo la
+    ruta absoluta dejaría pasar justo el caso más común.
+    """
+    try:
+        tree = ast.parse(read_source(path))
+    except (SyntaxError, ValueError):
+        return set()
+    # El paquete desde el que cuentan los puntos de un import relativo. Vale
+    # igual para un `__init__.py`: el fichero *es* su paquete.
+    package = path.relative_to(root).parts[:-1]
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                kept = len(package) - (node.level - 1)
+                if kept < 0:
+                    continue
+                base = ".".join([*package[:kept], *([base] if base else [])])
+            if not base:
+                continue
+            found.add(base)
+            found.update(f"{base}.{alias.name}" for alias in node.names)
+    return found
+
+
+def _the_program_imports_it(root: Path, candidate: Path, suites: list[Path]) -> bool:
+    """Si algo que se queda en el árbol importa este directorio de tests.
+
+    Es el guardarraíl que sustituye al límite de profundidad, y la razón por la
+    que aquel límite existía: la verificación RESTAURA la suite antes de correr,
+    así que un import roto por habérsela llevado no lo vería nadie —el
+    contenedor pasaría y el árbol que explora el agente estaría roto en
+    silencio—. La pregunta que importa no es dónde está el directorio, sino si
+    alguien de fuera depende de él; si el código fuente lo importa, ese
+    directorio es parte del programa y se queda.
+
+    Lo que se pregunta desde dentro de otra suite no cuenta: se va también, así
+    que su import no puede quedar colgando.
+    """
+    target = ".".join(candidate.relative_to(root).parts)
+    for path in iter_transformable_files(root):
+        if any(suite in path.parents for suite in suites):
+            continue
+        for name in _imported_modules(path, root):
+            if name == target or name.startswith(f"{target}."):
+                return True
+    return False
 
 
 def kept_suite_path(root: Path) -> Path:
@@ -46,11 +135,19 @@ def suite_paths(root: Path) -> list[Path]:
     """Lo que B4 se llevaría de este repo, antes de llevárselo.
 
     Es pública por la misma razón que las de B3: la dosis real cambia de repo en
-    repo —en pint, cuya suite vive dentro del paquete, B4 no esconde nada— y
-    quien escriba los resultados tiene que poder declararla sin deducirla de un
-    contador de ficheros.
+    repo y quien escriba los resultados tiene que poder declararla sin deducirla
+    de un contador de ficheros.
     """
-    found = [root / name for name in SUITE_DIRS if (root / name).is_dir()]
+    suites = _suite_dirs(root)
+    # El guardarraíl del import solo se le pregunta a lo anidado. Un `tests/` de
+    # primer nivel no es código del programa por convención —y es el que B4 ya
+    # se llevaba de los tres repos del sustrato—, así que preguntarlo ahí solo
+    # podría restar dosis ya medida.
+    found = [
+        path
+        for path in suites
+        if path.parent == root or not _the_program_imports_it(root, path, suites)
+    ]
     found += [root / name for name in SUITE_FILES if (root / name).is_file()]
     return sorted(found)
 
@@ -200,7 +297,12 @@ def apply(root: Path) -> TransformResult:
         # volcando lo guardado sobre la raíz: si `tests/` volviera a otro sitio,
         # la configuración de pytest del repo —python-stdnum nombra `tests` como
         # ruta de colecta en sus addopts— dejaría de encontrarlo.
-        shutil.move(str(path), str(destination / path.relative_to(root)))
+        kept = destination / path.relative_to(root)
+        # La suite puede estar dentro del paquete (`pint/testsuite/`), y ahí el
+        # directorio intermedio no existe todavía en lo guardado: sin crearlo,
+        # el movimiento falla y la condición se queda a medias.
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(kept))
         changed += 1
     # Después de mover: lo que se guarda es la configuración tal y como estaba
     # cuando la suite todavía existía.

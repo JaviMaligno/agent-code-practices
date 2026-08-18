@@ -23,6 +23,7 @@ pytestmark = pytest.mark.integration
 REPOS = {
     "python-stdnum": "https://github.com/arthurdejong/python-stdnum",
     "pint": "https://github.com/hgrecco/pint",
+    "sqlglot": "https://github.com/tobymao/sqlglot",
 }
 
 # Lo que no se compara nunca: no es del repositorio, lo escribe el clonado o el
@@ -53,26 +54,30 @@ class Cell:
         return f"{self.repo}-{self.transform}"
 
 
-# La matriz son las celdas donde la transformación tiene dosis. B2 va sobre
-# pint, no sobre python-stdnum: pint es el único finalista con profundidad 3 y
-# por tanto el único sitio donde se puede leer el eje de la jerarquía, y en
-# python-stdnum B2 no aplica nada —ver
-# `test_b2_does_not_apply_to_a_package_addressed_by_computed_name`—, así que esa
-# celda solo compararía un árbol consigo mismo.
+# La matriz son las celdas donde la transformación tiene dosis. Una celda que no
+# aplica nada y una celda que aplica y sale igual se leen idénticas desde el
+# resultado, y solo la segunda es una prueba de equivalencia; por eso las dos
+# ausencias que quedan están comprobadas a mano más abajo.
 #
-# Y B4 va sobre python-stdnum, no sobre pint, por el motivo simétrico: la suite
-# de pint vive dentro del paquete (`pint/testsuite/`) y B4 no la toca por
-# decisión declarada —ver
-# `test_b4_does_not_apply_to_a_suite_nested_inside_the_package`—, así que esa
-# celda tampoco mediría nada. Las dos ausencias están comprobadas
-# porque una celda que no aplica y una celda que aplica y sale igual se leen
-# idénticas desde el resultado, y solo la segunda es una prueba de
-# equivalencia. B3 sí tiene dosis en los dos repos; la matriz gasta un solo
-# repo por transformación y para B3 usa python-stdnum.
+# B2 va sobre sqlglot y pint. sqlglot es el repo del sustrato principal donde B2
+# tiene dosis —empaqueta sus tests y sus benchmarks, y mientras eso contó como
+# "dos paquetes de primer nivel" la transformación era un no-op silencioso—, y
+# pint se queda porque es el único finalista con profundidad 3 y donde más se
+# aplana. En python-stdnum B2 sigue sin aplicar nada, y eso es correcto: su
+# árbol de directorios *es* su tabla de búsqueda —ver
+# `test_b2_does_not_apply_to_a_package_addressed_by_computed_name`—.
+#
+# B4 va sobre python-stdnum y sobre pint. La de pint es la celda que el límite
+# de primer nivel dejaba a cero: su suite vive dentro del paquete
+# (`pint/testsuite/`) y ahora sale del árbol como cualquier otra, con el
+# guardarraíl puesto en si el programa la importa y no en dónde está.
+# B3 tiene dosis en los dos repos; la matriz gasta un solo repo para ella.
 CELLS = [
+    Cell(repo="sqlglot", transform="B2", install_repo=False),
     Cell(repo="pint", transform="B2", install_repo=False),
     Cell(repo="python-stdnum", transform="B3"),
     Cell(repo="python-stdnum", transform="B4", restore_suite=True),
+    Cell(repo="pint", transform="B4", restore_suite=True),
 ]
 
 
@@ -162,23 +167,24 @@ def test_b2_does_not_apply_to_a_package_addressed_by_computed_name(tmp_path: Pat
     """
     clone = clone_repo(REPOS["python-stdnum"], tmp_path / "repo")
 
+    # Que el paquete raíz SÍ se encuentre es parte de lo que se afirma: si no,
+    # esta dosis cero se confundiría con la otra —la de un repo cuya forma B2 no
+    # sabe leer—, que es la que se acaba de arreglar y no es correcta.
+    assert b2_hierarchy._package_root(clone) == clone / "stdnum"
     assert b2_hierarchy.computed_module_prefixes(clone) == {"stdnum."}
     assert b2_hierarchy.plan_moves(clone) == {}
 
 
-def test_b4_does_not_apply_to_a_suite_nested_inside_the_package(tmp_path: Path):
-    """Por qué pint no está en la matriz de B4, escrito y comprobado.
+def test_b4_finds_a_suite_nested_inside_the_package(tmp_path: Path):
+    """La celda de pint, que estuvo a cero mientras B4 solo miró el primer nivel.
 
-    La suite de pint es `pint/testsuite/` —dentro del paquete—, y ese es el
-    límite declarado de B4 (§4.2): un directorio de tests que el propio código
-    puede importar no se mueve, porque la verificación restaura la suite antes
-    de correr y un import roto por habérsela llevado no lo vería nadie.
-
-    Sin este test, la ausencia de la celda descansaba en un comentario. Y
-    `suite_paths` devolviendo `[]` tiene las mismas dos causas que un
-    `plan_moves` vacío en B2: que el repo no tenga suite, o que B4 no la haya
-    reconocido. Aquí se separan a mano: la suite existe, está un nivel adentro,
-    y ninguno de los nombres que B4 busca aparece en la raíz.
+    Se comprueba sobre el repo de verdad porque el fixture no puede reproducir
+    lo que la hacía invisible: en la raíz de pint no hay ningún nombre de los
+    que B4 busca —ni `tests/`, ni `test/`, ni `conftest.py`—, la suite entera
+    son 35 ficheros dentro de `pint/testsuite/`, y con la regla vieja el repo se
+    leía como uno sin suite. `suite_paths` devolviendo `[]` tenía las mismas dos
+    causas que un `plan_moves` vacío en B2 —no haber suite, o no reconocerla— y
+    aquí se separan a mano.
     """
     clone = clone_repo(REPOS["pint"], tmp_path / "repo")
 
@@ -190,4 +196,23 @@ def test_b4_does_not_apply_to_a_suite_nested_inside_the_package(tmp_path: Path):
         for name in b4_tests.SUITE_DIRS + b4_tests.SUITE_FILES
         if (clone / name).exists()
     ]
-    assert b4_tests.suite_paths(clone) == []
+    assert b4_tests.suite_paths(clone) == [suite]
+
+
+def test_b2_finds_the_package_of_a_repo_that_packages_its_own_tests(tmp_path: Path):
+    """La celda de sqlglot, que estuvo a cero por la misma clase de motivo.
+
+    sqlglot tiene tres directorios de primer nivel con `__init__.py`
+    —`benchmarks/`, `sqlglot/` y `tests/`—, y mientras los tres contaron como
+    candidatos a paquete raíz B2 no aplicaba nada. Se comprueba sobre el repo
+    real porque lo que falla aquí es la lectura de una forma de repositorio, y
+    esa forma es justo lo que un fixture da por supuesto.
+    """
+    clone = clone_repo(REPOS["sqlglot"], tmp_path / "repo")
+
+    packaged = sorted(
+        path.name for path in clone.iterdir() if (path / "__init__.py").exists()
+    )
+    assert packaged == ["benchmarks", "sqlglot", "tests"], packaged
+    assert b2_hierarchy._package_root(clone) == clone / "sqlglot"
+    assert b2_hierarchy.plan_moves(clone)

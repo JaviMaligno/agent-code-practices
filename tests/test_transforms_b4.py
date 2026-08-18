@@ -125,21 +125,72 @@ def test_a_repo_without_a_suite_keeps_nothing(tmp_path: Path):
     assert not b4_tests.kept_suite_path(root).exists()
 
 
-def test_a_suite_nested_inside_the_package_is_left_alone(tmp_path: Path):
-    """Límite declarado, no descuido: es la forma de pint (`pint/testsuite/`).
+def test_a_suite_nested_inside_the_package_also_leaves_the_tree(tmp_path: Path):
+    """Es la forma de pint (`pint/testsuite/`), y era la celda que no medía nada.
 
-    Un directorio de tests dentro del paquete puede ser importado por el propio
-    código fuente, y como la verificación **restaura** la suite antes de correr,
-    un import roto por habérsela llevado no lo vería nadie: el contenedor
-    pasaría y el árbol del agente estaría roto en silencio. Se paga en dosis
-    —en pint B4 no esconde nada— y quien escriba los resultados lo declara con
-    `suite_paths`.
+    Mientras B4 solo miró el primer nivel, un repo que guarda su suite dentro
+    del paquete se leía como un repo sin suite: cero ficheros sacados, ningún
+    directorio guardado y la condición «los tests no están» sin aplicar. Lo que
+    protege al programa no es la profundidad —un paquete `testing` del código
+    fuente sigue sin ser la suite—, es que nadie de fuera lo importe, que es lo
+    que comprueba el test siguiente.
     """
     root = tmp_path / "work"
     build(root)
     (root / "pkg" / "testsuite").mkdir()
     (root / "pkg" / "testsuite" / "test_registry.py").write_text(
         "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+
+    b4_tests.apply(root)
+
+    assert not (root / "pkg" / "testsuite").exists()
+    kept = tmp_path / "work.acp-tests" / "pkg" / "testsuite" / "test_registry.py"
+    assert kept.exists()
+    assert "def test_ok()" in kept.read_text(encoding="utf-8")
+
+
+def test_a_nested_test_directory_the_source_imports_is_left_alone(tmp_path: Path):
+    """El guardarraíl que sustituye al límite de profundidad, y por qué existe.
+
+    La verificación **restaura** la suite antes de correr, así que un import
+    roto por habérsela llevado no lo vería nadie: el contenedor pasaría y el
+    árbol que explora el agente estaría roto en silencio. Por eso la pregunta no
+    es dónde está el directorio, sino si alguien de fuera lo importa: si el
+    código fuente lo hace, ese directorio es parte del programa y se queda.
+    """
+    root = tmp_path / "work"
+    build(root)
+    (root / "pkg" / "testsuite").mkdir()
+    (root / "pkg" / "testsuite" / "__init__.py").write_text("HELPERS = 1\n", encoding="utf-8")
+    (root / "pkg" / "testsuite" / "test_registry.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (root / "pkg" / "core.py").write_text(
+        "from pkg.testsuite import HELPERS\n\n\ndef f():\n    return HELPERS\n",
+        encoding="utf-8",
+    )
+
+    b4_tests.apply(root)
+
+    assert (root / "pkg" / "testsuite" / "test_registry.py").exists()
+
+
+def test_a_nested_test_directory_imported_by_a_relative_import_is_left_alone(tmp_path: Path):
+    """La misma dependencia escrita de la otra forma: `from .testsuite import`.
+
+    Buscar solo la ruta absoluta dejaría pasar el caso más común dentro de un
+    paquete, y el fallo sería el silencioso: contenedor en verde, árbol roto.
+    """
+    root = tmp_path / "work"
+    build(root)
+    (root / "pkg" / "testsuite").mkdir()
+    (root / "pkg" / "testsuite" / "__init__.py").write_text("HELPERS = 1\n", encoding="utf-8")
+    (root / "pkg" / "testsuite" / "test_registry.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (root / "pkg" / "__init__.py").write_text(
+        "from . import testsuite\n", encoding="utf-8"
     )
 
     b4_tests.apply(root)
