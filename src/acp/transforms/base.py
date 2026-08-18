@@ -37,6 +37,13 @@ class TransformResult:
 #   - `.acp-*` y `*.acp-tests` son del propio pipeline; hoy viven fuera del
 #     árbol, pero copiarlos si alguna vez cayeran dentro sería enseñar el
 #     experimento —la misma fuga que ya tapó `_reject_manifest_inside_the_tree`—.
+#   - `coverage.xml`, `coverage.json`, `coverage.lcov` y los `*.py,cover` son
+#     los otros formatos del informe que `_is_coverage_report` solo tapaba en
+#     HTML: cada uno lista los ficheros del repo por su ruta completa, así que
+#     dentro del árbol aplanado republican la jerarquía que B2 acaba de
+#     destruir y en el árbol sin suite nombran los tests que B4 se llevó. El
+#     XML es además el formato que escriben los repos en CI, o sea que llega en
+#     el clon sin que la campaña corra nada.
 # Se filtra en la copia, que es por donde entran todos: `iter_transformable_files`
 # los salta, pero saltarlos al transformar solo garantiza que llegan intactos.
 NOT_COPYABLE = frozenset({
@@ -44,12 +51,17 @@ NOT_COPYABLE = frozenset({
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".pytype", ".hypothesis",
     ".tox", ".nox", ".eggs", ".venv", "venv", "node_modules",
     "build", "dist", ".coverage",
+    "coverage.xml", "coverage.json", "coverage.lcov",
 })
 
 # Lo mismo, cuando lo que delata es la forma del nombre y no el nombre exacto.
 # `.coverage.*` son los ficheros de coverage en paralelo; `.coveragerc` NO cae
 # aquí a propósito: es configuración del repositorio y el agente la lee.
-NOT_COPYABLE_PATTERNS = ("*.egg-info", "*.pyc", "*.pyo", ".coverage.*", ".acp-*", "*.acp-tests")
+# `*,cover` es lo que deja `coverage annotate`: el fuente entero anotado línea
+# a línea, junto a cada fichero y con su nombre.
+NOT_COPYABLE_PATTERNS = (
+    "*.egg-info", "*.pyc", "*.pyo", ".coverage.*", "*,cover", ".acp-*", "*.acp-tests",
+)
 
 # Artefactos y dependencias ajenas. Es lo que no se copia más el código
 # vendorizado, que sí viaja —el repo lo importa— pero no se transforma. No

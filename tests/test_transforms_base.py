@@ -154,3 +154,45 @@ def test_transformable_files_include_the_repo_tests(tmp_path: Path):
     found = {path.relative_to(tmp_path).as_posix() for path in iter_transformable_files(tmp_path)}
 
     assert found == {"pkg/core.py", "tests/test_core.py"}
+
+
+# Lo que escriben los OTROS formatos del mismo `coverage report`. El HTML lo
+# reconoce `_is_coverage_report` por su par de ficheros, pero estos tres son
+# ficheros sueltos con nombre fijo, y cada uno lleva dentro la lista de rutas
+# del árbol de antes de transformar.
+COVERAGE_REPORTS = {
+    "coverage.xml": (
+        '<?xml version="1.0" ?>\n<coverage>\n<packages><package name="pkg.sub">'
+        '<classes><class filename="pkg/sub/deep.py"/></classes></package></packages>\n'
+        "</coverage>\n"
+    ),
+    "coverage.json": '{"files": {"pkg/sub/deep.py": {"summary": {}}}}\n',
+    "coverage.lcov": "SF:pkg/sub/deep.py\nend_of_record\n",
+    "pkg/sub/deep.py,cover": "> def deep():\n>     return 1\n",
+}
+
+
+def test_copy_tree_drops_the_coverage_reports_that_are_not_html(tmp_path: Path):
+    """El mismo comando que escribe el HTML escribe otros tres formatos, y el
+    filtro solo tapaba el HTML.
+
+    Los tres nombran los ficheros del repositorio por su ruta completa: dentro
+    del árbol aplanado por B2, `coverage.xml` republica la jerarquía entera
+    —`pkg/sub/deep.py`— que la condición acaba de destruir, y en un árbol sin
+    suite (B4) el informe sigue listando los ficheros de test por su ruta. No
+    es higiene: es la fuga que `NOT_COPYABLE` existe para tapar, y se cuela por
+    el mismo sitio que las otras.
+
+    `--cov-report=xml` es además el formato que escriben los repos en CI, así
+    que llega en el clon sin que nadie corra nada aquí.
+    """
+    source = tmp_path / "repo"
+    write_tree(source, COVERAGE_REPORTS)
+    write_tree(source, REPOSITORY_CONTENT)
+
+    destination = copy_tree(source, tmp_path / "work")
+
+    leaked = sorted(name for name in COVERAGE_REPORTS if (destination / name).exists())
+    assert leaked == []
+    # El otro lado: la configuración de coverage la lee el agente y es del repo.
+    assert (destination / ".coveragerc").exists()
