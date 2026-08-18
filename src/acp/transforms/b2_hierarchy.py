@@ -740,18 +740,58 @@ def _rewrite_entry_points(root: Path, moves: dict[str, str]) -> int:
         if not path.exists():
             continue
         source = read_source(path)
-        transformed = source
-        for value in readers[name](source):
-            match = _ENTRY_POINT_MODULE.match(value)
-            if match is None:
-                continue
-            moved = _moved_dotted(match.group(), moves)
-            if moved is not None:
-                transformed = transformed.replace(value, moved + value[match.end() :])
+        values = readers[name](source)
+        transformed = "".join(
+            _rewrite_declared_line(line, moves, values)
+            for line in source.splitlines(keepends=True)
+        )
         if transformed != source:
             path.write_text(transformed, encoding="utf-8")
             changed += 1
     return changed
+
+
+def _written_value(tail: str) -> str:
+    """El valor tal cual queda escrito a la derecha del `=`, sin comillas.
+
+    Es lo que hay que comparar con lo que el parser declaró: el valor de un
+    entry point se escribe entrecomillado en TOML y desnudo en `setup.cfg`, y la
+    misma cadena tiene que reconocerse en los dos sitios.
+    """
+    written = tail.strip()
+    if written[:1] in ('"', "'"):
+        quote, rest = written[0], written[1:]
+        end = rest.find(quote)
+        return rest if end == -1 else rest[:end]
+    return written
+
+
+def _rewrite_declared_line(line: str, moves: dict[str, str], values: set[str]) -> str:
+    """Una línea `clave = valor` del fichero de empaquetado.
+
+    Se toca solo si el valor entero —lo que hay a la derecha del último `=`— es
+    exactamente uno de los que el parser declaró como entry point. La alternativa
+    que había, un `replace` de esa cadena sobre el fichero entero, no distingue
+    la declaración de la prosa: una `description` que repita `pkg.cli:main` se
+    reescribe igual, que es justo lo que el docstring de `_rewrite_entry_points`
+    promete no hacer. Comparar el valor entero en su posición deja fuera tanto la
+    mención dentro de una frase como la frase que sea idéntica al valor pero esté
+    en otra clave.
+    """
+    body, newline = (line[:-1], line[-1:]) if line.endswith("\n") else (line, "")
+    head, separator, tail = body.rpartition("=")
+    if not separator:
+        return line
+    written = _written_value(tail)
+    if written not in values:
+        return line
+    match = _ENTRY_POINT_MODULE.match(written)
+    if match is None:
+        return line
+    moved = _moved_dotted(match.group(), moves)
+    if moved is None:
+        return line
+    return head + separator + tail.replace(match.group(), moved, 1) + newline
 
 
 def _drop_stale_bytecode(package: Path) -> None:

@@ -885,6 +885,48 @@ def test_prose_in_the_packaging_file_is_left_alone(tmp_path: Path):
     assert 'description = "validate with pkg.es.nif"' in text
 
 
+def test_prose_that_repeats_the_entry_point_verbatim_is_left_alone(tmp_path: Path):
+    """El caso que la prueba de arriba no llega a tocar: la prosa no menciona el
+    módulo, repite el valor **entero** del entry point. Sustituirlo con un
+    `replace` sobre el fichero entero reescribe las dos apariciones, o sea que la
+    promesa de tocar solo lo declarado depende de que nadie escriba en la
+    descripción lo mismo que en `[project.scripts]`.
+    """
+    build(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "pkg"\nversion = "0.1.0"\n'
+        'description = "run pkg.es.nif:validate to check a number"\n\n'
+        '[project.scripts]\npkg-check = "pkg.es.nif:validate"\n',
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    text = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'description = "run pkg.es.nif:validate to check a number"' in text
+    # Y lo declarado sí se sigue, que es lo que la prosa no debe arrastrar.
+    assert 'pkg-check = "pkg.es.nif:validate"' not in text
+
+
+def test_prose_in_setup_cfg_that_repeats_an_entry_point_is_left_alone(tmp_path: Path):
+    """La otra forma de declararlo, con el mismo agujero: `description` vive en
+    `[metadata]` y el `replace` no distingue secciones."""
+    build(tmp_path)
+    (tmp_path / "setup.cfg").write_text(
+        "[metadata]\nname = pkg\n"
+        "description = run pkg.es.nif:validate to check a number\n\n"
+        "[options.entry_points]\nconsole_scripts =\n"
+        "    pkg-check = pkg.es.nif:validate\n",
+        encoding="utf-8",
+    )
+
+    b2_hierarchy.apply(tmp_path)
+
+    text = (tmp_path / "setup.cfg").read_text(encoding="utf-8")
+    assert "description = run pkg.es.nif:validate to check a number" in text
+    assert "    pkg-check = pkg.es.nif:validate\n" not in text
+
+
 # --- La dosis en cero, en silencio ------------------------------------------
 #
 # La limpieza final solo borra los directorios que quedan **vacíos**, así que
