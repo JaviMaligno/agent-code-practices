@@ -49,6 +49,13 @@ def module_bindings(tree: ast.Module) -> dict[str, str]:
     este nombre libre, ¿lo pone el módulo del que la saco? Si es un import, al
     destino se le copia el import; si es una asignación o una definición, hay
     que importarlo del sitio donde acabe.
+
+    Cuenta el ÁMBITO del módulo, no su primer nivel de indentación: un
+    `try/except ImportError` o un `if TYPE_CHECKING` ligan nombres del módulo
+    igual que una línea suelta, y son la mitad de los imports de un repo real.
+    Lo que no cuenta son los cuerpos de `def` y `class`, que ya son otro
+    ámbito. A cambio, aquí no se ve si el nombre estaba bajo una guarda: quien
+    mueva una definición tiene que mirar el árbol antes de sacarla de su `if`.
     """
     bindings: dict[str, str] = {}
     for statement in tree.body:
@@ -312,16 +319,46 @@ def _target_names(target: ast.AST) -> set[str]:
     return set()
 
 
-def _classify(statement: ast.stmt, bindings: dict[str, str]) -> None:
+def _classify(statement: ast.AST, bindings: dict[str, str]) -> None:
     if isinstance(statement, (ast.Import, ast.ImportFrom)):
         for alias in statement.names:
+            if alias.name == "*":
+                # `from x import *` trae nombres que no se saben sin importar el
+                # otro módulo. Publicar uno llamado `*` es peor que callar,
+                # porque tiene forma de nombre y nadie lo comprobaría.
+                continue
             bindings[(alias.asname or alias.name).split(".")[0]] = "import"
-    elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return
+
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        # El nombre es del módulo; el cuerpo es otro ámbito y no se entra.
         bindings[statement.name] = "def"
-    elif isinstance(statement, ast.Assign):
+        return
+
+    if isinstance(statement, ast.Assign):
         for target in statement.targets:
             for nombre in _target_names(target):
                 bindings[nombre] = "assign"
     elif isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
         for nombre in _target_names(statement.target):
             bindings[nombre] = "assign"
+    elif isinstance(statement, (ast.For, ast.AsyncFor)):
+        for nombre in _target_names(statement.target):
+            bindings[nombre] = "assign"
+    elif isinstance(statement, (ast.With, ast.AsyncWith)):
+        for item in statement.items:
+            if item.optional_vars is not None:
+                for nombre in _target_names(item.optional_vars):
+                    bindings[nombre] = "assign"
+    elif isinstance(statement, ast.ExceptHandler):
+        if statement.name is not None:
+            bindings[statement.name] = "assign"
+
+    # Se baja por lo que sigue siendo el ámbito del módulo —cuerpos de `if`,
+    # `try`, `for`, `with`, `match`— y por nada más. El orden de los campos del
+    # nodo decide quién gana cuando un nombre se liga de dos formas: en el
+    # `try/except ImportError` la última es el respaldo, que es la lectura
+    # conservadora (copiarse solo el import perdería la mitad).
+    for child in ast.iter_child_nodes(statement):
+        if isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case)):
+            _classify(child, bindings)

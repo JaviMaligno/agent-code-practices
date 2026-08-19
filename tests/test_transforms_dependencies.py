@@ -147,3 +147,80 @@ def test_a_type_parameter_is_not_a_dependency():
 
     assert free_names(funcion) == set()
     assert free_names(clase) == {"LIMIT"}
+
+
+def test_a_conditional_import_is_still_a_module_binding():
+    """El patrón más común de la stdlib y de los repos reales: el acelerador en
+    C con su respaldo en Python. `c_scanstring` es un nombre del módulo aunque
+    no esté en el nivel superior del cuerpo, y quien mueve una definición que lo
+    use necesita saberlo o lo dejará sin resolver."""
+    tree = ast.parse(
+        "try:\n"
+        "    from _json import scanstring as c_scanstring\n"
+        "except ImportError:\n"
+        "    c_scanstring = None\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from decimal import Decimal\n"
+    )
+
+    bindings = module_bindings(tree)
+
+    # Gana la última forma de ligarlo, que aquí es la conservadora: copiarse
+    # solo el `from _json import ...` al destino perdería el respaldo.
+    assert bindings == {"c_scanstring": "assign", "Decimal": "import"}
+
+
+def test_a_star_import_does_not_bind_a_name_called_star():
+    """`from .base import *` trae nombres que no se pueden saber sin importar el
+    otro módulo. Lo que no se puede saber se calla: publicar un binding llamado
+    `*` es peor que no publicar nada, porque parece un nombre."""
+    tree = ast.parse("from .base_events import *\n")
+
+    assert module_bindings(tree) == {}
+
+
+def test_module_level_loops_and_handlers_bind_names_too():
+    tree = ast.parse(
+        "for index in range(3):\n"
+        "    LEVELS = index\n"
+        "\n"
+        "with open('x') as handle:\n"
+        "    DATA = handle.read()\n"
+    )
+
+    assert module_bindings(tree) == {
+        "index": "assign",
+        "LEVELS": "assign",
+        "handle": "assign",
+        "DATA": "assign",
+    }
+
+
+def test_what_a_function_binds_inside_is_not_a_module_binding():
+    """La otra mitad de la regla: se baja por los `if` y los `try`, que siguen
+    siendo el ámbito del módulo, pero no por los cuerpos de def y class, que no
+    lo son."""
+    tree = ast.parse(
+        "def outer():\n"
+        "    interna = 1\n"
+        "    import json\n"
+        "    return interna, json\n"
+        "\n"
+        "\n"
+        "class C:\n"
+        "    ATRIBUTO = 1\n"
+    )
+
+    assert module_bindings(tree) == {"outer": "def", "C": "def"}
+
+
+def test_a_comprehension_variable_is_not_a_module_binding():
+    """`symtable`, que es el analizador de CPython, sí lista `v` como símbolo
+    del módulo desde que 3.12 inlinea las comprehensions (PEP 709) — y sin
+    embargo `v` no existe después de la línea. Publicarlo haría que quien mueve
+    una definición creyera que el módulo lo aporta y escribiera un import roto,
+    así que aquí se ignora a propósito."""
+    tree = ast.parse("responses = {v: v.phrase for v in members()}\n")
+
+    assert module_bindings(tree) == {"responses": "assign"}
