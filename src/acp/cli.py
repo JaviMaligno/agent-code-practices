@@ -69,7 +69,18 @@ def profile_repo(
 # los tests guardados se quedan importando rutas que B2 acaba de borrar. El
 # fallo aparecería en la corrida de validación —la única que ejecuta esa suite—
 # y se leería como un repo roto por el agente en vez de como un orden mal puesto.
-CANONICAL_ORDER = ("A1", "A2", "A4", "A3", "B2", "B3", "B4")
+# B1 va la PRIMERA, y por una razón que no se ve hasta que se lee el manifiesto.
+# Es la única transformación cuya salida se indexa por nombre de símbolo, y la
+# clave que el mapa de identidad entiende es el nombre ORIGINAL (§5.4.2). Corrida
+# después de A2, B1 solo puede anunciar `pkg.core.f7`, que no es la clave de
+# nadie: los símbolos movidos se caen del manifiesto y la métrica de
+# localización se queda sin datos, en verde —el fallo exacto de la fase 2—.
+# Delante de A2 las claves son las buenas, y `renames` ya le dice a
+# `relocate_symbols` por qué nombre preguntar en el destino.
+# Y delante de B2 por una segunda razón, esta experimental: B1 reparte dentro de
+# cada directorio, así que si B2 aplanara antes, la dosis de B1 dependería de si
+# B2 está en la celda y ninguna de las dos sería atribuible (§4.2).
+CANONICAL_ORDER = ("B1", "A1", "A2", "A4", "A3", "B2", "B3", "B4")
 
 
 def _application_order(transform_ids: list[str]) -> list[str]:

@@ -94,9 +94,10 @@ def relocate_symbols(
         pasan a buscarse por nombre, se hayan movido o no.
 
     El nombre por el que se busca es el que el símbolo tenga en el árbol
-    transformado: A2 corre antes que la familia B (`CANONICAL_ORDER`), así que
-    el símbolo llega al destino ya renombrado y buscarlo por su nombre original
-    no encontraría nada. De ahí `renames` —el mismo diccionario que publica el
+    transformado: A2 y B1 corren las dos sobre el mismo árbol —B1 primero, para
+    poder anunciar las claves originales (`CANONICAL_ORDER`)— así que el símbolo
+    acaba en el destino con el nombre opaco puesto y buscarlo por su nombre
+    original no encontraría nada. De ahí `renames` —el mismo diccionario que publica el
     manifiesto—, que solo se usa para SABER POR QUÉ NOMBRE PREGUNTAR; el nombre
     que se publica se sigue leyendo del código, nunca del diccionario.
     """

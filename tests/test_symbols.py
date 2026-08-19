@@ -274,10 +274,10 @@ def test_a_symbol_move_that_lands_nowhere_drops_the_symbol(tmp_path: Path):
 
 
 def test_a_symbol_that_travelled_under_a_new_name_is_found_by_the_rename(tmp_path: Path):
-    """A2 corre antes que la familia B (`CANONICAL_ORDER`), así que el símbolo
-    que viaja solo llega al destino con el nombre opaco puesto. Buscarlo por su
-    nombre original no lo encuentra, y el símbolo se caería del manifiesto justo
-    en las condiciones combinadas, que son las que el 2×2 compara."""
+    """A2 y B1 corren sobre el mismo árbol, así que el símbolo que viaja solo
+    llega al destino con el nombre opaco puesto. Buscarlo por su nombre original
+    no lo encuentra, y el símbolo se caería del manifiesto justo en las
+    condiciones combinadas, que son las que el 2×2 compara."""
     original = tmp_path / "before"
     (original / "pkg").mkdir(parents=True)
     (original / "pkg" / "nif.py").write_text(
