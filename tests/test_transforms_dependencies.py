@@ -12,7 +12,12 @@ import sys
 
 import pytest
 
-from acp.transforms.dependencies import free_names, module_bindings
+from acp.transforms.dependencies import (
+    annotation_names,
+    free_names,
+    module_bindings,
+    star_imports,
+)
 
 
 def first(source: str) -> ast.AST:
@@ -224,3 +229,71 @@ def test_a_comprehension_variable_is_not_a_module_binding():
     tree = ast.parse("responses = {v: v.phrase for v in members()}\n")
 
     assert module_bindings(tree) == {"responses": "assign"}
+
+
+def test_a_name_that_only_appears_in_an_annotation_is_marked_apart():
+    """En pint y en sqlglot la mayoría de los nombres libres de una definición
+    de nivel de módulo salen de sus anotaciones, y con `from __future__ import
+    annotations` esos nombres no se evalúan nunca: el equipo los importa bajo
+    `if TYPE_CHECKING` justo para evitar un ciclo. Quien mueva la definición y
+    copie ese import sin la guarda cambia un repo que arranca por uno que no,
+    así que la separación tiene que estar disponible, no adivinarse."""
+    node = first(
+        "def total(rows: Sequence[Row], factor: Decimal = DEFAULT) -> Report:\n"
+        "    return build(rows)\n"
+    )
+
+    assert free_names(node) == {
+        "Sequence", "Row", "Decimal", "Report", "DEFAULT", "build",
+    }
+    # `DEFAULT` es un valor por defecto, y ese sí se evalúa siempre.
+    assert annotation_names(node) == {"Sequence", "Row", "Decimal", "Report"}
+
+
+def test_a_name_also_used_outside_an_annotation_is_not_annotation_only():
+    node = first("def f(value: Decimal) -> Decimal:\n    return Decimal(value)\n")
+
+    assert annotation_names(node) == set()
+
+
+def test_an_annotated_attribute_of_a_class_counts_too():
+    """El caso de `stdnum/numdb.py`: la clase declara `prefixes: list[PrefixInfo]`
+    y `PrefixInfo` no aparece en ninguna otra parte."""
+    node = first(
+        "class NumDB:\n"
+        "    prefixes: list[PrefixInfo]\n"
+        "\n"
+        "    def add(self, prefix: PrefixInfo) -> None:\n"
+        "        self.prefixes.append(prefix)\n"
+    )
+
+    assert free_names(node) == {"list", "PrefixInfo"}
+    assert annotation_names(node) == {"list", "PrefixInfo"}
+
+
+def test_a_star_import_is_reported_apart_because_its_names_cannot_be_known():
+    """python-stdnum, el finalista más barato, hace `from stdnum.exceptions
+    import *` en 246 de sus 368 ficheros: los nombres que trae son el 18% de lo
+    que sus definiciones necesitan. Callarlo del todo haría que quien mueve
+    concluyera «esto no lo aporta el módulo» y dejara la definición sin
+    resolver. No se pueden enumerar sin importar el otro módulo, pero sí se
+    puede decir de dónde vienen, que es lo que hace falta para llevarse el
+    import entero al destino."""
+    tree = ast.parse(
+        "from stdnum.exceptions import *\n"
+        "from stdnum.util import clean\n"
+        "\n"
+        "try:\n"
+        "    from .compat import *\n"
+        "except ImportError:\n"
+        "    pass\n"
+    )
+
+    assert star_imports(tree) == ["stdnum.exceptions", ".compat"]
+    assert "clean" in module_bindings(tree)
+
+
+def test_a_module_without_star_imports_says_so():
+    tree = ast.parse("from stdnum.util import clean\n")
+
+    assert star_imports(tree) == []

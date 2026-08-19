@@ -16,6 +16,7 @@ no se mueve— es de quien mueve.
 from __future__ import annotations
 
 import ast
+import copy
 
 # Nodos que abren un ámbito propio de comprehension: el destino del `for` vive
 # dentro y no se ve desde fuera (en Python 3, a diferencia de Python 2).
@@ -40,6 +41,72 @@ def free_names(node: ast.AST) -> set[str]:
     encontrados: set[str] = set()
     _visit(node, [], encontrados)  # cadena vacía: todo lo de fuera es libre
     return encontrados
+
+
+def annotation_names(node: ast.AST) -> set[str]:
+    """De lo que `node` necesita, lo que solo aparece en anotaciones.
+
+    Es un subconjunto de `free_names`, y se publica aparte porque el riesgo no
+    es el mismo. Con `from __future__ import annotations` (PEP 563) esos
+    nombres no se evalúan nunca, y por eso los repos los importan bajo
+    `if TYPE_CHECKING` para romper ciclos: copiar ese import al destino SIN la
+    guarda convierte un repo que arranca en uno que no, que es peor que la
+    dosis que se ahorra. Sin el futuro import sí se evalúan al definir, así que
+    quien mueve tiene que mirar las dos cosas —el módulo y esta lista— antes de
+    decidir si el import viaja desnudo, con guarda o no viaja.
+
+    Medido sobre los cuatro finalistas: en pint y sqlglot la mayor parte de los
+    nombres libres de una definición de nivel de módulo caen aquí; en
+    python-stdnum y holidays son unas decenas.
+    """
+    return free_names(node) - free_names(_without_annotations(node))
+
+
+def _without_annotations(node: ast.AST) -> ast.AST:
+    """Copia del nodo sin anotaciones. Se copia en vez de llevar una bandera por
+    todo el recorrido porque esto corre una vez por definición y por repo."""
+    copia = copy.deepcopy(node)
+    for descendiente in ast.walk(copia):
+        if isinstance(descendiente, ast.arg):
+            descendiente.annotation = None
+        elif isinstance(descendiente, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            descendiente.returns = None
+        elif isinstance(descendiente, ast.AnnAssign):
+            # `x: T` sin valor deja de ligar nada en tiempo de ejecución, pero
+            # aquí solo se cuentan nombres leídos: el destino ya se recogió.
+            descendiente.annotation = ast.Constant(value=None)
+    return copia
+
+
+def star_imports(tree: ast.Module) -> list[str]:
+    """Módulos de los que este hace `from ... import *`, en orden de aparición.
+
+    Lo que traen no se sabe sin importarlos, así que `module_bindings` no puede
+    nombrarlo; lo que sí se puede decir es de DÓNDE viene, que es lo que
+    necesita quien mueve una definición para llevarse el import entero al
+    destino en vez de dejar el nombre colgando. No es un detalle raro: en
+    python-stdnum lo hacen 246 de sus 368 ficheros y de ahí sale el 18% de lo
+    que sus definiciones necesitan.
+    """
+    encontrados: list[str] = []
+    _collect_star_imports(tree.body, encontrados)
+    return encontrados
+
+
+def _collect_star_imports(nodes: list, encontrados: list[str]) -> None:
+    for node in nodes:
+        if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
+            # Un import relativo se identifica por sus puntos: `from . import *`
+            # y `from .compat import *` no nombran el mismo módulo.
+            encontrados.append("." * node.level + (node.module or ""))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue  # otro ámbito
+        hijos = [
+            hijo
+            for hijo in ast.iter_child_nodes(node)
+            if isinstance(hijo, (ast.stmt, ast.ExceptHandler, ast.match_case))
+        ]
+        _collect_star_imports(hijos, encontrados)
 
 
 def module_bindings(tree: ast.Module) -> dict[str, str]:
