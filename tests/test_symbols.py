@@ -221,3 +221,160 @@ def test_in_a_src_layout_the_map_follows_the_move_like_anywhere_else(tmp_path: P
 
     target = moves["pkg.es.nif"].split(".")[-1]
     assert relocated["pkg.es.nif.validate"].path == f"src/pkg/{target}.py"
+
+
+def test_two_symbols_of_the_same_module_can_end_up_in_different_files(tmp_path: Path):
+    """Lo que hace B1: `validate` y `compact` viven juntas y acaban separadas.
+    Un mapa por módulo no puede describir esto — mandaría las dos al mismo
+    sitio— y los símbolos se caerían del manifiesto sin que nada lo diga."""
+    original = tmp_path / "before"
+    (original / "pkg").mkdir(parents=True)
+    (original / "pkg" / "nif.py").write_text(
+        "def validate(number):\n"
+        "    return number\n"
+        "\n"
+        "\n"
+        "def compact(number):\n"
+        "    return number.strip()\n",
+        encoding="utf-8",
+    )
+    symbols = build_symbol_map(original)
+
+    after = tmp_path / "after"
+    (after / "pkg").mkdir(parents=True)
+    (after / "pkg" / "a.py").write_text("def validate(number):\n    return number\n", encoding="utf-8")
+    (after / "pkg" / "b.py").write_text(
+        "def compact(number):\n    return number.strip()\n", encoding="utf-8"
+    )
+
+    relocated = relocate_symbols(
+        symbols, after,
+        symbol_moves={"pkg.nif.validate": "pkg.a", "pkg.nif.compact": "pkg.b"},
+    )
+
+    assert relocated["pkg.nif.validate"].path == "pkg/a.py"
+    assert relocated["pkg.nif.compact"].path == "pkg/b.py"
+    assert relocated["pkg.nif.validate"].current_name == "validate"
+
+
+def test_a_symbol_move_that_lands_nowhere_drops_the_symbol(tmp_path: Path):
+    """Antes de mentir, callar: un rango que no se puede verificar contra el
+    árbol que ve el agente no es procedencia."""
+    original = tmp_path / "before"
+    (original / "pkg").mkdir(parents=True)
+    (original / "pkg" / "nif.py").write_text("def validate(n):\n    return n\n", encoding="utf-8")
+    symbols = build_symbol_map(original)
+
+    after = tmp_path / "after"
+    (after / "pkg").mkdir(parents=True)
+
+    relocated = relocate_symbols(symbols, after, symbol_moves={"pkg.nif.validate": "pkg.z"})
+
+    assert relocated == {}
+
+
+def test_a_symbol_that_travelled_under_a_new_name_is_found_by_the_rename(tmp_path: Path):
+    """A2 corre antes que la familia B (`CANONICAL_ORDER`), así que el símbolo
+    que viaja solo llega al destino con el nombre opaco puesto. Buscarlo por su
+    nombre original no lo encuentra, y el símbolo se caería del manifiesto justo
+    en las condiciones combinadas, que son las que el 2×2 compara."""
+    original = tmp_path / "before"
+    (original / "pkg").mkdir(parents=True)
+    (original / "pkg" / "nif.py").write_text(
+        "def validate(number):\n    return number\n", encoding="utf-8"
+    )
+    symbols = build_symbol_map(original)
+
+    after = tmp_path / "after"
+    (after / "pkg").mkdir(parents=True)
+    (after / "pkg" / "a.py").write_text("def f7(number):\n    return number\n", encoding="utf-8")
+
+    relocated = relocate_symbols(
+        symbols, after,
+        symbol_moves={"pkg.nif.validate": "pkg.a"},
+        renames={"validate": "f7"},
+    )
+
+    assert relocated["pkg.nif.validate"].path == "pkg/a.py"
+    assert relocated["pkg.nif.validate"].current_name == "f7"
+
+
+def test_the_siblings_of_a_travelled_symbol_are_no_longer_matched_by_position(tmp_path: Path):
+    """B1 vacía y llena el mismo fichero a la vez: `rate` se va y `header` llega.
+    La posición dentro del módulo deja de ser una identidad estable —la primera
+    definición de `pkg/billing.py` ya no es la que estaba— y emparejar por ella
+    publicaría el rango de `header` bajo la clave de `total`. Eso es peor que
+    callar, porque nadie lo ve venir."""
+    original = tmp_path / "before"
+    (original / "pkg").mkdir(parents=True)
+    (original / "pkg" / "billing.py").write_text(
+        "def rate(amount):\n"
+        "    return amount\n"
+        "\n"
+        "\n"
+        "def total(rows):\n"
+        "    return sum(rows)\n",
+        encoding="utf-8",
+    )
+    (original / "pkg" / "report.py").write_text(
+        "def header():\n    return 'informe'\n", encoding="utf-8"
+    )
+    symbols = build_symbol_map(original)
+
+    after = tmp_path / "after"
+    (after / "pkg").mkdir(parents=True)
+    (after / "pkg" / "billing.py").write_text(
+        "def header():\n"
+        "    return 'informe'\n"
+        "\n"
+        "\n"
+        "def total(rows):\n"
+        "    return sum(rows)\n",
+        encoding="utf-8",
+    )
+    (after / "pkg" / "report.py").write_text(
+        "def rate(amount):\n    return amount\n", encoding="utf-8"
+    )
+
+    relocated = relocate_symbols(
+        symbols, after,
+        symbol_moves={"pkg.billing.rate": "pkg.report", "pkg.report.header": "pkg.billing"},
+    )
+
+    assert relocated["pkg.billing.total"].path == "pkg/billing.py"
+    assert relocated["pkg.billing.total"].start == 5
+    assert relocated["pkg.billing.rate"].path == "pkg/report.py"
+
+
+def test_a_method_travels_with_the_class_that_declares_it(tmp_path: Path):
+    """Una transformación que reparte definiciones de nivel de módulo anuncia la
+    clase, no sus métodos: el método no viaja por su cuenta. Si el mapa exigiera
+    ver su clave exacta en `symbol_moves`, iría a buscarlo al módulo del que la
+    clase acaba de irse y todos los miembros de todas las clases movidas se
+    caerían del manifiesto —la mitad del API de un repo orientado a objetos—."""
+    original = tmp_path / "before"
+    (original / "pkg").mkdir(parents=True)
+    (original / "pkg" / "billing.py").write_text(
+        "class Invoice:\n"
+        "    def render(self):\n"
+        "        return ''\n",
+        encoding="utf-8",
+    )
+    symbols = build_symbol_map(original)
+
+    after = tmp_path / "after"
+    (after / "pkg").mkdir(parents=True)
+    (after / "pkg" / "billing.py").write_text("", encoding="utf-8")
+    (after / "pkg" / "report.py").write_text(
+        "class Invoice:\n"
+        "    def render(self):\n"
+        "        return ''\n",
+        encoding="utf-8",
+    )
+
+    relocated = relocate_symbols(
+        symbols, after, symbol_moves={"pkg.billing.Invoice": "pkg.report"}
+    )
+
+    assert relocated["pkg.billing.Invoice.render"].path == "pkg/report.py"
+    assert relocated["pkg.billing.Invoice.render"].start == 2

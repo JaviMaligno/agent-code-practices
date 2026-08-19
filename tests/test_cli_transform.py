@@ -364,3 +364,50 @@ def test_the_manifest_keeps_the_symbols_that_b2_moved_with_a_package_init(tmp_pa
     # Y apunta al fichero aplanado, que es el que el agente puede abrir.
     assert formatter["path"] != "pkg/formatter/__init__.py"
     assert "class Formatter" in (destination / formatter["path"]).read_text(encoding="utf-8")
+
+
+def test_the_manifest_keeps_a_symbol_that_travelled_without_its_module(
+    tmp_path: Path, monkeypatch
+):
+    """El otro movimiento que el CLI tiene que acumular: el de una definición
+    suelta. B1 no mueve ficheros, reparte definiciones, así que `result.moves`
+    —módulo a módulo— no puede describir a dónde fue cada una. Si el CLI se
+    olvidara de `symbol_moves`, el manifiesto saldría sin los símbolos movidos y
+    en verde, que es exactamente lo que pasó en la fase 2.
+
+    La transformación es fingida por la misma razón que en el test de `moves`:
+    esto pincha la fontanería del CLI, no B1.
+    """
+    from acp.transforms import TRANSFORMS
+    from acp.transforms.base import TransformResult
+
+    source = tmp_path / "repo"
+    (source / "pkg").mkdir(parents=True)
+    (source / "pkg" / "nif.py").write_text(
+        "def validate(number):\n"
+        "    return number\n"
+        "\n"
+        "\n"
+        "def compact(number):\n"
+        "    return number.strip()\n",
+        encoding="utf-8",
+    )
+
+    def split(root: Path) -> TransformResult:
+        (root / "pkg" / "nif.py").write_text(
+            "def validate(number):\n    return number\n", encoding="utf-8"
+        )
+        (root / "pkg" / "otro.py").write_text(
+            "def compact(number):\n    return number.strip()\n", encoding="utf-8"
+        )
+        return TransformResult(
+            files_changed=2, symbol_moves={"pkg.nif.compact": "pkg.otro"}
+        )
+
+    monkeypatch.setitem(TRANSFORMS, "B9", split)
+
+    destination = transform_repo(source, ["B9"], tmp_path / "work")
+
+    manifest = json.loads(manifest_path_for(destination).read_text(encoding="utf-8"))
+    assert manifest["symbols"]["pkg.nif.compact"]["path"] == "pkg/otro.py"
+    assert manifest["symbols"]["pkg.nif.validate"]["path"] == "pkg/nif.py"

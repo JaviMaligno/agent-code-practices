@@ -22,6 +22,13 @@ class TransformResult:
     # razón que `renames`: el mapa de identidad tiene que poder seguir dónde
     # acabó cada símbolo, y solo la transformación sabe qué movió.
     moves: dict[str, str] = field(default_factory=dict)
+    # Símbolo → módulo destino, para las transformaciones que mueven
+    # definiciones sueltas y no ficheros enteros: dos símbolos del mismo módulo
+    # pueden acabar en sitios distintos, y `moves` no sabe expresar eso —diría
+    # que los dos se fueron al mismo sitio, o los dejaría caer del manifiesto—.
+    # La clave es el nombre cualificado ORIGINAL del símbolo, la misma que usa
+    # el mapa de identidad, porque es la única que sobrevive a A2.
+    symbol_moves: dict[str, str] = field(default_factory=dict)
 
 
 # Lo que no entra en la copia. No es higiene: cada uno de estos artefactos
