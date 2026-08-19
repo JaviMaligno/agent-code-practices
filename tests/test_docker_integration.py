@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from acp.cli import transform_repo
 from acp.runners import DockerRunner
 from acp.suite import run_suite_in_docker
 
@@ -420,4 +421,60 @@ def test_a_repo_that_had_no_suite_to_hide_is_still_verifiable(tmp_path: Path):
     result = run_suite_in_docker(tmp_path, timeout=900, tests_from=kept)
 
     assert result.install_error == ""
+    assert result.passed == 1
+
+
+SRC_LAYOUT = """\
+[project]
+name = "demo"
+version = "0.1.0"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["demo", "demo.inner"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+"""
+
+
+def test_a_src_layout_repo_still_installs_after_being_flattened(tmp_path: Path):
+    """El layout donde el paquete no cuelga de la raíz, hasta el final.
+
+    En `src/` el árbol no se alcanza por ruta —desde la raíz no hay ningún
+    `demo` que importar—, así que la única fontanería posible es instalarlo, y
+    ahí es donde se ve si B2 dejó el repo coherente: los nombres de módulo se
+    cuentan desde `src/` y las rutas de fichero desde la raíz, y confundir las
+    dos cosas no rompe ningún import —el árbol queda igual de plano— sino la
+    instalación. Si la lista declarada de paquetes se podara contra la raíz del
+    árbol, `demo` tampoco existiría ahí y se podaría también: pip instalaría una
+    distribución sin un solo módulo y la suite moriría con ModuleNotFoundError,
+    que en la campaña se lee como el agente destrozando el repo.
+    """
+    source = tmp_path / "repo"
+    package = source / "src" / "demo" / "inner"
+    package.mkdir(parents=True)
+    (source / "pyproject.toml").write_text(SRC_LAYOUT, encoding="utf-8")
+    (source / "src" / "demo" / "__init__.py").write_text(
+        "from demo.inner.value import VALUE\n", encoding="utf-8"
+    )
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "value.py").write_text("VALUE = 42\n", encoding="utf-8")
+    (source / "tests").mkdir()
+    (source / "tests" / "test_ok.py").write_text(
+        "import demo\n\n\ndef test_value():\n    assert demo.VALUE == 42\n", encoding="utf-8"
+    )
+
+    work = transform_repo(source, ["B2"], tmp_path / "work", manifest=tmp_path / "manifest.json")
+
+    assert not (work / "src" / "demo" / "inner").exists(), "sin dosis no se mide nada"
+    result = run_suite_in_docker(work, timeout=900)
+
+    assert result.install_ok is True, result.install_error
     assert result.passed == 1

@@ -1327,8 +1327,10 @@ def build_src_layout(root: Path) -> None:
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "util.py").write_text("def clean(x):\n    return x.strip()\n", encoding="utf-8")
     (pkg / "es" / "__init__.py").write_text("", encoding="utf-8")
+    # Relativo a propósito: es lo que obliga a resolver desde qué paquete se
+    # cuentan los puntos, y en `src/` ese paquete es `pkg.es`, no `src.pkg.es`.
     (pkg / "es" / "nif.py").write_text(
-        "from pkg.util import clean\n\n\ndef validate(number):\n    return clean(number)\n",
+        "from ..util import clean\n\n\ndef validate(number):\n    return clean(number)\n",
         encoding="utf-8",
     )
     (root / "tests").mkdir()
@@ -1403,3 +1405,65 @@ def test_the_repos_own_tooling_inside_the_package_is_not_flattened(tmp_path: Pat
     # Y el código que sí se estudia se aplana igual: la regla es quién entra en
     # el mapa, no una puerta abierta para todo lo que tenga un directorio.
     assert result.moves["pkg.es.nif"].startswith("pkg.m")
+
+
+def test_in_a_src_layout_the_package_list_keeps_the_package_that_survives(tmp_path: Path):
+    """La lista declarada de paquetes se poda preguntando si el directorio
+    sigue ahí, y en layout `src/` ese directorio no cuelga de la raíz del árbol.
+
+    Preguntando desde la raíz, `demo` tampoco existe —vive en `src/demo`— y se
+    podaría junto con el subpaquete que sí desapareció: el `pyproject` quedaría
+    declarando CERO paquetes, o sea una distribución que no lleva nada. Con
+    `pip install -e .` no se nota, porque el editable alcanza `src/` por otro
+    camino; en una instalación normal el repo se instala vacío.
+    """
+    source = tmp_path / "src" / "demo" / "inner"
+    source.mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n\n'
+        '[tool.setuptools]\npackages = ["demo", "demo.inner"]\n\n'
+        '[tool.setuptools.package-dir]\n"" = "src"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "demo" / "__init__.py").write_text(
+        "from demo.inner.value import VALUE\n", encoding="utf-8"
+    )
+    (source / "__init__.py").write_text("", encoding="utf-8")
+    (source / "value.py").write_text("VALUE = 42\n", encoding="utf-8")
+
+    b2_hierarchy.apply(tmp_path)
+
+    declared = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'packages = ["demo"]' in declared, declared
+
+
+def test_in_a_src_layout_a_configured_path_still_names_a_file_that_exists(tmp_path: Path):
+    """El mismo `--ignore=<ruta>` de python-stdnum, en el layout donde la ruta y
+    el nombre de módulo no empiezan en el mismo sitio.
+
+    La configuración nombra RUTAS desde la raíz del árbol —`src/pkg/broken.py`—
+    y los movimientos hablan de MÓDULOS, que aquí se cuentan desde `src/`.
+    Sustituyendo sin ese desfase no coincide nada: el `--ignore` se queda
+    apuntando a un fichero que ya no existe, pytest colecta el módulo que estaba
+    tapado y la corrida entera muere en la colecta, sin que falle un solo test.
+    """
+    build_src_layout(tmp_path)
+    (tmp_path / "src" / "pkg" / "broken.py").write_text(
+        "raise ImportError('a este no hay que colectarlo')\n", encoding="utf-8"
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+        + 'addopts = "--doctest-modules --ignore=src/pkg/broken.py src tests"\n',
+        encoding="utf-8",
+    )
+    before = run_pytest(tmp_path)
+    assert "1 passed" in before.stdout, before.stdout[-1500:]
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    moved = result.moves["pkg.broken"].split(".")[-1]
+    assert f"--ignore=src/pkg/{moved}.py" in (tmp_path / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    after = run_pytest(tmp_path)
+    assert "1 passed" in after.stdout, after.stdout[-2000:]

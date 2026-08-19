@@ -696,7 +696,7 @@ def _module_path(base: Path, module: str) -> Path:
     return base / Path(*module.split(".")).with_suffix(".py")
 
 
-def _rewrite_configured_paths(root: Path, base: Path, moves: dict[str, str]) -> int:
+def _rewrite_configured_paths(root: Path, moves: dict[str, str]) -> int:
     """Las rutas de fichero que la configuración de la suite nombra.
 
     Un import roto se ve: falla un test. Una ruta rota en la configuración no,
@@ -706,15 +706,13 @@ def _rewrite_configured_paths(root: Path, base: Path, moves: dict[str, str]) -> 
     muere en la colecta. Medido: 413 tests pasan a 0 sin que falle ninguno, y la
     condición se leería como un repositorio que el agente destrozó.
     """
-    # La configuración nombra RUTAS, relativas a la raíz del árbol; los
-    # movimientos hablan de módulos, que en layout `src/` se cuentan un nivel
-    # más abajo. Sin el prefijo, `--ignore=src/pkg/iso9362.py` no coincide con
-    # nada y la ruta se queda nombrando un fichero que ya no existe.
-    prefix = base.relative_to(root).as_posix()
-    prefix = "" if prefix == "." else f"{prefix}/"
+    # Se sustituye la cola de la ruta, no la ruta entera desde la raíz del
+    # árbol, y por eso vale igual en layout `src/`: el módulo `pkg.broken` es
+    # `pkg/broken.py` dentro de `--ignore=src/pkg/broken.py`. Anclarlo al
+    # prefijo `src/` no añadía nada —medido por mutación: ningún test cambia—
+    # y se perdía la escritura relativa al propio `src/`.
     replacements = {
-        prefix + "/".join(original.split(".")) + ".py": prefix
-        + "/".join(target.split(".")) + ".py"
+        "/".join(original.split(".")) + ".py": "/".join(target.split(".")) + ".py"
         for original, target in moves.items()
     }
     changed = 0
@@ -1193,7 +1191,7 @@ def apply(root: Path) -> TransformResult:
     # Los ficheros de doctest no son .py y no los recoge `iter_transformable_files`,
     # pero la suite del repo los ejecuta: en python-stdnum son 234 líneas de
     # ejemplo importando por ruta de módulo, o sea 234 fallos si se quedan atrás.
-    changed += _rewrite_configured_paths(root, base, moves)
+    changed += _rewrite_configured_paths(root, moves)
     changed += _rewrite_entry_points(root, moves)
     changed += _rewrite_setup_script(root, moves)
 
