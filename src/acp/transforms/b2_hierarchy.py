@@ -242,6 +242,35 @@ def modules_named_by_the_suite(root: Path) -> set[str]:
     return found
 
 
+def _outside_the_symbol_map(path: Path, root: Path) -> bool:
+    """Si mover este fichero sería un movimiento que nadie puede acreditar.
+
+    Es lo que el repositorio guarda DENTRO del paquete sin ser ni el código que
+    se estudia ni la suite: `pkg/tools/`, `pkg/scripts/`, `pkg/benchmarks/`,
+    `pkg/examples/`, `pkg/docs/`. `acp.metrics.size` ya los deja fuera de la
+    muestra y de las métricas, y por tanto también del mapa de identidad; el
+    mismo criterio es el que decide en `_package_root` quién puede ser el
+    paquete raíz. Moverlos igual dejaba en la raíz del paquete un fichero con
+    nombre opaco, indistinguible del código del repo y sin una sola entrada en
+    el mapa que dijera de dónde salió.
+
+    §5.4.2 mide la localización proyectando lo que el agente lee sobre ese mapa,
+    así que un fichero legible que no está en él no se puede proyectar. La otra
+    salida —meter su símbolo en el mapa— cambiaría la población de la que salen
+    las tareas y sobre la que se midió la fase 0: sería cambiar el experimento
+    para tapar un agujero de contabilidad. Y no se pierde dosis: ninguna tarea
+    apunta ahí.
+
+    La suite es lo contrario y por eso se pregunta antes: sus ficheros tampoco
+    están en el mapa —son el oráculo, no el objetivo—, pero §4.3.1 los
+    transforma con el resto del árbol, y pint tiene los suyos dentro del
+    paquete. Esos sí se mueven.
+    """
+    if is_test_file(path, root):
+        return False
+    return any(is_excluded_dir(part) for part in path.relative_to(root).parts[:-1])
+
+
 def plan_moves(root: Path) -> dict[str, str]:
     """Módulo original → módulo destino, todos colgando del paquete raíz.
 
@@ -290,6 +319,8 @@ def plan_moves(root: Path) -> dict[str, str]:
         if any(name == module or name.startswith(f"{module}.") for name in pinned):
             continue
         if any(directory in path.parents for directory in scoped):
+            continue
+        if _outside_the_symbol_map(path, root):
             continue
         if _locates_itself(path):
             continue

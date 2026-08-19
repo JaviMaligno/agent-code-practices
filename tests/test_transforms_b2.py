@@ -1360,3 +1360,46 @@ def test_a_src_layout_repo_is_flattened_and_its_suite_still_passes(tmp_path: Pat
     assert (tmp_path / "src" / "pkg" / "__init__.py").exists()
     after = run_pytest(tmp_path)
     assert "1 passed" in after.stdout, after.stdout[-2000:]
+
+
+def test_the_repos_own_tooling_inside_the_package_is_not_flattened(tmp_path: Path):
+    """B2 movía ficheros cuya procedencia nadie puede publicar.
+
+    `pkg/tools/`, `pkg/scripts/`, `pkg/benchmarks/`, `pkg/examples/`: para
+    `acp.metrics.size` eso no es el código que se estudia —no entra en la
+    muestra, ni en las métricas de fase 0, ni en el mapa de identidad—, y es el
+    mismo criterio (`is_excluded_dir`) con el que `_package_root` decide quién
+    puede ser el paquete raíz. Pero `plan_moves` los movía igual: el fichero
+    aparecía en la raíz del paquete con nombre opaco, indistinguible del código
+    del repo, y sin una sola entrada en el mapa que dijera de dónde venía.
+
+    §5.4.2 mide localización proyectando lo que el agente lee sobre el mapa de
+    símbolos —si llegó a la región objetivo, y cuántos símbolos distintos vio
+    antes—. Un fichero legible dentro del paquete que no está en el mapa no se
+    puede proyectar, así que la elección es entre no moverlo o meter su símbolo
+    en el mapa; y meterlo cambiaría la población de la que salen las tareas y
+    sobre la que se midió la fase 0, o sea cambiar el experimento para tapar un
+    agujero de contabilidad. Además no compra dosis: ninguna tarea apunta ahí.
+
+    La suite sí se mueve, y eso no es una excepción sino la otra mitad de la
+    misma regla: los tests se transforman por §4.3.1 y su ausencia del mapa es
+    de diseño —son el oráculo, no el objetivo—. Lo pinta
+    `test_a_suite_that_lives_inside_the_package_is_still_collected`.
+    """
+    build(tmp_path)
+    tools = tmp_path / "pkg" / "tools"
+    tools.mkdir()
+    (tools / "__init__.py").write_text(
+        "def tool_entry():\n    return 'genera cosas'\n", encoding="utf-8"
+    )
+    (tools / "release.py").write_text("def cut():\n    return 1\n", encoding="utf-8")
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert "pkg.tools" not in result.moves
+    assert "pkg.tools.release" not in result.moves
+    assert (tmp_path / "pkg" / "tools" / "__init__.py").exists()
+    assert (tmp_path / "pkg" / "tools" / "release.py").exists()
+    # Y el código que sí se estudia se aplana igual: la regla es quién entra en
+    # el mapa, no una puerta abierta para todo lo que tenga un directorio.
+    assert result.moves["pkg.es.nif"].startswith("pkg.m")
