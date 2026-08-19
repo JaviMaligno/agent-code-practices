@@ -506,3 +506,35 @@ def test_a_flag_that_merely_starts_the_same_is_not_a_match():
     from acp.suite import plugins_for_unrecognised
 
     assert plugins_for_unrecognised("error: unrecognized arguments: --covfefe") == []
+
+
+def test_the_kept_suite_is_resolved_before_being_copied(tmp_path, monkeypatch):
+    """Los comandos se lanzan con cwd=repo, así que una ruta relativa se
+    resuelve DOS veces y `docker cp` busca la suite dentro del propio árbol.
+    Verificado sobre sqlglot: `lstat .../sqlglot-B4/candidates: no such file or
+    directory`, y la celda entera de B4 sale NO EVALUABLE. Es el mismo fallo que
+    `resolve_locations` ya evita para el entorno, en un sitio nuevo.
+    """
+    from pathlib import Path
+
+    from acp import suite
+
+    repo = tmp_path / "work"
+    repo.mkdir()
+    kept = tmp_path / "work.acp-tests"
+    (kept / "tests").mkdir(parents=True)
+
+    lanzados: list[list[str]] = []
+
+    def fake_run(command, cwd, timeout):
+        lanzados.append(command)
+        return 0, "", False
+
+    monkeypatch.setattr(suite, "_run", fake_run)
+    monkeypatch.chdir(tmp_path)
+
+    suite.run_suite_in_docker(Path("work"), timeout=1, tests_from=Path("work.acp-tests"))
+
+    copias = [c for c in lanzados if c[:2] == ["docker", "cp"] and "acp-tests" in c[2]]
+    assert copias, "la suite guardada nunca se copió al contenedor"
+    assert copias[0][2].startswith("/"), f"ruta relativa: {copias[0][2]}"

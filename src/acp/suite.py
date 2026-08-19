@@ -730,6 +730,14 @@ def run_suite_in_docker(
     la misma después de verificarla (§4.2).
     """
     repo, _ = resolve_locations(repo, None)
+    # La suite guardada también se resuelve: los comandos se lanzan con
+    # `cwd=repo`, así que una ruta relativa se interpretaría DOS veces y
+    # `docker cp` la buscaría dentro del propio árbol. Verificado sobre sqlglot:
+    # `lstat .../sqlglot-B4/candidates: no such file or directory`, y la celda de
+    # B4 entera salía NO EVALUABLE. Es el mismo fallo que `resolve_locations` ya
+    # evita para el entorno, en un sitio nuevo.
+    if tests_from is not None:
+        tests_from = Path(tests_from).expanduser().resolve()
     runner = DockerRunner(repo=repo, image=image)
     metrics = SuiteMetrics(attempted=True)
     started = time.monotonic()
