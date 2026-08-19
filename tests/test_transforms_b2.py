@@ -1467,3 +1467,34 @@ def test_in_a_src_layout_a_configured_path_still_names_a_file_that_exists(tmp_pa
     )
     after = run_pytest(tmp_path)
     assert "1 passed" in after.stdout, after.stdout[-2000:]
+
+
+def test_a_suite_inside_the_package_is_still_flattened_with_the_rest(tmp_path: Path):
+    """El contrapeso de `_outside_the_symbol_map`: la suite del repo tampoco
+    está en el mapa de identidad, pero sí se transforma (§4.3.1) y sí se mueve.
+
+    Es la forma de pint, que guarda sus 35 ficheros de test en `pint/testsuite/`.
+    Ese directorio cae en `is_excluded_dir` igual que `tools/` o `benchmarks/`,
+    así que la regla que deja fuera lo que nadie puede acreditar se lo llevaría
+    por delante y B2 mediría media dosis sobre el único finalista con jerarquía
+    profunda: el nombre del directorio seguiría diciendo qué hay dentro.
+
+    Sin `conftest.py` al lado, que es lo que sí ancla un directorio (ver
+    `test_a_directory_that_scopes_a_conftest_is_not_flattened`).
+    """
+    build_forms(tmp_path)
+    inner = tmp_path / "pkg" / "testsuite"
+    inner.mkdir()
+    (inner / "__init__.py").write_text("", encoding="utf-8")
+    (inner / "test_nif.py").write_text(
+        "from pkg.es.nif import validate\n\n\n"
+        "def test_it():\n    assert validate(' 12 ') == '12'\n",
+        encoding="utf-8",
+    )
+
+    result = b2_hierarchy.apply(tmp_path)
+
+    assert result.moves["pkg.testsuite.test_nif"].startswith("pkg.test_m")
+    assert not (tmp_path / "pkg" / "testsuite").exists()
+    after = run_pytest(tmp_path)
+    assert "1 passed" in after.stdout, after.stdout[-2000:]
