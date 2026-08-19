@@ -8,6 +8,9 @@ fracasa (§11 del spec).
 from __future__ import annotations
 
 import ast
+import sys
+
+import pytest
 
 from acp.transforms.dependencies import free_names, module_bindings
 
@@ -112,3 +115,35 @@ def test_a_nonlocal_name_belongs_to_the_enclosing_function():
     )
 
     assert free_names(node) == set()
+
+
+def test_a_match_capture_is_local_and_not_a_dependency():
+    """Un patrón captura en una local (`kind`), pero un patrón de clase LEE un
+    nombre del módulo (`Punto`). Confundirlos no deja la dosis corta: hace que
+    quien mueve escriba un import de un nombre que no existe en ninguna parte,
+    y eso es ImportError al cargar el módulo, no un NameError al usarlo."""
+    node = first(
+        "def f(value):\n"
+        "    match value:\n"
+        "        case {'kind': kind}:\n"
+        "            return kind\n"
+        "        case [primero, *resto]:\n"
+        "            return primero, resto\n"
+        "        case Punto(x=x):\n"
+        "            return x\n"
+        "        case _:\n"
+        "            return DEFAULT\n"
+    )
+
+    assert free_names(node) == {"DEFAULT", "Punto"}
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 es de Python 3.12")
+def test_a_type_parameter_is_not_a_dependency():
+    """Mismo fallo que el `match` y por el mismo motivo: `T` lo liga la propia
+    definición, así que pedirlo al módulo inventa un import."""
+    funcion = first("def f[T](x: T) -> T:\n    return x\n")
+    clase = ast.parse("class C[T]:\n    def get(self) -> T:\n        return LIMIT\n").body[0]
+
+    assert free_names(funcion) == set()
+    assert free_names(clase) == {"LIMIT"}

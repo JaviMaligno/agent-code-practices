@@ -114,7 +114,13 @@ def _visit(node: ast.AST, chain: Chain, free: set[str]) -> None:
 def _visit_function(
     node: ast.FunctionDef | ast.AsyncFunctionDef, chain: Chain, free: set[str]
 ) -> None:
-    # Decoradores, valores por defecto y anotaciones se evalúan en el ámbito de
+    for decorator in node.decorator_list:
+        # El decorador se aplica DESPUÉS de crear la función, o sea fuera hasta
+        # de sus parámetros de tipo.
+        _visit(decorator, chain, free)
+    chain = _with_type_params(node, chain)
+
+    # Los valores por defecto y las anotaciones se evalúan en el ámbito de
     # FUERA de la función: si se filtraran con sus locales, un `def f(x=TAX)`
     # dejaría de pedir `TAX` en cuanto la función tuviera una local llamada así.
     _visit_signature_outside(node, chain, free)
@@ -136,6 +142,7 @@ def _visit_class(node: ast.ClassDef, chain: Chain, free: set[str]) -> None:
     # Decoradores, bases y `metaclass=` se evalúan fuera de la clase.
     for decorator in node.decorator_list:
         _visit(decorator, chain, free)
+    chain = _with_type_params(node, chain)
     for base in node.bases:
         _visit(base, chain, free)
     for keyword in node.keywords:
@@ -147,6 +154,22 @@ def _visit_class(node: ast.ClassDef, chain: Chain, free: set[str]) -> None:
     interior = chain + [(_CLASS, ligados)]
     for statement in node.body:
         _visit(statement, interior, free)
+
+
+def _with_type_params(node: ast.AST, chain: Chain) -> Chain:
+    """Los parámetros de tipo de PEP 695 (`def f[T](...)`) los liga la propia
+    definición, en un ámbito que envuelve a la firma y al cuerpo.
+
+    Sin esto, `T` sale como nombre libre y quien mueva la definición escribiría
+    un import de un nombre que no existe en ningún módulo: eso no es dosis
+    corta, es un ImportError al cargar —el repo entero se lee como un agente
+    que fracasa—.
+    """
+    # `type_params` no existe antes de Python 3.12 y el proyecto admite 3.11.
+    parametros = getattr(node, "type_params", None)
+    if not parametros:
+        return chain
+    return chain + [(_FUNCTION, {parametro.name for parametro in parametros})]
 
 
 def _visit_lambda(node: ast.Lambda, chain: Chain, free: set[str]) -> None:
@@ -259,6 +282,13 @@ def _collect_bindings(
             ligados.add(node.name)
     elif isinstance(node, ast.NamedExpr):
         ligados.update(_target_names(node.target))
+    elif isinstance(node, (ast.MatchAs, ast.MatchStar, ast.MatchMapping)):
+        # Un patrón captura en una local: `case [primero, *resto]` liga los dos
+        # nombres. El patrón de clase de `case Punto(x=x)` es otra cosa —ahí
+        # `Punto` sí se busca fuera— y por eso solo se ligan estos tres nodos.
+        nombre = node.name if not isinstance(node, ast.MatchMapping) else node.rest
+        if nombre is not None:
+            ligados.add(nombre)
 
     for child in ast.iter_child_nodes(node):
         _collect_bindings(child, ligados, declarados, globales)
