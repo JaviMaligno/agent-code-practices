@@ -8,9 +8,22 @@ roto se lee igual que un agente que fracasa: la celda mediría el daño de la
 transformación, no la práctica que la transformación quiere quitar (§11).
 
 Aquí no se decide nada, solo se mira: `free_names` dice qué nombres necesita un
-nodo de fuera de sí mismo y `module_bindings` dice qué nombres pone su módulo y
-de dónde salen. Cruzar las dos cosas —y decidir qué se importa, qué viaja y qué
-no se mueve— es de quien mueve.
+nodo de fuera de sí mismo, `annotation_names` cuáles de ellos solo aparecen en
+anotaciones, y `module_bindings` y `star_imports` qué pone su módulo y de dónde.
+Cruzar todo eso —y decidir qué se importa, qué viaja y qué no se mueve— es de
+quien mueve.
+
+Fuera de alcance, declarado en vez de forzado (§11): **los dunders del módulo**.
+Una definición que lee `__file__` no pide un nombre que se pueda importar; pide
+el fichero donde está, y al mudarse ese valor cambia. Aparecen en unas pocas
+definiciones de los cuatro finalistas —casi siempre `Path(__file__).parent` para
+encontrar datos— y ninguna forma de moverlas conserva lo que hacían, así que la
+salida honesta es sacarlas del reparto, no inventarles un import.
+
+Medido sobre los cuatro finalistas (5.503 definiciones de nivel de módulo,
+26.482 nombres libres): ni uno se queda sin explicación. Son builtins, dunders
+del módulo, nombres que aporta su propio módulo, o vienen de un `import *` cuyo
+origen sí se publica.
 """
 
 from __future__ import annotations
@@ -275,8 +288,6 @@ def _visit_comprehension(node: ast.AST, chain: Chain, free: set[str]) -> None:
 def _visit_signature_outside(
     node: ast.FunctionDef | ast.AsyncFunctionDef, chain: Chain, free: set[str]
 ) -> None:
-    for decorator in node.decorator_list:
-        _visit(decorator, chain, free)
     for default in [*node.args.defaults, *node.args.kw_defaults]:
         if default is not None:
             _visit(default, chain, free)
