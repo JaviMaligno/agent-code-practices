@@ -38,7 +38,7 @@ def free_names(node: ast.AST) -> set[str]:
       forma de distinguirlo de un nombre que sí falta.
     """
     encontrados: set[str] = set()
-    _visit(node, [], encontrados)
+    _visit(node, [], encontrados)  # cadena vacía: todo lo de fuera es libre
     return encontrados
 
 
@@ -58,15 +58,32 @@ def module_bindings(tree: ast.Module) -> dict[str, str]:
 
 # --- ámbitos ---------------------------------------------------------------
 #
-# La cadena de ámbitos es una lista de conjuntos de nombres ligados, del más
-# externo al más interno. Un nombre es libre cuando no está en ninguno.
+# La cadena de ámbitos es una lista de (clase de ámbito, nombres ligados), del
+# más externo al más interno. Un nombre es libre cuando no está en ninguno de
+# los ámbitos que se ven desde donde se lee.
+
+_FUNCTION = "function"
+_CLASS = "class"
+
+Chain = list[tuple[str, set[str]]]
 
 
-def _resolved(name: str, chain: list[set[str]]) -> bool:
-    return any(name in ligados for ligados in chain)
+def _resolved(name: str, chain: Chain) -> bool:
+    for index in range(len(chain) - 1, -1, -1):
+        kind, ligados = chain[index]
+        # El ámbito de una clase solo lo ve el código que está DIRECTAMENTE en
+        # su cuerpo. Un método salta por encima y busca en el módulo —por eso
+        # dentro de un método se escribe `self.TAX` y no `TAX`—, así que tratar
+        # los atributos de clase como visibles haría que B1 moviera la clase sin
+        # llevarse el `TAX` del módulo y el método reventara al usarse.
+        if kind == _CLASS and index != len(chain) - 1:
+            continue
+        if name in ligados:
+            return True
+    return False
 
 
-def _visit(node: ast.AST, chain: list[set[str]], free: set[str]) -> None:
+def _visit(node: ast.AST, chain: Chain, free: set[str]) -> None:
     if isinstance(node, ast.Name):
         # Solo la lectura pide algo de fuera: escribir liga, y lo ligado ya se
         # recogió al abrir el ámbito.
@@ -76,6 +93,10 @@ def _visit(node: ast.AST, chain: list[set[str]], free: set[str]) -> None:
 
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         _visit_function(node, chain, free)
+        return
+
+    if isinstance(node, ast.ClassDef):
+        _visit_class(node, chain, free)
         return
 
     if isinstance(node, ast.Lambda):
@@ -91,29 +112,56 @@ def _visit(node: ast.AST, chain: list[set[str]], free: set[str]) -> None:
 
 
 def _visit_function(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, chain: list[set[str]], free: set[str]
+    node: ast.FunctionDef | ast.AsyncFunctionDef, chain: Chain, free: set[str]
 ) -> None:
     # Decoradores, valores por defecto y anotaciones se evalúan en el ámbito de
     # FUERA de la función: si se filtraran con sus locales, un `def f(x=TAX)`
     # dejaría de pedir `TAX` en cuanto la función tuviera una local llamada así.
     _visit_signature_outside(node, chain, free)
 
-    interior = chain + [_function_scope(node)]
+    ligados, globales = _scope_bindings(node.body)
+    ligados.update(_parameters(node.args))
+    # Un `global X` no liga nada aquí dentro: dice que X vive en el módulo, y
+    # además que esta definición lo LEE o lo ESCRIBE. Es la dependencia más
+    # fuerte que puede tener —arrastra estado, no solo un nombre— y B1 la
+    # necesita ver para sacar la definición del reparto en vez de romperla.
+    free.update(globales)
+
+    interior = chain + [(_FUNCTION, ligados)]
     for statement in node.body:
         _visit(statement, interior, free)
 
 
-def _visit_lambda(node: ast.Lambda, chain: list[set[str]], free: set[str]) -> None:
+def _visit_class(node: ast.ClassDef, chain: Chain, free: set[str]) -> None:
+    # Decoradores, bases y `metaclass=` se evalúan fuera de la clase.
+    for decorator in node.decorator_list:
+        _visit(decorator, chain, free)
+    for base in node.bases:
+        _visit(base, chain, free)
+    for keyword in node.keywords:
+        _visit(keyword.value, chain, free)
+
+    ligados, globales = _scope_bindings(node.body)
+    free.update(globales)
+
+    interior = chain + [(_CLASS, ligados)]
+    for statement in node.body:
+        _visit(statement, interior, free)
+
+
+def _visit_lambda(node: ast.Lambda, chain: Chain, free: set[str]) -> None:
     for default in [*node.args.defaults, *node.args.kw_defaults]:
         if default is not None:
             _visit(default, chain, free)
-    _visit(node.body, chain + [set(_parameters(node.args))], free)
+    _visit(node.body, chain + [(_FUNCTION, set(_parameters(node.args)))], free)
 
 
-def _visit_comprehension(node: ast.AST, chain: list[set[str]], free: set[str]) -> None:
+def _visit_comprehension(node: ast.AST, chain: Chain, free: set[str]) -> None:
     generators = node.generators  # type: ignore[attr-defined]
     ligados: set[str] = set()
-    interior = chain + [ligados]
+    # Una comprehension abre ámbito de FUNCIÓN, no de clase: por eso dentro de
+    # un cuerpo de clase no ve los atributos que la rodean.
+    interior: Chain = chain + [(_FUNCTION, ligados)]
     for index, generator in enumerate(generators):
         # El primer iterable se evalúa en el ámbito de fuera; los siguientes ya
         # ven los destinos de los `for` anteriores.
@@ -128,7 +176,7 @@ def _visit_comprehension(node: ast.AST, chain: list[set[str]], free: set[str]) -
 
 
 def _visit_signature_outside(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, chain: list[set[str]], free: set[str]
+    node: ast.FunctionDef | ast.AsyncFunctionDef, chain: Chain, free: set[str]
 ) -> None:
     for decorator in node.decorator_list:
         _visit(decorator, chain, free)
@@ -140,12 +188,6 @@ def _visit_signature_outside(
             _visit(argumento.annotation, chain, free)
     if node.returns is not None:
         _visit(node.returns, chain, free)
-
-
-def _function_scope(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
-    ligados = set(_parameters(node.args))
-    ligados.update(_block_bindings(node.body))
-    return ligados
 
 
 def _all_args(args: ast.arguments) -> list[ast.arg]:
@@ -160,20 +202,26 @@ def _parameters(args: ast.arguments) -> set[str]:
     return {argumento.arg for argumento in _all_args(args)}
 
 
-def _block_bindings(body: list[ast.stmt]) -> set[str]:
-    """Nombres que liga un bloque en SU ámbito.
+def _scope_bindings(body: list[ast.stmt]) -> tuple[set[str], set[str]]:
+    """Nombres que liga un bloque en SU ámbito, y los que declara `global`.
 
     En Python el ámbito no es secuencial: una función que asigna `x` en la
     última línea tiene `x` local desde la primera. Por eso los ligados se
     recogen de una pasada antes de mirar las lecturas.
     """
     ligados: set[str] = set()
+    declarados: set[str] = set()
+    globales: set[str] = set()
     for statement in body:
-        _collect_bindings(statement, ligados)
-    return ligados
+        _collect_bindings(statement, ligados, declarados, globales)
+    # `global` y `nonlocal` dicen que el nombre NO es de este ámbito, por mucho
+    # que se le asigne aquí; la diferencia entre los dos es a quién se lo pide.
+    return ligados - declarados, globales
 
 
-def _collect_bindings(node: ast.AST, ligados: set[str]) -> None:
+def _collect_bindings(
+    node: ast.AST, ligados: set[str], declarados: set[str], globales: set[str]
+) -> None:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         # El nombre sí liga; el cuerpo es otro ámbito y no se entra.
         ligados.add(node.name)
@@ -182,6 +230,17 @@ def _collect_bindings(node: ast.AST, ligados: set[str]) -> None:
     if isinstance(node, (ast.Import, ast.ImportFrom)):
         for alias in node.names:
             ligados.add((alias.asname or alias.name).split(".")[0])
+        return
+
+    if isinstance(node, ast.Global):
+        declarados.update(node.names)
+        globales.update(node.names)
+        return
+
+    if isinstance(node, ast.Nonlocal):
+        # El nombre está en la función de fuera, así que viaja con ella: no se
+        # le pide nada al módulo.
+        declarados.update(node.names)
         return
 
     if isinstance(node, ast.Assign):
@@ -202,7 +261,7 @@ def _collect_bindings(node: ast.AST, ligados: set[str]) -> None:
         ligados.update(_target_names(node.target))
 
     for child in ast.iter_child_nodes(node):
-        _collect_bindings(child, ligados)
+        _collect_bindings(child, ligados, declarados, globales)
 
 
 def _target_names(target: ast.AST) -> set[str]:

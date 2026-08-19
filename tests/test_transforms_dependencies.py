@@ -58,3 +58,57 @@ def test_module_bindings_say_where_each_name_comes_from():
         "TAX": "assign",
         "rate": "def",
     }
+
+
+def test_a_name_bound_in_the_class_body_is_not_free_there():
+    """El cuerpo de una clase sí es un ámbito para sí mismo: `RATE` ve `TAX`."""
+    node = first(
+        "class Invoice:\n"
+        "    TAX = 0.21\n"
+        "    RATE = TAX * 2\n"
+    )
+
+    assert free_names(node) == set()
+
+
+def test_a_class_attribute_is_not_in_scope_for_its_methods():
+    """Y no lo es para sus métodos: Python no mete el ámbito de clase en la
+    cadena de los métodos, así que ese `TAX` se busca en el módulo. Si dijéramos
+    que no hace falta, B1 movería la clase sin llevárselo y el método daría
+    NameError en el primer uso."""
+    node = first(
+        "class Invoice:\n"
+        "    TAX = 0.21\n"
+        "\n"
+        "    def total(self, amount):\n"
+        "        return amount * TAX\n"
+    )
+
+    assert free_names(node) == {"TAX"}
+
+
+def test_a_global_declaration_needs_the_module_it_names():
+    """`global` dice justo lo contrario que una asignación: el nombre NO es
+    local, vive en el módulo. Contarlo como ligado escondería la dependencia
+    más fuerte que puede tener una definición —escribe estado del módulo— y es
+    justo el caso que B1 tiene que sacar del reparto."""
+    node = first("def bump():\n    global COUNTER\n    COUNTER += 1\n")
+
+    assert free_names(node) == {"COUNTER"}
+
+
+def test_a_nonlocal_name_belongs_to_the_enclosing_function():
+    """`nonlocal` no es `global`: el nombre está en la función de fuera y viaja
+    con ella, así que no se le pide nada al módulo."""
+    node = first(
+        "def outer():\n"
+        "    total = 0\n"
+        "\n"
+        "    def inner():\n"
+        "        nonlocal total\n"
+        "        total += 1\n"
+        "\n"
+        "    return inner\n"
+    )
+
+    assert free_names(node) == set()
