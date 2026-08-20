@@ -64,9 +64,21 @@ deja a B2 sin dosis sobre ese repositorio, y por la misma razón: el árbol de
 módulos es su tabla de búsqueda. Una celda de B1 sobre python-stdnum mide muy
 poco, y quien monte la matriz debería saberlo antes de gastarla ahí.
 
-Lo que sí se conserva en los cuatro: el número de ficheros no cambia, el total
-de líneas se mueve menos del 1% y la mediana y el máximo por fichero se quedan
-donde estaban. Eso es lo que separa esta celda de B5 (§4.2).
+**Lo que se conserva del tamaño, medido en los cuatro** —es lo que separa esta
+celda de B5 (§4.2), así que se comprueba en vez de suponerse—: el número de
+ficheros no cambia (110, 368, 253 y 659, idénticos), el total de líneas sube
+entre un 0,07% y un 0,47% —los imports que hay que añadir en el destino— y la
+cola se queda quieta: el máximo por fichero se mueve menos del 2% (2.373→2.373
+en pint, 10.475→10.469 en sqlglot) y el p90 tampoco (1.217→1.202, 522→530).
+
+Con una excepción que hay que declarar: **la mediana sube**, entre un 1% y un
+16% (pint 147,5→170,5; sqlglot 182→204; holidays 186→193; python-stdnum 84→85).
+No es un defecto sino la consecuencia directa de repartir procurando que cada
+fichero reciba un número parecido de líneas: el módulo pequeño de un directorio
+crece hacia sus hermanos. B1 no es del todo ortogonal al eje de tamaño en el
+centro de la distribución; sí lo es en la cola, que es justo lo que mueve B5
+—en pint, B5 con techo 2.000 lleva el p90 de 524 a 1.932 y la mediana solo de
+147 a 158—. Al leer las dos celdas juntas conviene tenerlo delante.
 """
 
 from __future__ import annotations
