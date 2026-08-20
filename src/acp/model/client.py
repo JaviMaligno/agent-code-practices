@@ -78,3 +78,51 @@ def ask(
         return cuerpo["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError) as error:
         raise ModelError(f"respuesta inesperada: {str(cuerpo)[:200]}") from error
+
+
+def converse(
+    messages: list[dict],
+    model: str,
+    *,
+    tools: list[dict] | None = None,
+    max_tokens: int = 4000,
+    timeout: int = 300,
+) -> dict:
+    """Un turno de conversación con herramientas, devuelto tal cual.
+
+    Devuelve el mensaje del modelo sin interpretar —con sus `tool_calls` si los
+    hay— porque quien decide qué hacer con ellos es el bucle del agente, y el
+    registro de la campaña necesita el mensaje entero, no un resumen (§5.4.1).
+    """
+    base, key = _credentials()
+    cuerpo: dict = {
+        "model": model,
+        "messages": messages,
+        "max_completion_tokens": max_tokens,
+    }
+    if tools:
+        cuerpo["tools"] = tools
+        cuerpo["tool_choice"] = "auto"
+
+    peticion = urllib.request.Request(
+        f"{base}/v1/chat/completions",
+        data=json.dumps(cuerpo).encode("utf-8"),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
+            datos = json.loads(respuesta.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise ModelError(f"{error.code}: {error.read()[:300]!r}") from error
+    except OSError as error:
+        raise ModelError(str(error)) from error
+
+    try:
+        eleccion = datos["choices"][0]
+    except (KeyError, IndexError) as error:
+        raise ModelError(f"respuesta inesperada: {str(datos)[:200]}") from error
+    return {
+        "message": eleccion["message"],
+        "finish_reason": eleccion.get("finish_reason"),
+        "usage": datos.get("usage", {}),
+    }

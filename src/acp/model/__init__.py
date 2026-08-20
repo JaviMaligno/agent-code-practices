@@ -5,6 +5,6 @@ este repo es público. El código nunca la imprime ni la registra: solo la lee y
 la usa en la cabecera de la petición.
 """
 
-from acp.model.client import ModelError, ask
+from acp.model.client import ModelError, ask, converse
 
-__all__ = ["ask", "ModelError"]
+__all__ = ["ask", "converse", "ModelError"]

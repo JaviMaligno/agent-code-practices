@@ -280,6 +280,15 @@ class SuiteSession:
             self._baseline = self.outcomes()
         return self._baseline
 
+    def run(self, command: str) -> tuple[int, str, bool]:
+        """Un comando cualquiera dentro del contenedor del árbol.
+
+        Lo usa el harness del agente: sus herramientas son comandos, y tienen
+        que correr donde corre la suite —mismo árbol, mismo entorno— o estaría
+        explorando un repositorio distinto del que se mide.
+        """
+        return _run(self._runner.wrap(["sh", "-lc", command]), self.repo, self.timeout)
+
     def write(self, relative: str, content: str) -> None:
         """Deja un fichero dentro del contenedor, sin tocar el árbol de fuera."""
         with tempfile.TemporaryDirectory() as temporal:
