@@ -40,6 +40,28 @@ Las tres decisiones de alcance, declaradas:
   del código que el agente lee.
 - **El grafo de imports de módulo se mantiene acíclico.** Un ciclo no da una
   dosis rara, da un `ImportError` al cargar.
+
+**La dosis, medida sobre los cuatro finalistas** (seed 1, definiciones de nivel
+de módulo fuera de la suite y de los `__init__`):
+
+| repo | candidatas | movidas | por qué se pierde el resto |
+|---|---|---|---|
+| python-stdnum | 1.006 | 36 (3,6%) | 890 se nombran como atributo o dentro de un texto |
+| pint | 275 | 76 (28%) | 311 en módulos congelados, 98 cerrarían un ciclo |
+| sqlglot | 871 | 272 (31%) | 1.260 en módulos congelados, 474 cerrarían un ciclo |
+| holidays | 1.118 | 714 (64%) | 428 en módulos congelados, 392 cerrarían un ciclo |
+
+python-stdnum es el caso extremo y merece leerse: sus módulos son un protocolo
+de pato —`validate`, `is_valid`, `compact`, `format` en cada uno— al que se
+llega por nombre construido en ejecución, así que casi ningún símbolo suyo se
+puede mudar sin romper a quien lo pide por atributo. Es la MISMA propiedad que
+deja a B2 sin dosis sobre ese repositorio, y por la misma razón: el árbol de
+módulos es su tabla de búsqueda. Una celda de B1 sobre python-stdnum mide muy
+poco, y quien monte la matriz debería saberlo antes de gastarla ahí.
+
+Lo que sí se conserva en los cuatro: el número de ficheros no cambia, el total
+de líneas se mueve menos del 1% y la mediana y el máximo por fichero se quedan
+donde estaban. Eso es lo que separa esta celda de B5 (§4.2).
 """
 
 from __future__ import annotations
