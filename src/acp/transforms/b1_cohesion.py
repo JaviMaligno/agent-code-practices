@@ -48,13 +48,46 @@ de módulo fuera de la suite y de los `__init__`):
 |---|---|---|---|
 | python-stdnum | 993 | 33 (3,3%) | 883 se nombran como atributo o dentro de un texto |
 | pint | 275 | 76 (28%) | 311 en módulos congelados, 98 cerrarían un ciclo |
-| sqlglot | 839 | 238 (28%) | 1.292 en módulos congelados, 485 cerrarían un ciclo |
-| holidays | 1.118 | 714 (64%) | 428 en módulos congelados, 392 cerrarían un ciclo |
+| sqlglot | 839 | 234 (28%) | 1.292 en módulos congelados, 488 cerrarían un ciclo |
+| holidays | 1.118 | 712 (64%) | 428 en módulos congelados, 394 cerrarían un ciclo |
 
-La tabla bajó en python-stdnum (36→33) y en sqlglot (272→238) al congelar los
-módulos que se suplantan en `sys.modules`: es dosis pagada a cambio de que el
-repositorio arranque, y las dos celdas de la matriz la verifican con su suite
-entera.
+La tabla bajó al poner cuatro guardas que faltaban —módulos que se suplantan en
+`sys.modules`, desacuerdo en `from __future__ import annotations`, el ciclo que
+el repositorio ya tenía, y `__main__.py`—: es dosis pagada a cambio de que el
+repositorio arranque, y cuesta poco (python-stdnum 36→33, sqlglot 272→234, pint
+y holidays casi igual).
+
+**DÓNDE ESTÁ VERIFICADA Y DÓNDE NO** (lo segundo importa más):
+
+- **python-stdnum y pint**: equivalentes con su suite entera dentro de
+  contenedor, celdas `python-stdnum-B1` y `pint-B1` de
+  `tests/test_equivalence_family_b.py`. El manifiesto que publican es completo y
+  cierto sobre los dos.
+- **sqlglot: B1 TODAVÍA NO SIRVE AHÍ, y no hay que gastarle una corrida.** El
+  árbol transformado se importa, pero la primera llamada pública muere con
+  `NameError: name '_build_to_timestamp' is not defined`: una definición se mudó
+  sin llevarse un nombre de su módulo, y el análisis de nombres libres no lo vio.
+  Es la misma familia que el `EXPRESSION_METADATA` que sí está arreglado —cuerpos
+  de clase que leen del módulo— pero por otro camino, así que hace falta
+  encontrarlo, taparlo con su test y volver a pasar el smoke. Comprobarlo cuesta
+  tres segundos:
+
+      python -c "import sqlglot; print(sqlglot.transpile('SELECT EPOCH_MS(1)',
+                 read='duckdb', write='hive')[0])"
+
+  Cuatro fallos distintos aparecieron así sobre sqlglot y ninguno sobre los otros
+  dos que sí están verificados; es el repositorio más profundo del sustrato y el
+  que más enseña.
+- **holidays: TAMPOCO SIRVE.** `holidays.country_holidays('ES')` muere con
+  `ImportError: cannot import name '_normalize_tuple' from partially initialized
+  module 'holidays.constants'`. Es un ciclo que la comprobación de este fichero
+  no vio, así que ahí hay una arista que el grafo no modela —no es la tolerancia,
+  que ya no existe—. Con 712 de 1.118 definiciones movidas es donde B1 más dosis
+  tiene, o sea que arreglarlo vale la pena antes que ampliar la matriz.
+
+La regla que sostiene todo esto: **el smoke de tres segundos antes que la suite
+de ocho minutos**. Los cinco fallos se encontraron con una llamada pública sobre
+el árbol transformado, no con una celda.
 
 python-stdnum es el caso extremo y merece leerse: sus módulos son un protocolo
 de pato —`validate`, `is_valid`, `compact`, `format` en cada uno— al que se
