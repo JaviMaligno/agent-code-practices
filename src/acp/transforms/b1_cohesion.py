@@ -670,7 +670,13 @@ def _needs_of(node: ast.AST, info: _ModuleInfo) -> tuple[list[_Need], bool, bool
     # 43 doctests en rojo que ningún fixture podía enseñar.
     shadowed = _BUILTINS - set(info.bindings)
     wanted = free_names(node) - shadowed - {own}
-    wanted |= _doctest_names(_source_of(node, info)) & set(info.bindings)
+    if DOCTEST_PROMPT in info.source:
+        # `ast.get_source_segment` vuelve a partir el fichero entero en líneas
+        # cada vez que se le llama, así que preguntar primero si el fichero
+        # tiene ejemplos ahorra ese trabajo en los repos que no los usan: en
+        # holidays, que son mil ficheros con tablas largas, es la mayor parte
+        # del tiempo de una corrida.
+        wanted |= _doctest_names(_source_of(node, info)) & set(info.bindings)
     annotations = annotation_names(node)
     needs: list[_Need] = []
     stars = False
@@ -864,6 +870,11 @@ class _Graph:
             for need in holder.needs:
                 self.dependents.setdefault(need.key, []).append(holder.key)
         self.edges: Counter[tuple[str, str]] = Counter()
+        # Las mismas aristas indexadas por origen. Se mantiene al día en vez de
+        # reconstruirse en cada comprobación: el reparto de holidays intenta
+        # 88.000 movimientos y recorrer el grafo entero en cada uno era casi
+        # todo el tiempo de la corrida.
+        self.out: dict[str, set[str]] = {}
         self.by_holder: dict[str, set[tuple[str, str]]] = {}
         self.tolerated: frozenset[tuple[str, str]] = frozenset()
         for holder in holders:
@@ -879,7 +890,7 @@ class _Graph:
         Existen: un repo puede importarse en círculo y sobrevivir —con el import
         al final del fichero, dentro de un `try`, o en la forma `import x` que
         Python resuelve contra el módulo a medias—. Sin esta salida, un solo
-        ciclo de partida deja `_has_cycle` en True para siempre y B1 rechaza
+        ciclo de partida deja el grafo cíclico para siempre y B1 rechaza
         TODOS los movimientos: dosis cero, y una celda con dosis cero se lee
         exactamente igual que una transformación que preserva el repositorio.
         Ya pasó, medido: los `if TYPE_CHECKING` de pint hacían eso con sus 8.075
@@ -945,25 +956,33 @@ class _Graph:
     def resolve(self, need: _Need) -> str:
         return self.home.get(need.key, need.owner)
 
-    def _refresh(self, key: str) -> None:
+    def _refresh(self, key: str) -> set[tuple[str, str]]:
+        """Recalcula las aristas de un tenedor y devuelve las que son nuevas."""
         holder = self.holders[key]
-        fresh = {
-            (holder.host, self.resolve(need))
-            for need in holder.needs
+        fresh: set[tuple[str, str]] = set()
+        for need in holder.needs:
             # Un nombre que solo existe bajo `if TYPE_CHECKING` viaja con su
             # guarda: en ejecución no se importa nada, así que no es una arista.
-            if need.kind != "unresolved"
-            and not need.guarded
-            and self.resolve(need) != holder.host
-        }
+            if need.kind == "unresolved" or need.guarded:
+                continue
+            target = self.resolve(need)
+            if target != holder.host:
+                fresh.add((holder.host, target))
         fresh -= self.tolerated
-        for edge in self.by_holder.get(key, set()) - fresh:
+        previous = self.by_holder.get(key, set())
+        for edge in previous - fresh:
             self.edges[edge] -= 1
             if self.edges[edge] <= 0:
                 del self.edges[edge]
-        for edge in fresh - self.by_holder.get(key, set()):
+                self.out[edge[0]].discard(edge[1])
+        added: set[tuple[str, str]] = set()
+        for edge in fresh - previous:
+            if not self.edges[edge]:
+                added.add(edge)
+                self.out.setdefault(edge[0], set()).add(edge[1])
             self.edges[edge] += 1
         self.by_holder[key] = fresh
+        return added
 
     def try_move(self, definition: _Definition, target: str) -> bool:
         """Mueve si el grafo sigue siendo acíclico; si no, lo deja como estaba."""
@@ -971,9 +990,13 @@ class _Graph:
         touched = [definition.key, *self.dependents.get(definition.key, ())]
         definition.host = target
         self.home[definition.key] = target
+        added: set[tuple[str, str]] = set()
         for key in touched:
-            self._refresh(key)
-        if not self._has_cycle():
+            added |= self._refresh(key)
+        # Un ciclo nuevo tiene que pasar por una arista nueva: basta con mirar
+        # si el destino de alguna de ellas vuelve a su origen. Sin aristas
+        # nuevas no hay nada que mirar.
+        if not any(self._reaches(target, origin) for origin, target in added):
             return True
         definition.host = previous
         self.home[definition.key] = previous
@@ -981,24 +1004,21 @@ class _Graph:
             self._refresh(key)
         return False
 
-    def _has_cycle(self) -> bool:
-        adjacency: dict[str, set[str]] = {}
-        indegree: Counter[str] = Counter()
-        nodes: set[str] = set()
-        for origin, target in self.edges:
-            adjacency.setdefault(origin, set()).add(target)
-            indegree[target] += 1
-            nodes.update((origin, target))
-        queue = [node for node in nodes if not indegree[node]]
-        seen = 0
-        while queue:
-            node = queue.pop()
-            seen += 1
-            for neighbour in adjacency.get(node, ()):
-                indegree[neighbour] -= 1
-                if not indegree[neighbour]:
-                    queue.append(neighbour)
-        return seen != len(nodes)
+    def _reaches(self, origin: str, target: str) -> bool:
+        """Si desde `origin` se llega a `target` siguiendo imports."""
+        if origin == target:
+            return True
+        seen = {origin}
+        stack = [origin]
+        while stack:
+            node = stack.pop()
+            for neighbour in self.out.get(node, ()):
+                if neighbour == target:
+                    return True
+                if neighbour not in seen:
+                    seen.add(neighbour)
+                    stack.append(neighbour)
+        return False
 
 
 # --- el reparto ------------------------------------------------------------
