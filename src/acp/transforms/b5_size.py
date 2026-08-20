@@ -40,6 +40,55 @@ Las decisiones de alcance, declaradas:
 
 Lo que se conserva a propósito: el número de definiciones, el nombre de cada una
 y el directorio donde vive. Eso es lo que separa esta curva de B1 y de B2.
+
+**La dosis, medida sobre los cuatro finalistas.** Candidatos son los módulos que
+pueden participar; absorbidos, los que desaparecen dentro de otro:
+
+| repo | candidatos | absorbidos 500 / 2.000 / 10.000 | qué se queda fuera |
+|---|---|---|---|
+| python-stdnum | 0 de 368 | 0 / 0 / 0 | 251 se alcanzan por nombre construido |
+| holidays | 0 de 658 | 0 / 0 / 0 | 323 se alcanzan por nombre construido |
+| pint | 56 de 110 | 12 / 20 / 20 | 38 son suite, 15 son `__init__` |
+| sqlglot | 89 de 252 | 34 / 59 / 61 | 69 por nombre construido, 60 suite, 12 con `import *` |
+
+Y el eje que de verdad se mueve, en el punto de 2.000 líneas y sobre los
+ficheros de código (sin la suite, que no se funde):
+
+| repo | ficheros | mediana | p90 | líneas totales |
+|---|---|---|---|---|
+| sqlglot | 184 → 125 | 163 → 193 | 836 → 1.903 | −0,2% |
+| pint | 69 → 53 | 147 → 193 | 524 → 770 | −0,3% |
+
+La mediana casi no se mueve y el p90 se dobla, que es exactamente la forma que
+tiene esta transformación: los ficheros que no encuentran con quién fundirse se
+quedan como estaban, y el crecimiento se concentra arriba. Quien lea la curva
+tiene que leerla así y no como «todos los ficheros son ahora de 2.000 líneas».
+
+Tres cosas que hay que saber antes de gastar una celda aquí:
+
+- **python-stdnum y holidays no aplican.** Los dos resuelven sus módulos por un
+  nombre que no existe hasta que el programa corre —`__import__('stdnum.%s' % cc)`,
+  `f"holidays.{prefix}.{module}.{entity}"`—, o sea la MISMA propiedad que deja a
+  B2 sin dosis sobre ellos y por la misma razón: el árbol de módulos *es* su
+  tabla de búsqueda. En python-stdnum hay además una segunda razón que sola
+  bastaría: todos sus módulos definen `validate`, `is_valid`, `compact` y
+  `format`, así que ninguna pareja suya podría fundirse sin taparse.
+- **La curva satura pronto.** En pint y en sqlglot, 2.000 y 10.000 producen casi
+  el mismo árbol: con módulos que ya son pequeños, lo que limita deja de ser el
+  techo y pasa a ser la compatibilidad entre hermanos. El cuarto punto de §6.3
+  puede no existir en estos repositorios, y eso hay que decirlo antes de
+  interpretar una curva plana como «el tamaño no importa».
+- **Lo que se queda fuera y no se puede arreglar sin ejecutar el programa**: un
+  decorador que registra por `__module__`, y el `__name__` de un módulo
+  absorbido —que cambia—. Contra lo primero no hay guarda posible; contra lo
+  segundo están las dos que ya usa B2 (nombre construido, y nombre escrito
+  dentro de un texto de la suite), y son las que dejan a dos de los cuatro
+  finalistas a cero.
+
+Lo que esta transformación NO reescribe, declarado: las rutas de fichero que la
+configuración de pytest nombra (`_rewrite_configured_paths` de B2). No hace
+falta porque apuntan a la suite, y la suite no se funde; si algún día se fundiera
+código nombrado ahí, haría falta.
 """
 
 from __future__ import annotations
