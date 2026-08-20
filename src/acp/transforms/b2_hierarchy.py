@@ -193,28 +193,101 @@ def computed_module_prefixes(root: Path) -> set[str]:
 _DOTTED_IN_TEXT = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
 
 
-class _CollectTextMentions(cst.CSTVisitor):
-    """Rutas con puntos que aparecen DENTRO de una cadena, no como la cadena.
+# Lo que en un fichero de test es una AFIRMACIÓN y no maquinaria: la sentencia
+# `assert` y las llamadas de la familia `assert*` —`assertEqual` de unittest,
+# `assert_called_once_with` de mock—. Es donde la suite dice «esto tiene que ser
+# verdad», que es lo único que la campaña lee como resultado.
+_CLAIMING_CALL = re.compile(r"assert\w*")
 
-    Una cadena que es exactamente una ruta de módulo ya la sigue
-    `_module_reference`: se reescribe y no ata a nadie. Las que atan son las
-    otras, las que llevan la ruta dentro de una frase, porque ahí nadie la
-    reescribe —hacerlo sería B3 dentro de B2— y el texto se queda nombrando un
-    módulo que se movió.
+
+def _is_a_claim(node: cst.Call) -> bool:
+    if isinstance(node.func, cst.Attribute):
+        return bool(_CLAIMING_CALL.fullmatch(node.func.attr.value))
+    return isinstance(node.func, cst.Name) and bool(_CLAIMING_CALL.fullmatch(node.func.value))
+
+
+class _CollectTextMentions(cst.CSTVisitor):
+    """Rutas con puntos que la suite escribe y nadie puede reescribir por ella.
+
+    Son dos, y las dos atan al módulo a su sitio:
+
+    - **Dentro de una frase**: `<class 'sqlglot.expressions.query.Table'>`. Ahí
+      nadie reescribe —hacerlo sería B3 dentro de B2— y el texto se quedaría
+      nombrando un módulo que se movió.
+    - **Dentro de una aserción**, aunque la cadena sea exactamente la ruta.
+      Fuera de una aserción esa cadena es maquinaria —el objetivo de un `patch`,
+      el nombre que decide qué se colecta— y `_module_reference` la reescribe
+      porque §4.3.1 obliga: sin eso la suite no llega al código y no compila.
+      Dentro de una aserción es el ORÁCULO, y reescribirla mueve la expectativa
+      con el programa: el test pasa porque se cambió el test, y la equivalencia
+      «la suite da el mismo resultado» se vuelve una tautología. Reproducido:
+      B5 absorbió un módulo y reescribió `assert who_now() == 'pkg.zzz_named'`
+      al nombre del anfitrión, con la suite en verde antes y después mientras el
+      valor observable había cambiado.
+
+      La salida no es dejar la cadena quieta —sería la suite en rojo por algo
+      que causó la transformación, o sea un repo roto que se lee como un agente
+      que fracasa (§5.6)—: es no mover el módulo, que es exactamente lo que ya
+      se hace cuando la ruta viene dentro de una frase. La dosis baja se declara.
+
+    Es la misma línea que `rewrite_examples` ya traza en los doctests: reescribe
+    el código del ejemplo —que es maquinaria— y nunca su salida esperada, que es
+    lo que el ejemplo afirma.
+
+    **Fuera de alcance, declarado (§11)**: la expectativa que no está escrita en
+    la aserción sino guardada antes (`esperado = 'pkg.mod'` … `assert x ==
+    esperado`) y la que viaja en un `match=` de `pytest.raises`. Atarlas a su
+    aserción exige seguir el dato y no la sintaxis, y hoy ninguna de las dos
+    tiene dosis.
+
+    El censo que sostiene la línea, contado sobre las suites de los cuatro
+    finalistas —cadenas que son exactamente una ruta de módulo del propio repo—:
+
+        pint            6   todas objetivo de un `patch`
+        sqlglot        22   18 `patch`, 1 `startswith`, 1 la comparación que
+                            decide qué se colecta, 2 dentro de una aserción
+        python-stdnum   0
+        holidays       11   9 `patch`, 2 el cargador de entidades
+
+    O sea 35 de maquinaria y 2 de oráculo, cero guardadas en una variable y cero
+    en un `match=`. Las dos de oráculo son
+    `mock_dict.get.assert_called_once_with("sqlglot.dialects", [])`, y ese no es
+    un módulo que B2 mueva —lo sujeta el nombre construido al correr—, así que
+    la regla no cambia hoy ni un árbol: es el guardarraíl de que no lo haga
+    mañana.
     """
 
     def __init__(self) -> None:
         self.mentions: set[str] = set()
+        # Anidamiento y no un booleano: `self.assertEqual(...)` puede vivir
+        # dentro de un `assert`, y salir de la de dentro no sale de la de fuera.
+        self._claims = 0
+
+    def visit_Assert(self, node: cst.Assert) -> None:
+        self._claims += 1
+
+    def leave_Assert(self, node: cst.Assert) -> None:
+        self._claims -= 1
+
+    def visit_Call(self, node: cst.Call) -> None:
+        if _is_a_claim(node):
+            self._claims += 1
+
+    def leave_Call(self, node: cst.Call) -> None:
+        if _is_a_claim(node):
+            self._claims -= 1
 
     def visit_SimpleString(self, node: cst.SimpleString) -> None:
         text = node.raw_value
         if _DOTTED_IN_TEXT.fullmatch(text):
+            if self._claims:
+                self.mentions.add(text)
             return
         self.mentions.update(_DOTTED_IN_TEXT.findall(text))
 
 
 def modules_named_by_the_suite(root: Path) -> set[str]:
-    """Rutas de módulo que la suite escribe dentro de un texto suyo.
+    """Rutas de módulo que la suite escribe dentro de un texto o de una aserción.
 
     Es público por lo mismo que `computed_module_prefixes`: es una de las causas
     por las que un módulo no se mueve, y la dosis real se declara con datos.
@@ -314,8 +387,10 @@ def plan_moves(root: Path) -> dict[str, str]:
         # correr sigue apuntando ahí. Es la forma de `sqlglot/dialects/`.
         if any(prefix.startswith(f"{module}.") for prefix in unreachable):
             continue
-        # Lo que la suite nombra dentro de un texto suyo: mover el módulo
-        # cambiaría lo que el programa imprime y ella compara.
+        # Lo que la suite nombra dentro de un texto suyo o afirma dentro de
+        # una aserción: mover el módulo cambiaría lo que el programa imprime y
+        # ella compara, y reescribir la aserción para que cuadre convertiría la
+        # verificación en una tautología.
         if any(name == module or name.startswith(f"{module}.") for name in pinned):
             continue
         if any(directory in path.parents for directory in scoped):

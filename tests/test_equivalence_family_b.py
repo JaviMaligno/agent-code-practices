@@ -14,16 +14,19 @@ import json
 import re
 import shutil
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from acp.cli import transform_repo
+from acp.metrics.size import is_test_file
 from acp.equivalence import compare
 from acp.suite import run_suite_in_docker
 from acp.symbols import build_symbol_map
 from acp.transforms import b2_hierarchy, b4_tests, b5_size
+from tests.test_suite_claims import claimed_literals
 
 pytestmark = pytest.mark.integration
 
@@ -461,3 +464,53 @@ def test_b1_publishes_a_complete_and_true_identity_map_of_a_real_repo(tmp_path: 
         if not re.search(rf"\b(def|class)\s+{re.escape(location['current_name'])}\b", line):
             liars.append((key, location["path"], location["start"], line.strip()[:60]))
     assert not liars, liars[:5]
+
+
+# Las tres celdas donde una transformación reescribe rutas de módulo dentro de
+# cadenas de la suite. B4 no reescribe ninguna —se lleva la suite entera— y por
+# eso no está.
+CLAIM_CELLS = [
+    Cell(repo="sqlglot", transform="B2", install_repo=False),
+    Cell(repo="pint", transform="B2", install_repo=False),
+    Cell(repo="pint", transform="B5-500", install_repo=False),
+]
+
+
+@pytest.mark.parametrize("cell", CLAIM_CELLS, ids=lambda cell: cell.id)
+def test_no_transformation_edits_what_the_suite_claims(tmp_path: Path, cell: Cell):
+    """El criterio de equivalencia no puede cumplirse a sí mismo.
+
+    «La suite da el mismo resultado antes y después» solo dice algo si la suite
+    afirma lo mismo antes y después. §4.3.1 obliga a reescribir sus imports y
+    las rutas que usa como maquinaria —el objetivo de un `patch`, el nombre que
+    decide qué se colecta—, pero el valor que compara una aserción es el
+    oráculo: reescribirlo mueve la expectativa con el programa y el test pasa
+    porque se cambió el test.
+
+    Se comprueba sobre el repositorio de verdad y no solo sobre el fixture
+    porque el fixture no sabe qué formas tiene un repo real de escribir una ruta
+    dentro de una cadena. Medido aquí: pint afirma 1.590 literales en su suite y
+    sqlglot 3.979, y bajo B1, B2 y las dos B5 no cambia ni uno. La cuenta se
+    hace sobre el árbol entero y no fichero a fichero porque B1 y B5 mueven
+    definiciones —con sus aserciones dentro— de un fichero a otro, y eso no es
+    reescribir nada.
+
+    No necesita Docker: la pregunta es qué escribió la transformación.
+    """
+    clone = clone_repo(REPOS[cell.repo], tmp_path / "repo")
+    antes = claims_in_the_suite(clone)
+    assert antes, f"{cell.id}: el repositorio no afirma ningún literal, el test no mide"
+
+    work = transform_repo(clone, [cell.transform], tmp_path / "work")
+
+    assert claims_in_the_suite(work) == antes
+
+
+def claims_in_the_suite(root: Path) -> Counter:
+    """Cuántas veces afirma la suite cada literal, en todo el árbol."""
+    found: Counter[str] = Counter()
+    for path in root.rglob("*.py"):
+        if not is_test_file(path, root):
+            continue
+        found.update(claimed_literals(path))
+    return found

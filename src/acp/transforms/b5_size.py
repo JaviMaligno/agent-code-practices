@@ -352,7 +352,7 @@ def _why_not(info: _Module, root: Path, frozen: _Frozen) -> str | None:
     if any(prefix.startswith(f"{info.name}.") for prefix in frozen.computed):
         return "es el paquete de nombres construidos al correr"
     if any(named == info.name or named.startswith(f"{info.name}.") for named in frozen.named):
-        return "la suite lo nombra dentro de un texto"
+        return "la suite lo nombra dentro de un texto o lo afirma"
     if info.name in frozen.star_targets:
         return "alguien le hace import *"
     if info.stars:
