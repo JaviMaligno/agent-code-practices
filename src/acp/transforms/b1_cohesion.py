@@ -136,7 +136,6 @@ from acp.transforms.base import (
     TransformResult,
     iter_transformable_files,
 )
-from acp.transforms.modulegraph import components
 from acp.transforms.doctests import DOCTEST_PROMPT, doctest_files, rewrite_examples
 from acp.transforms.dependencies import (
     annotation_names,
