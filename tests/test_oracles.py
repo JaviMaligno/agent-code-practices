@@ -233,3 +233,80 @@ def test_the_oracle_writes_the_names_the_condition_uses(tmp_path: Path):
     assert f"valor > {opaco}" in arreglado
     assert "LIMITE" not in arreglado
     compile(arreglado, "core.py", "exec")
+
+
+MOVIDO = '''\
+"""Clasifica un valor contra el límite del módulo.
+
+>>> clasificar(10)
+'alto'
+"""
+
+from pkg.util import limpiar
+
+LIMITE = 5
+
+
+def clasificar(valor):
+    """Alto o bajo.
+
+    >>> clasificar(1)
+    'bajo'
+    """
+    if limpiar(valor) > LIMITE:
+        return "alto"
+    return "bajo"
+'''
+
+# La celda más dura de la matriz: el símbolo renombrado (A2), su línea aplastada
+# (A3), sin la prosa con la que el hunk se sitúa (A4), anotado (A1), repartido
+# entre ficheros (B1), fundido con sus hermanos (B5) y con la jerarquía aplanada
+# (B2). Si el oráculo sobrevive a esto, sobrevive a la campaña.
+LA_PEOR = ["B1", "B5-500", "A1", "A2", "A4", "A3", "B2"]
+
+
+def build_moved(root: Path) -> Path:
+    pkg = root / "pkg"
+    (pkg / "es").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "util.py").write_text("def limpiar(x):\n    return int(x)\n", encoding="utf-8")
+    # Hermanos suficientes para que B5 tenga qué fundir y B1 dónde repartir.
+    for index in range(8):
+        (pkg / f"otro{index}.py").write_text(
+            f"CONST_{index} = {index}\n\n\ndef g{index}(x):\n    return x + CONST_{index}\n",
+            encoding="utf-8",
+        )
+    (pkg / "es" / "__init__.py").write_text("", encoding="utf-8")
+    path = pkg / "es" / "nif.py"
+    path.write_text(MOVIDO, encoding="utf-8")
+    return path
+
+
+def test_the_oracle_follows_the_symbol_to_another_file(tmp_path: Path):
+    """B1 reparte definiciones, B5 funde ficheros y B2 aplana el paquete: el
+    fichero que el parche nombra no existe en la condición. El oráculo tiene que
+    ir donde el manifiesto dice, y no donde el módulo de la tarea se llamaba."""
+    fuente = tmp_path / "repo"
+    fuente.mkdir()
+    path = build_moved(fuente)
+    task = inject(fuente, module="pkg.es.nif", symbol="clasificar", kind="invert_condition")
+    path.write_text(apply_patch(MOVIDO, task.patch), encoding="utf-8")
+
+    trabajo = transform_repo(fuente, LA_PEOR, tmp_path / "work")
+
+    destino = json.loads(manifest_path_for(trabajo).read_text(encoding="utf-8"))
+    ruta = destino["symbols"]["pkg.es.nif.clasificar"]["path"]
+    assert ruta != "pkg/es/nif.py", "la condición no movió el símbolo: el test no prueba nada"
+    assert not (trabajo / "pkg" / "es").exists()
+
+    relativa, arreglado = repaired_source(trabajo, task)
+
+    assert relativa == ruta
+    roto = (trabajo / ruta).read_text(encoding="utf-8")
+    assert arreglado != roto
+    # El operador vuelve a ser el que la tarea invirtió, y el arreglo está
+    # escrito con los nombres de la condición: un fichero que no compila se
+    # leería como un oráculo que puntúa 0, o sea como un agente que fracasa.
+    assert "<=" not in arreglado.replace(" ", "")
+    assert ">" in arreglado
+    compile(arreglado, ruta, "exec")
