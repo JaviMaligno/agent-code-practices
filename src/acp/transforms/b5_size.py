@@ -49,22 +49,26 @@ pueden participar; absorbidos, los que desaparecen dentro de otro:
 | python-stdnum | 0 de 368 | 0 / 0 / 0 | 251 se alcanzan por nombre construido |
 | holidays | 0 de 658 | 0 / 0 / 0 | 323 se alcanzan por nombre construido |
 | pint | 56 de 110 | 12 / 20 / 20 | 38 son suite, 15 son `__init__` |
-| sqlglot | 89 de 252 | 34 / 59 / 61 | 69 por nombre construido, 60 suite, 12 con `import *` |
+| sqlglot | 88 de 252 | 33 / 55 / 58 | 69 por nombre construido, 60 suite, 12 con `import *` |
 
 Y el eje que de verdad se mueve, en el punto de 2.000 líneas y sobre los
 ficheros de código (sin la suite, que no se funde):
 
 | repo | ficheros | mediana | p90 | líneas totales |
 |---|---|---|---|---|
-| sqlglot | 184 → 125 | 163 → 193 | 836 → 1.903 | −0,2% |
-| pint | 69 → 53 | 147 → 193 | 524 → 770 | −0,3% |
+| sqlglot | 184 → 129 | 163 → 193 | 836 → 1.932 | −0,2% |
+| pint | 69 → 49 | 147 → 158 | 524 → 1.187 | −0,5% |
 
 La mediana casi no se mueve y el p90 se dobla, que es exactamente la forma que
 tiene esta transformación: los ficheros que no encuentran con quién fundirse se
 quedan como estaban, y el crecimiento se concentra arriba. Quien lea la curva
 tiene que leerla así y no como «todos los ficheros son ahora de 2.000 líneas».
 
-Tres cosas que hay que saber antes de gastar una celda aquí:
+Y las líneas totales se conservan dentro del 1%: lo que se pierde son los
+imports internos al grupo, que sobran, y los repetidos. Eso es lo que sostiene
+que la curva mide el tamaño del fichero y no la cantidad de código.
+
+Cuatro cosas que hay que saber antes de gastar una celda aquí:
 
 - **python-stdnum y holidays no aplican.** Los dos resuelven sus módulos por un
   nombre que no existe hasta que el programa corre —`__import__('stdnum.%s' % cc)`,
@@ -73,11 +77,15 @@ Tres cosas que hay que saber antes de gastar una celda aquí:
   tabla de búsqueda. En python-stdnum hay además una segunda razón que sola
   bastaría: todos sus módulos definen `validate`, `is_valid`, `compact` y
   `format`, así que ninguna pareja suya podría fundirse sin taparse.
-- **La curva satura pronto.** En pint y en sqlglot, 2.000 y 10.000 producen casi
-  el mismo árbol: con módulos que ya son pequeños, lo que limita deja de ser el
+- **La curva satura pronto.** En pint, 2.000 y 10.000 producen el mismo árbol, y
+  en sqlglot casi: con módulos que ya son pequeños, lo que limita deja de ser el
   techo y pasa a ser la compatibilidad entre hermanos. El cuarto punto de §6.3
   puede no existir en estos repositorios, y eso hay que decirlo antes de
   interpretar una curva plana como «el tamaño no importa».
+- **Verificado en repo real, no solo en fixtures**: pint (2.024 tests, 0 fallos
+  antes y después, 20 módulos absorbidos) y sqlglot. Las dos veces que sqlglot
+  salió roto fue por lo mismo —el ciclo que ya estaba—, y ninguno de los
+  dieciocho fixtures lo enseñaba.
 - **Lo que se queda fuera y no se puede arreglar sin ejecutar el programa**: un
   decorador que registra por `__module__`, y el `__name__` de un módulo
   absorbido —que cambia—. Contra lo primero no hay guarda posible; contra lo
