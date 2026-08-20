@@ -365,3 +365,175 @@ def test_a_module_that_swaps_itself_in_sys_modules_keeps_its_own_definitions(
     resultado = b1_cohesion.apply(tmp_path, seed=1)
 
     assert "pkg.viejo.epsilon" not in resultado.symbol_moves, resultado.symbol_moves
+
+
+def test_a_definition_does_not_move_between_modules_that_disagree_on_future_annotations(
+    tmp_path: Path,
+):
+    """Lo que enseñó sqlglot, y la segunda vez que B5 ya se guardaba y B1 no.
+
+    `sqlglot/errors.py` empieza con `from __future__ import annotations` (PEP
+    563), así que sus anotaciones no se evalúan nunca; `sqlglot/trie.py` no lo
+    tiene. B1 mudó `ParseError` de una a otra y su propia anotación de retorno
+    —`-> ParseError`, que se refiere a la clase que se está definiendo— pasó a
+    evaluarse al crear la clase, cuando el nombre todavía no existe: `import
+    sqlglot` murió con `NameError: name 'ParseError' is not defined`.
+
+    No basta con mirar los nombres libres de la definición, que es lo que B1
+    hacía: aquí el nombre que falta es el SUYO. La regla que sí lo tapa es la que
+    B5 ya usaba —los dos ficheros tienen que coincidir en `from __future__`—, y
+    se exige en las dos direcciones: al revés, una anotación que se evaluaba deja
+    de hacerlo y `__annotations__` empieza a devolver cadenas, que es un cambio
+    de comportamiento silencioso y por tanto peor.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "perezoso.py").write_text(
+        "from __future__ import annotations\n"
+        "\n"
+        "\n"
+        "class Fallo(Exception):\n"
+        "    def clonar(self) -> Fallo:\n"
+        "        return self\n",
+        encoding="utf-8",
+    )
+    (pkg / "estricto.py").write_text(
+        "def ayuda():\n    return 1\n\n\ndef otra():\n    return 2\n", encoding="utf-8"
+    )
+
+    resultado = b1_cohesion.apply(tmp_path, seed=1)
+
+    assert resultado.symbol_moves.get("pkg.perezoso.Fallo") != "pkg.estricto"
+    assert resultado.symbol_moves.get("pkg.estricto.ayuda") != "pkg.perezoso"
+
+    import subprocess
+    import sys
+
+    proceso = subprocess.run(
+        [sys.executable, "-c", "import pkg.perezoso, pkg.estricto; print('ok')"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert proceso.returncode == 0, proceso.stderr
+
+
+def test_a_cycle_the_repository_already_survives_is_not_a_licence_to_add_edges(
+    tmp_path: Path,
+):
+    """La segunda cosa que sqlglot enseñó y que B5 ya había aprendido.
+
+    B1 se daba permiso para añadir aristas DENTRO de un grupo que ya se importaba
+    en círculo, con el argumento de que el intérprete ya sobrevive a ese enredo.
+    No sobrevive a cualquiera: un círculo se aguanta por el ORDEN en que cada
+    fichero termina de cargarse, y mudar una definición cambia ese orden. Sobre
+    sqlglot, `import sqlglot` moría con `ImportError: cannot import name
+    'Dialect' from partially initialized module`.
+
+    Aquí está el mismo enredo en pequeño: `uno → dos → tres → uno` se aguanta
+    porque el que cierra el círculo solo se queda con el módulo a medias y no
+    mira dentro. En cuanto `ayuda` se muda de `tres` a `uno`, el `from ... import
+    ayuda` de `dos` corre mientras `uno` va por su primera línea. El seed está
+    fijado porque este reparto concreto es el que lo enseña; los otros siete que
+    se probaron pasaban, y por eso hacía falta buscarlo.
+
+    La tolerancia se puso cuando los imports bajo `if TYPE_CHECKING` contaban
+    como aristas y dejaban a pint en dosis cero. Eso está arreglado por otro
+    lado —no se ejecutan, no son aristas—, así que hoy la tolerancia no compra
+    dosis: quitarla cuesta UN símbolo en sqlglot (230→229) y ninguno en los
+    otros tres finalistas.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from pkg.uno import arranca\n", encoding="utf-8")
+    (pkg / "uno.py").write_text(
+        "import pkg.dos\n\n\ndef arranca():\n    return pkg.dos.dos_usa()\n",
+        encoding="utf-8",
+    )
+    (pkg / "dos.py").write_text(
+        "from pkg.tres import ayuda\n\n\ndef dos_usa():\n    return ayuda()\n",
+        encoding="utf-8",
+    )
+    (pkg / "tres.py").write_text(
+        "import pkg.uno\n"
+        "\n"
+        "\n"
+        "def ayuda():\n"
+        "    return 3\n"
+        "\n"
+        "\n"
+        "def otra():\n"
+        "    return pkg.uno.arranca\n",
+        encoding="utf-8",
+    )
+    # Dos hermanos fuera del círculo: sin ellos este test pasaría igual el día
+    # que B1 dejara de mover nada, que es la forma de romperlo sin verlo.
+    (pkg / "alfa.py").write_text("def alfa():\n    return 1\n", encoding="utf-8")
+    (pkg / "beta.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+
+    resultado = b1_cohesion.apply(tmp_path, seed=3)
+
+    assert resultado.symbol_moves, "no movió nada: el test no distingue nada"
+
+    import subprocess
+    import sys
+
+    proceso = subprocess.run(
+        [sys.executable, "-c", "import pkg; print(pkg.arranca())"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert proceso.returncode == 0, proceso.stderr
+    assert proceso.stdout.strip() == "3"
+
+
+def test_the_boot_script_of_a_package_neither_gives_nor_receives(tmp_path: Path):
+    """La tercera que sqlglot enseñó, y la tercera que B5 ya sabía.
+
+    `sqlglot/__main__.py` es lo que corre `python -m sqlglot`: hace `import
+    sqlglot` y lee `sqlglot.__version__` en el nivel de módulo. Nadie lo
+    importa, así que ese código corre cuando el paquete ya está entero. En
+    cuanto B1 le manda una definición, alguien lo importa —el fichero que la
+    perdió—, su argparse y su lectura de atributos pasan a correr en mitad de la
+    carga, y `import sqlglot` muere con `AttributeError: module 'sqlglot' has no
+    attribute '__version__'`.
+
+    Que no reciba tampoco arregla la mitad de que no dé: sacarle una definición
+    obligaría a `python -m paquete` a importar el módulo destino, con el orden
+    cambiado. Es un fichero que no es parte de la librería y se queda fuera del
+    reparto entero.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        "from pkg.nucleo import trabaja\n\nVERSION = '1'\n", encoding="utf-8"
+    )
+    (pkg / "nucleo.py").write_text(
+        "def trabaja():\n    return 1\n\n\ndef otra():\n    return 2\n", encoding="utf-8"
+    )
+    (pkg / "util.py").write_text(
+        "def ayuda():\n    return 3\n\n\ndef mas():\n    return 4\n", encoding="utf-8"
+    )
+    (pkg / "__main__.py").write_text(
+        "import pkg\n"
+        "\n"
+        "ETIQUETA = pkg.VERSION\n"
+        "\n"
+        "\n"
+        "def principal():\n"
+        "    return ETIQUETA\n",
+        encoding="utf-8",
+    )
+
+    resultado = b1_cohesion.apply(tmp_path, seed=1)
+
+    assert resultado.symbol_moves, "no movió nada: el test no distingue nada"
+    assert "pkg.__main__" not in resultado.symbol_moves.values(), resultado.symbol_moves
+    assert not [key for key in resultado.symbol_moves if key.startswith("pkg.__main__.")]
+
+    import subprocess
+    import sys
+
+    proceso = subprocess.run(
+        [sys.executable, "-c", "import pkg; print(pkg.trabaja())"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert proceso.returncode == 0, proceso.stderr

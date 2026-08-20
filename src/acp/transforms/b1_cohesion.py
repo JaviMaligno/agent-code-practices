@@ -618,6 +618,14 @@ def _build(root: Path, seed: int):
         if not info.is_init
         and not info.is_test
         and not info.dynamic
+        # El guion de `python -m paquete` no es parte de la librería: nadie lo
+        # importa, así que su código de nivel de módulo corre cuando el paquete
+        # ya está entero. Mandarle una definición hace que alguien lo importe y
+        # ese código pasa a correr en mitad de la carga; sacarle una obliga a
+        # `python -m` a importar el destino, con el orden cambiado. Medido sobre
+        # sqlglot, que lee `sqlglot.__version__` ahí arriba: `import sqlglot`
+        # murió con AttributeError. B5 ya lo excluía por lo mismo.
+        and info.path.name != "__main__.py"
         and (package == info.path.parent or package in info.path.parents)
     }
     siblings: dict[Path, list[str]] = {}
@@ -948,46 +956,25 @@ class _Graph:
         # todo el tiempo de la corrida.
         self.out: dict[str, set[str]] = {}
         self.by_holder: dict[str, set[tuple[str, str]]] = {}
+        # Las aristas que ya formaban ciclo NO se toleran, igual que en B5.
+        #
+        # Hubo una tolerancia: dentro de un grupo que ya se importaba en
+        # círculo, una arista más se daba por inofensiva porque el intérprete
+        # «ya sobrevive a ese enredo». No sobrevive a cualquiera: lo que
+        # sostiene un círculo es el ORDEN en que cada fichero termina de
+        # cargarse, y mudar una definición lo cambia. Medido sobre sqlglot,
+        # el sustrato principal: `ayuda` cruzando el círculo convirtió
+        # `import sqlglot` en `ImportError: cannot import name 'Dialect' from
+        # partially initialized module`. B5 ya había tenido que aprenderlo.
+        #
+        # Se puso para que pint no se quedara en dosis cero, cuando los imports
+        # bajo `if TYPE_CHECKING` contaban como aristas. Eso se arregló en su
+        # sitio —no se ejecutan, no son aristas—, así que hoy no compra dosis:
+        # quitarla cuesta UN símbolo en sqlglot (230→229) y ninguno en
+        # python-stdnum, pint ni holidays.
         self.tolerated: frozenset[tuple[str, str]] = frozenset()
         for holder in holders:
             self._refresh(holder.key)
-        self.tolerated = self._already_circular()
-        if self.tolerated:
-            for holder in holders:
-                self._refresh(holder.key)
-
-    def _already_circular(self) -> frozenset[tuple[str, str]]:
-        """Las aristas que ya formaban ciclo antes de que B1 tocara nada.
-
-        Existen: un repo puede importarse en círculo y sobrevivir —con el import
-        al final del fichero, dentro de un `try`, o en la forma `import x` que
-        Python resuelve contra el módulo a medias—. Sin esta salida, un solo
-        ciclo de partida deja el grafo cíclico para siempre y B1 rechaza
-        TODOS los movimientos: dosis cero, y una celda con dosis cero se lee
-        exactamente igual que una transformación que preserva el repositorio.
-        Ya pasó, medido: los `if TYPE_CHECKING` de pint hacían eso con sus 8.075
-        intentos.
-
-        Lo que se tolera es lo que ya estaba y solo eso: dentro de un grupo que
-        ya se importa en círculo, una arista más no cambia nada —el intérprete
-        ya sobrevive a ese enredo—; entre grupos distintos, el orden topológico
-        de partida se sigue respetando y una arista que lo rompa se rechaza.
-        """
-        component = self._components()
-        sizes = Counter(component.values())
-        return frozenset(
-            edge
-            for edge in self.edges
-            if component[edge[0]] == component[edge[1]] and sizes[component[edge[0]]] > 1
-        )
-
-    def _components(self) -> dict[str, int]:
-        """Componentes fuertemente conexas de las aristas de ahora mismo.
-
-        El algoritmo vive en `modulegraph` porque B5 se hace la misma pregunta
-        antes de fundir dos módulos en uno, y dos copias podrían discrepar.
-        """
-        return components(self.edges)
 
     def resolve(self, need: _Need) -> str:
         return self.home.get(need.key, need.owner)
@@ -1134,6 +1121,23 @@ def _blocked(
     destination = modules[target]
     if destination.externals - origin.externals:
         return True  # el destino exige un paquete que el origen no exigía
+    if _defers_annotations(origin) != _defers_annotations(destination):
+        # La misma regla que ya usaba B5 al fundir dos ficheros, aquí para una
+        # definición suelta, y en las DOS direcciones.
+        #
+        # De perezoso a estricto rompe a la vista: con PEP 563 la anotación no
+        # se evalúa nunca, y sin él se evalúa al definir. Medido sobre sqlglot,
+        # que es el sustrato principal: `ParseError` viajó de `errors.py` —que
+        # aplaza— a `trie.py` —que no—, su propia anotación de retorno `->
+        # ParseError` pasó a evaluarse antes de que la clase existiera, e
+        # `import sqlglot` murió con NameError. Mirar los nombres libres de la
+        # definición no lo tapa: el nombre que falta es el suyo.
+        #
+        # De estricto a perezoso rompe en silencio, que es peor: las anotaciones
+        # dejan de evaluarse y `__annotations__` empieza a devolver cadenas,
+        # que es justo lo que leen las librerías que construyen a partir de
+        # tipos.
+        return True
     for need in definition.needs:
         if need.kind == "import" and need.name in origin.imports:
             head = _import_head(origin.imports[need.name])
