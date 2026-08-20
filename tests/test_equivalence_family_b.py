@@ -1,9 +1,13 @@
 """Equivalencia de la familia B contra repos reales. Necesita Docker y red.
 
-Es el criterio de cierre de la fase 2, y en la fase 1 fue donde apareció todo lo
-que los fixtures no veían: A4 y los doctests, A2 y `getattr`, la versión
+Es el criterio de cierre de las fases 2 y 3, y en la fase 1 fue donde apareció
+todo lo que los fixtures no veían: A4 y los doctests, A2 y `getattr`, la versión
 derivada del repositorio. Un arreglo verificado solo contra fixtures pequeños ha
-resultado incompleto tres veces al pasarlo por un repo de verdad.
+resultado incompleto cuatro veces al pasarlo por un repo de verdad, y B5 sumó
+seis formas de romperse que ningún fixture enseñó —el ciclo que sqlglot ya
+tenía, `__main__.py` leyendo su propio paquete, un import compartido bajo
+`if TYPE_CHECKING`—. Por eso las celdas se pagan en minutos de contenedor: son
+el único sitio donde esas cosas se ven.
 """
 
 import shutil
@@ -73,12 +77,43 @@ class Cell:
 # (`pint/testsuite/`) y ahora sale del árbol como cualquier otra, con el
 # guardarraíl puesto en si el programa la importa y no en dónde está.
 # B3 tiene dosis en los dos repos; la matriz gasta un solo repo para ella.
+#
+# B1 va sobre python-stdnum y pint, y las dos celdas se instalan como repo
+# —`install_repo=True`, al revés que B2— porque B1 no toca el árbol de ficheros:
+# reparte definiciones entre los ficheros que ya existen, el `pyproject` sigue
+# describiendo lo que hay, y una copia instalada es el modo más parecido a lo
+# que verá el agente. Medido: B1 solo escribe dentro del paquete raíz —59 rutas
+# en python-stdnum, 50 en pint—, ni `pyproject.toml` ni `setup.py` cambian.
+# La celda de python-stdnum mide poco y hay que saberlo al leerla: 36 de 1.006
+# definiciones (3,6%), porque el resto se nombra por atributo o dentro de un
+# texto; la de pint mueve 76 de 275 (28%).
+#
+# B5 solo puede ir sobre pint de los dos repos que pide el plan, y esto no es
+# una elección: en python-stdnum su dosis es CERO, con la misma causa que deja a
+# B2 a cero ahí —ver
+# `test_b5_does_not_apply_to_a_package_whose_modules_are_a_duck_protocol`—.
+# Van los DOS puntos de la curva que producen árboles distintos (§6.3), porque
+# cada punto es una condición aparte de la campaña y un punto sin verificar no
+# se puede usar: en pint, 500 absorbe 12 módulos y 2.000 absorbe 20. El tercer
+# techo, 10.000, sale byte a byte idéntico al de 2.000 —lo fija
+# `test_the_size_curve_saturates_before_its_last_point`—, así que gastarle una
+# celda sería comparar un árbol ya verificado consigo mismo.
+#
+# sqlglot es donde B5 tiene la dosis mayor (55 módulos absorbidos, 184→129
+# ficheros) y quedó verificado a mano —1.231 tests iguales antes y después— pero
+# fuera de la matriz: son diez minutos de contenedor más en cada corrida, y lo
+# que sqlglot enseñaba y pint no —el ciclo previo, el `__main__.py`— ya está
+# fijado por tests de regresión baratos en `tests/test_transforms_b5.py`.
 CELLS = [
     Cell(repo="sqlglot", transform="B2", install_repo=False),
     Cell(repo="pint", transform="B2", install_repo=False),
     Cell(repo="python-stdnum", transform="B3"),
     Cell(repo="python-stdnum", transform="B4", restore_suite=True),
     Cell(repo="pint", transform="B4", restore_suite=True),
+    Cell(repo="python-stdnum", transform="B1"),
+    Cell(repo="pint", transform="B1"),
+    Cell(repo="pint", transform="B5-500", install_repo=False),
+    Cell(repo="pint", transform="B5-2000", install_repo=False),
 ]
 
 
@@ -314,3 +349,34 @@ def test_b5_would_break_holidays_without_the_computed_name_guard(
     unguarded = b5_size.plan(clone, target_lines=max(b5_size.CURVE))
 
     assert unguarded.absorbed > 200, dict(unguarded.unmerged.most_common(5))
+
+
+def test_the_size_curve_saturates_before_its_last_point(tmp_path: Path):
+    """Cuántos puntos tiene de verdad la curva de tamaño sobre un finalista.
+
+    §6.3 pide cuatro condiciones —el original y tres techos— y en pint hay tres:
+    2.000 y 10.000 producen el mismo árbol byte a byte. La razón es que en un
+    repositorio de módulos pequeños el techo de líneas deja de ser lo que corta
+    mucho antes de llegar a 10.000; lo que corta a partir de ahí son las
+    colisiones de nombre y los módulos congelados, que no dependen del techo.
+
+    Hay que tenerlo escrito antes de leer la curva: entre esos dos puntos una
+    línea plana no dice «el tamaño ya no le afecta al agente», dice que se midió
+    la misma condición dos veces. Y de paso justifica que la matriz gaste dos
+    celdas de B5 y no tres.
+    """
+    clone = clone_repo(REPOS["pint"], tmp_path / "repo")
+
+    trees = {
+        ceiling: _files(transform_repo(clone, [f"B5-{ceiling}"], tmp_path / f"c{ceiling}"))
+        for ceiling in b5_size.CURVE
+    }
+
+    # Los dos primeros techos sí son condiciones distintas entre sí y del
+    # original: sin esto, la matriz estaría verificando dos veces lo mismo.
+    assert trees[500] != _files(clone)
+    assert trees[2000] != trees[500]
+    # Y el tercero no lo es. Se afirma por igualdad y no por «parecido»: si algún
+    # día 10.000 moviera algo más que 2.000, ese punto pasaría a ser un árbol sin
+    # verificar —no tiene celda— y hay que enterarse aquí.
+    assert trees[10000] == trees[2000]
