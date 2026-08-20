@@ -29,6 +29,15 @@ Las tres decisiones de alcance, declaradas:
   del paquete, la misma razón por la que §5.6 no toca el nombre del paquete
   raíz: lo que definen es la superficie pública y cargarlos antes de tiempo
   cambia el orden de importación de todo lo que cuelga de ellos.
+- **Los ficheros de test tampoco**, aunque sus imports sí se reescriben (§4.3.1).
+  No es higiene: en un fichero de test, dónde vive una definición *es* semántica
+  de pytest. Una fixture solo la ven los tests de su módulo y de su `conftest`,
+  un `pytest.importorskip` de primer nivel convierte importar el módulo en un
+  salto, y `conftest.py` no es un módulo cualquiera sino el sitio del que pytest
+  lee. Medido sobre pint: repartir dentro de `pint/testsuite/` dejó su
+  `conftest.py` importando un módulo que se salta al cargarse, y la colecta pasó
+  de 2.758 tests a cero. La cohesión de la suite es materia de B4; B1 mide la
+  del código que el agente lee.
 - **El grafo de imports de módulo se mantiene acíclico.** Un ciclo no da una
   dosis rara, da un `ImportError` al cargar.
 """
@@ -39,12 +48,14 @@ import ast
 import builtins
 import random
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import libcst as cst
 
+from acp.metrics.size import is_test_file
 from acp.metrics.size import module_name as _module_name
 from acp.metrics.size import read_source
 from acp.transforms.b2_hierarchy import _package_root
@@ -130,11 +141,17 @@ class _ModuleInfo:
     name: str
     package: str                          # paquete contenedor, para los relativos
     directory: Path
+    source: str
     code: cst.Module
     tree: ast.Module
     bindings: dict[str, str] = field(default_factory=dict)
     guarded: frozenset[str] = frozenset()
     stars: tuple[str, ...] = ()
+    # Los módulos DEL REPO de los que este hace `import *`, ya en absoluto. Un
+    # `import *` es una dependencia de import tan dura como la que más, y
+    # mirarla solo como "de dónde copio el import" fue lo que dejó a B1
+    # publicando un python-stdnum que no arranca.
+    star_targets: tuple[str, ...] = ()
     imports: dict[str, str] = field(default_factory=dict)
     exported: frozenset[str] = frozenset()
     opaque_exports: bool = False
@@ -142,7 +159,10 @@ class _ModuleInfo:
     # nombre. Manda una definición aquí y el import se convierte en un
     # `from <yo> import <yo mismo>` que revienta al cargar.
     imported_symbols: frozenset[str] = frozenset()
+    # Paquetes de terceros que el fichero exige sí o sí para importarse.
+    externals: frozenset[str] = frozenset()
     is_init: bool = False
+    is_test: bool = False
     lines: int = 0
 
 
@@ -163,6 +183,7 @@ def _read_modules(root: Path, package: Path) -> dict[str, _ModuleInfo]:
             name=name,
             package=_module_name(path.parent / "__init__.py", root),
             directory=path.parent,
+            source=source,
             code=code,
             tree=tree,
             bindings=module_bindings(tree),
@@ -170,9 +191,11 @@ def _read_modules(root: Path, package: Path) -> dict[str, _ModuleInfo]:
             stars=tuple(_star_statements(tree)),
             imports=_import_statements(tree),
             is_init=path.name == "__init__.py",
+            is_test=is_test_file(path, root),
             lines=source.count("\n") + 1,
         )
         info.exported, info.opaque_exports = _exported_names(tree)
+        info.externals = _external_requirements(tree)
         modules[name] = info
     return modules
 
@@ -186,7 +209,7 @@ def _type_checking_bindings(tree: ast.Module) -> frozenset[str]:
     import estaba ahí justo para romper un ciclo—. Con la guarda sí viaja.
     """
     found: set[str] = set()
-    for statement in tree.body:
+    for statement, _ in _module_scope(tree):
         if isinstance(statement, ast.If) and _is_type_checking(statement.test):
             block = ast.Module(body=statement.body, type_ignores=[])
             found.update(module_bindings(block))
@@ -212,7 +235,7 @@ def _import_statements(tree: ast.Module) -> dict[str, str]:
     contaban.
     """
     statements: dict[str, str] = {}
-    for statement in _module_scope(tree):
+    for statement, _ in _module_scope(tree):
         if isinstance(statement, ast.Import):
             for alias in statement.names:
                 bound = (alias.asname or alias.name).split(".")[0]
@@ -239,26 +262,63 @@ def _star_statements(tree: ast.Module) -> list[str]:
     return [f"from {origin} import *" for origin in star_imports(tree)]
 
 
-def _module_scope(tree: ast.Module) -> list[ast.stmt]:
-    """Sentencias que corren en el ámbito del módulo, guardas incluidas.
+def _module_scope(tree: ast.Module) -> list[tuple[ast.stmt, bool]]:
+    """Sentencias que corren en el ámbito del módulo, y si son de mentira.
 
-    La mitad de los imports de un repo real viven dentro de un
-    `try/except ImportError` o de un `if`, y leerlos solo en el primer nivel de
-    indentación deja esa mitad sin explicación.
+    Dos cosas en la misma pasada porque separarlas ya salió cara. La mitad de
+    los imports de un repo real viven dentro de un `try/except ImportError` o de
+    un `if`, y leerlos solo en el primer nivel de indentación deja esa mitad sin
+    explicación. Y de esos, los que están bajo `if TYPE_CHECKING` **no se
+    ejecutan nunca**: contarlos como dependencia de import inventa ciclos que el
+    intérprete jamás ve. Medido sobre pint, que los usa para romper los suyos:
+    con esos falsos ciclos, el grafo de partida ya era cíclico y B1 rechazaba
+    los 8.075 movimientos que intentó —dosis cero, celda que no mide nada—.
+
+    La rama `else` de un `if TYPE_CHECKING` sí corre, así que solo se marca el
+    cuerpo: marcarlo todo perdería aristas de verdad, que es el error caro en la
+    dirección contraria.
     """
-    found: list[ast.stmt] = []
+    found: list[tuple[ast.stmt, bool]] = []
 
-    def descend(nodes: list[ast.stmt]) -> None:
+    def descend(nodes: list[ast.stmt], guarded: bool) -> None:
         for node in nodes:
-            found.append(node)
+            found.append((node, guarded))
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue  # otro ámbito
+            if isinstance(node, ast.If) and _is_type_checking(node.test):
+                descend(node.body, True)
+                descend(node.orelse, guarded)
+                continue
             for child in ast.iter_child_nodes(node):
                 if isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case)):
-                    descend([child])  # type: ignore[list-item]
+                    descend([child], guarded)  # type: ignore[list-item]
 
-    descend(tree.body)
+    descend(tree.body, False)
     return found
+
+
+def _external_requirements(tree: ast.Module) -> frozenset[str]:
+    """Paquetes de terceros sin los que este fichero no se puede importar.
+
+    Solo los imports del primer nivel: los que viven dentro de un `try` o de un
+    `if` son justo los que el módulo ya sabe que pueden faltar, y contarlos
+    sería confundir "lo usa" con "lo necesita".
+
+    Hace falta porque un módulo no es un sitio neutro donde dejar una
+    definición. `pint/matplotlib.py` importa matplotlib, que en pint es un
+    extra opcional: mudar `ApplicationRegistry` ahí dentro convirtió un
+    `import pint` que funcionaba en un ModuleNotFoundError para cualquiera que
+    no tuviera el extra instalado. Y al revés vale igual —copiar el import de un
+    extra a un módulo del núcleo se lo exige a todo el mundo—, así que la regla
+    se mira en las dos direcciones.
+    """
+    found: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            found.update(alias.name.split(".")[0] for alias in statement.names)
+        elif isinstance(statement, ast.ImportFrom) and not statement.level and statement.module:
+            found.add(statement.module.split(".")[0])
+    return frozenset(found - sys.stdlib_module_names - {"__future__"})
 
 
 def _exported_names(tree: ast.Module) -> tuple[frozenset[str], bool]:
@@ -271,7 +331,7 @@ def _exported_names(tree: ast.Module) -> tuple[frozenset[str], bool]:
     """
     names: set[str] = set()
     opaque = False
-    for statement in _module_scope(tree):
+    for statement, _ in _module_scope(tree):
         values: list[ast.expr] = []
         if isinstance(statement, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "__all__"
@@ -328,40 +388,97 @@ def _texts_outside_the_code(root: Path) -> list[str]:
     return found
 
 
-def _mentioned_attributes(modules: dict[str, _ModuleInfo], root: Path) -> set[str]:
-    """`modulo.simbolo` escrito en cualquier sitio del repo, texto incluido.
+@dataclass(frozen=True)
+class _Untouchable:
+    """Lo que ata a un símbolo a su módulo, en las tres formas que hay."""
+
+    qualified: set[str]
+    imported: set[str]
+    files_naming: Counter
+    own: dict[str, set[str]]
+
+    def holds(self, key: str, module: str, name: str) -> bool:
+        if key in self.qualified or key in self.imported:
+            return True
+        # Pedido como atributo desde algún fichero que no es el suyo.
+        outside = self.files_naming[name] - (1 if name in self.own.get(module, ()) else 0)
+        return outside > 0
+
+
+def _mentioned_attributes(modules: dict[str, _ModuleInfo], root: Path) -> _Untouchable:
+    """Todo lo que nombra un símbolo sin pasar por un import que se pueda seguir.
 
     Un `from x import y` se reescribe con el árbol y no ata a nadie. Lo que ata
-    es la otra forma de nombrar lo mismo: `util.clean(...)` después de un
-    `from . import util`, `pkg.util.clean(...)` después de un `import pkg.util`,
-    o la ruta escrita dentro de una cadena que un test compara. Las tres se
-    reconocen igual de mal —haría falta resolver a qué módulo apunta cada nombre
-    local— así que se buscan por texto y lo que aparezca se saca del reparto.
-    Es dosis perdida a cambio de no publicar un repo que no importa.
+    es nombrar lo mismo de las otras tres formas, y las tres salieron de correr
+    esto sobre python-stdnum, no de pensarlas:
 
-    Se recorre cada fichero UNA vez y se cruza por la última parte del nombre
-    del módulo: cruzar cada módulo contra cada fichero es cuadrático, y con los
-    1.390 ficheros del sustrato eso son dos millones de búsquedas por corrida.
+    - **Como atributo de un módulo concreto**: `util.clean(...)` tras un
+      `from . import util`, o la ruta escrita dentro de una cadena que un test
+      compara. Se cruza por la última parte del nombre del módulo.
+    - **Como atributo de cualquier cosa**: `mod.is_valid(...)` dentro de un
+      bucle sobre los módulos que devuelve `get_number_modules()`. Ahí no hay
+      nombre de módulo que cruzar —el objeto llega en una variable— y lo único
+      honesto es que un nombre que alguien pide como atributo en OTRO fichero no
+      se mueva. python-stdnum entero funciona así: sus módulos son un protocolo
+      de pato con `validate`, `is_valid`, `compact` y `format`, y su
+      `tests/test_robustness.doctest` los recorre todos.
+    - **Dentro de un ejemplo de doctest**: son suite, y un ejemplo solo se puede
+      reescribir si el resultado ocupa las mismas líneas —repartir un
+      `from x import (a, b)` de tres líneas entre dos módulos no las ocupa—, así
+      que lo que un ejemplo importa se queda donde está.
+
+    Se recorre cada fichero UNA vez: cruzar cada módulo contra cada fichero es
+    cuadrático, y con los 1.390 ficheros del sustrato son dos millones de
+    búsquedas por corrida.
     """
     tails: dict[str, list[str]] = {}
     for name in modules:
         tails.setdefault(name.rsplit(".", 1)[-1], []).append(name)
-    found: set[str] = set()
-    for info in modules.values():
-        for chain in _DOTTED.findall(read_source(info.path)):
-            parts = chain.split(".")
+
+    qualified: set[str] = set()
+    imported: set[str] = set()
+    files_naming: Counter[str] = Counter()
+    own: dict[str, set[str]] = {}
+    texts = [(info.name, info.source) for info in modules.values()]
+    # Fuera del código el separador también puede ser dos puntos: es como el
+    # empaquetado nombra un símbolo suelto (`stdnum = stdnum.cli:main`).
+    texts += [("", text) for text in _texts_outside_the_code(root)]
+    for owner_file, text in texts:
+        attributes: set[str] = set()
+        pattern = _DOTTED if owner_file else _DOTTED_OR_COLON
+        for chain in pattern.findall(text):
+            parts = re.split(r"[.:]", chain)
+            attributes.update(parts[1:])
             for head, attribute in zip(parts, parts[1:]):
                 for owner in tails.get(head, ()):
                     # Dentro de su propio fichero la referencia es local y se
-                    # mueve con la definición; lo que ata es nombrarla de fuera.
-                    if owner != info.name:
-                        found.add(f"{owner}.{attribute}")
-    for text in _texts_outside_the_code(root):
-        for chain in _DOTTED_OR_COLON.findall(text):
-            parts = re.split(r"[.:]", chain)
-            for head, attribute in zip(parts, parts[1:]):
-                for owner in tails.get(head, ()):
-                    found.add(f"{owner}.{attribute}")
+                    # muda con la definición; lo que ata es nombrarla de fuera.
+                    if owner != owner_file:
+                        qualified.add(f"{owner}.{attribute}")
+        own[owner_file] = attributes
+        for name in attributes:
+            files_naming[name] += 1
+        imported |= _doctest_imports(text)
+    return _Untouchable(qualified, imported, files_naming, own)
+
+
+def _doctest_imports(text: str) -> set[str]:
+    """`modulo.simbolo` que un ejemplo de doctest importa por su nombre."""
+    if DOCTEST_PROMPT not in text:
+        return set()
+    found: set[str] = set()
+
+    def collect(code: str) -> None:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                found.update(f"{node.module}.{alias.name}" for alias in node.names)
+        return None
+
+    rewrite_examples(text, collect)
     return found
 
 
@@ -372,13 +489,7 @@ def _star_importers(modules: dict[str, _ModuleInfo]) -> set[str]:
     nombres que x tenga en ese momento, y no hay import que reescribir porque
     el nombre no está escrito en ninguna parte.
     """
-    found: set[str] = set()
-    for info in modules.values():
-        for origin in star_imports(info.tree):
-            resolved = _resolve_relative(origin, info.package)
-            if resolved in modules:
-                found.add(resolved)
-    return found
+    return {target for info in modules.values() for target in info.star_targets}
 
 
 def _resolve_relative(origin: str, package: str) -> str:
@@ -433,7 +544,9 @@ def _build(root: Path, seed: int):
     inside = {
         name: info
         for name, info in modules.items()
-        if not info.is_init and (package == info.path.parent or package in info.path.parents)
+        if not info.is_init
+        and not info.is_test
+        and (package == info.path.parent or package in info.path.parents)
     }
     siblings: dict[Path, list[str]] = {}
     for name, info in inside.items():
@@ -441,6 +554,19 @@ def _build(root: Path, seed: int):
     for names in siblings.values():
         names.sort()
 
+    roots = {name.split(".")[0] for name in modules}
+    for info in modules.values():
+        info.externals = frozenset(info.externals - roots)
+        info.star_targets = tuple(
+            dict.fromkeys(
+                target
+                for target in (
+                    _resolve_relative(origin, info.package)
+                    for origin in star_imports(info.tree)
+                )
+                if target in modules
+            )
+        )
     imported = {name: _imported_symbol_needs(info, modules) for name, info in modules.items()}
     for name, info in modules.items():
         info.imported_symbols = frozenset(need.key for need in imported[name])
@@ -519,6 +645,15 @@ def _definitions_of(info: _ModuleInfo, modules: dict[str, _ModuleInfo]) -> list[
         )
         if unresolved:
             found[-1].needs = (*found[-1].needs, _Need(info.name, "", "unresolved", False, False))
+        if stars:
+            # Los `import *` del origen viajan con la definición, así que el
+            # destino pasa a depender de esos módulos: son aristas nuevas y
+            # tienen que contar antes de aceptar el movimiento, no después.
+            found[-1].needs = (
+                *found[-1].needs,
+                *(_Need(target, "*", "star", False, False, emit=False)
+                  for target in info.star_targets),
+            )
     return found
 
 
@@ -528,7 +663,14 @@ def _needs_of(node: ast.AST, info: _ModuleInfo) -> tuple[list[_Need], bool, bool
     # `free_names` incluye el propio nombre de la definición —la liga el ámbito
     # de fuera— y los builtins; quien mueve sabe que ninguno de los dos hay que
     # importarlo.
-    wanted = free_names(node) - _BUILTINS - {own}
+    # Los builtins que el módulo NO redefine; los que sí, son suyos y hay que
+    # seguirlos. `stdnum` define `format` en casi todos sus módulos: restarlo
+    # como builtin hacía que una referencia a `format` se resolviera en silencio
+    # contra el de Python —sin NameError, devolviendo otra cosa— y así salieron
+    # 43 doctests en rojo que ningún fixture podía enseñar.
+    shadowed = _BUILTINS - set(info.bindings)
+    wanted = free_names(node) - shadowed - {own}
+    wanted |= _doctest_names(_source_of(node, info)) & set(info.bindings)
     annotations = annotation_names(node)
     needs: list[_Need] = []
     stars = False
@@ -558,6 +700,40 @@ def _needs_of(node: ast.AST, info: _ModuleInfo) -> tuple[list[_Need], bool, bool
     return needs, stars, unresolved
 
 
+def _doctest_names(source: str) -> set[str]:
+    """Nombres que usan los ejemplos de doctest de un texto.
+
+    Un doctest no es documentación, es suite —python-stdnum corre la suya con
+    `--doctest-modules`— y corre con el espacio de nombres del módulo donde
+    está escrito. Nada de eso se ve en el AST: los ejemplos viven dentro de una
+    cadena, así que el análisis de nombres libres los atraviesa sin verlos y una
+    definición se muda dejando atrás ejemplos que la llamaban.
+    """
+    if DOCTEST_PROMPT not in source:
+        return set()
+    found: set[str] = set()
+
+    def collect(code: str) -> None:
+        try:
+            found.update(free_names(ast.parse(code)))
+        except SyntaxError:
+            pass  # un ejemplo que no es código: `>>> ...` de una traza
+        return None
+
+    rewrite_examples(source, collect)
+    return found
+
+
+def _source_of(node: ast.AST, info: _ModuleInfo) -> str:
+    """El texto de una definición, para poder mirar dentro de sus docstrings."""
+    segment = ast.get_source_segment(info.source, node)
+    return segment or ""
+
+
+def _module_docstring(info: _ModuleInfo) -> str:
+    return ast.get_docstring(info.tree, clean=False) or ""
+
+
 def _imported_symbol_needs(info: _ModuleInfo, modules: dict[str, _ModuleInfo]) -> list[_Need]:
     """Los `from <módulo del repo> import <símbolo>` que el fichero ya tiene.
 
@@ -568,7 +744,17 @@ def _imported_symbol_needs(info: _ModuleInfo, modules: dict[str, _ModuleInfo]) -
     control justo los que B1 redirige.
     """
     needs: list[_Need] = []
-    for statement in _module_scope(info.tree):
+    for statement, guarded in _module_scope(info.tree):
+        # Bajo `if TYPE_CHECKING` el import no se ejecuta: no es una arista, y
+        # tratarlo como si lo fuera es justo lo que un repo escribe ahí para
+        # romper un ciclo que de verdad no existe.
+        if guarded:
+            continue
+        if isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.name in modules:
+                    needs.append(_Need(alias.name, "", "module", False, False, emit=False))
+            continue
         if not isinstance(statement, ast.ImportFrom):
             continue
         origin = _resolve_relative("." * statement.level + (statement.module or ""), info.package)
@@ -577,12 +763,27 @@ def _imported_symbol_needs(info: _ModuleInfo, modules: dict[str, _ModuleInfo]) -
             continue
         for alias in statement.names:
             if alias.name == "*":
+                # `from x import *` no nombra un símbolo, pero importa x entero:
+                # la arista es igual de dura y omitirla esconde el ciclo entero.
+                if origin in modules:
+                    needs.append(_Need(origin, "*", "star", False, False, emit=False))
                 continue
-            # Un submódulo no es un símbolo: `from . import util` importa el
-            # fichero, y ese no se mueve. Contarlo como arista dura además
-            # inventaría el ciclo paquete↔submódulo que Python sí tolera.
-            if f"{origin}.{alias.name}" in modules or alias.name in source.guarded:
+            submodule = f"{origin}.{alias.name}"
+            if submodule in modules:
+                # `from stdnum.no import kontonr` no trae un símbolo, trae un
+                # fichero —y hay que cargarlo entero antes de seguir—. La arista
+                # va al SUBMÓDULO, no al paquete: al paquete sí sería la falsa,
+                # la del ciclo paquete↔hijo que Python tolera. Medido: sin esta
+                # arista, tres paquetes de python-stdnum quedaban con un ciclo
+                # de imports real que el grafo no había visto.
+                needs.append(_Need(submodule, "", "module", False, False, emit=False))
                 continue
+            # Que el ORIGEN solo ligue ese nombre bajo `if TYPE_CHECKING` no
+            # quita la arista: esta sentencia sí se ejecuta, y ejecutarla carga
+            # el otro módulo entero. La guarda que importa es la de aquí, y esa
+            # ya se miró arriba. Medido: `pint/testing.py` hace
+            # `from . import Quantity` sobre un `Quantity` que `pint/__init__`
+            # solo anota, y sin esta arista el grafo no veía su ciclo.
             needs.append(
                 _Need(origin, alias.name, source.bindings.get(alias.name, "assign"),
                       False, False, emit=False)
@@ -603,22 +804,27 @@ def _module_level_holder(info: _ModuleInfo, imported: list[_Need]) -> _Holder:
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     ]
     block = ast.Module(body=plain, type_ignores=[])
+    wanted = free_names(block) - (_BUILTINS - set(info.bindings)) - _MODULE_DUNDERS
+    # Un doctest de la docstring del módulo es suite, y corre con el espacio de
+    # nombres del módulo: si la función que llama se ha mudado, hay que
+    # volver a importarla aquí o el ejemplo deja de encontrarla.
+    wanted |= _doctest_names(_module_docstring(info)) & set(info.bindings)
     needs: list[_Need] = []
-    for name in sorted(free_names(block) - _BUILTINS - _MODULE_DUNDERS):
+    for name in sorted(wanted):
         kind = info.bindings.get(name)
         if kind is not None:
             needs.append(_Need(info.name, name, kind, name in info.guarded, False))
     return _Holder(key=f"{info.name}::module", host=info.name, needs=(*needs, *imported))
 
 
-def _why_not(definition: _Definition, info: _ModuleInfo, mentioned: set[str]) -> str | None:
+def _why_not(definition: _Definition, info: _ModuleInfo, mentioned: _Untouchable) -> str | None:
     """Por qué esta definición no entra en el reparto, o None si entra."""
     if any(need.kind == "unresolved" for need in definition.needs):
         return "necesita algo que no se puede importar"
     if definition.name in info.exported:
         return "listada en __all__"
-    if definition.key in mentioned:
-        return "referenciada como atributo o dentro de un texto"
+    if mentioned.holds(definition.key, info.name, definition.name):
+        return "nombrada como atributo, en un texto o en un doctest"
     if _declares_global(definition, info):
         return "usa global"
     return None
@@ -659,8 +865,82 @@ class _Graph:
                 self.dependents.setdefault(need.key, []).append(holder.key)
         self.edges: Counter[tuple[str, str]] = Counter()
         self.by_holder: dict[str, set[tuple[str, str]]] = {}
+        self.tolerated: frozenset[tuple[str, str]] = frozenset()
         for holder in holders:
             self._refresh(holder.key)
+        self.tolerated = self._already_circular()
+        if self.tolerated:
+            for holder in holders:
+                self._refresh(holder.key)
+
+    def _already_circular(self) -> frozenset[tuple[str, str]]:
+        """Las aristas que ya formaban ciclo antes de que B1 tocara nada.
+
+        Existen: un repo puede importarse en círculo y sobrevivir —con el import
+        al final del fichero, dentro de un `try`, o en la forma `import x` que
+        Python resuelve contra el módulo a medias—. Sin esta salida, un solo
+        ciclo de partida deja `_has_cycle` en True para siempre y B1 rechaza
+        TODOS los movimientos: dosis cero, y una celda con dosis cero se lee
+        exactamente igual que una transformación que preserva el repositorio.
+        Ya pasó, medido: los `if TYPE_CHECKING` de pint hacían eso con sus 8.075
+        intentos.
+
+        Lo que se tolera es lo que ya estaba y solo eso: dentro de un grupo que
+        ya se importa en círculo, una arista más no cambia nada —el intérprete
+        ya sobrevive a ese enredo—; entre grupos distintos, el orden topológico
+        de partida se sigue respetando y una arista que lo rompa se rechaza.
+        """
+        component = self._components()
+        sizes = Counter(component.values())
+        return frozenset(
+            edge
+            for edge in self.edges
+            if component[edge[0]] == component[edge[1]] and sizes[component[edge[0]]] > 1
+        )
+
+    def _components(self) -> dict[str, int]:
+        """Componentes fuertemente conexas, por Kosaraju."""
+        forward: dict[str, set[str]] = {}
+        backward: dict[str, set[str]] = {}
+        nodes: set[str] = set()
+        for origin, target in self.edges:
+            forward.setdefault(origin, set()).add(target)
+            backward.setdefault(target, set()).add(origin)
+            nodes.update((origin, target))
+
+        order: list[str] = []
+        seen: set[str] = set()
+        for start in sorted(nodes):
+            if start in seen:
+                continue
+            # Iterativo y no recursivo: un repo grande desborda la pila.
+            stack = [(start, iter(sorted(forward.get(start, ()))))]
+            seen.add(start)
+            while stack:
+                node, pending = stack[-1]
+                following = next(pending, None)
+                if following is None:
+                    order.append(node)
+                    stack.pop()
+                elif following not in seen:
+                    seen.add(following)
+                    stack.append((following, iter(sorted(forward.get(following, ())))))
+
+        component: dict[str, int] = {}
+        label = 0
+        for start in reversed(order):
+            if start in component:
+                continue
+            stack = [start]
+            component[start] = label
+            while stack:
+                node = stack.pop()
+                for previous in sorted(backward.get(node, ())):
+                    if previous not in component:
+                        component[previous] = label
+                        stack.append(previous)
+            label += 1
+        return component
 
     def resolve(self, need: _Need) -> str:
         return self.home.get(need.key, need.owner)
@@ -670,8 +950,13 @@ class _Graph:
         fresh = {
             (holder.host, self.resolve(need))
             for need in holder.needs
-            if need.kind != "unresolved" and self.resolve(need) != holder.host
+            # Un nombre que solo existe bajo `if TYPE_CHECKING` viaja con su
+            # guarda: en ejecución no se importa nada, así que no es una arista.
+            if need.kind != "unresolved"
+            and not need.guarded
+            and self.resolve(need) != holder.host
         }
+        fresh -= self.tolerated
         for edge in self.by_holder.get(key, set()) - fresh:
             self.edges[edge] -= 1
             if self.edges[edge] <= 0:
@@ -774,6 +1059,14 @@ def _preference(rng: random.Random, candidates: list[str], load: dict[str, int])
     return order
 
 
+def _import_head(statement: str) -> str:
+    """El paquete de primer nivel del que tira una sentencia de import."""
+    if statement.startswith("from "):
+        origin = statement.split(" ", 2)[1]
+        return "" if origin.startswith(".") else origin.split(".")[0]
+    return statement.split(" ", 1)[1].split(".")[0].split(" ")[0]
+
+
 def _blocked(
     definition: _Definition,
     target: str,
@@ -783,6 +1076,15 @@ def _blocked(
     """Lo que hace inviable un destino concreto, antes de mirar el ciclo."""
     origin = modules[definition.origin]
     destination = modules[target]
+    if destination.externals - origin.externals:
+        return True  # el destino exige un paquete que el origen no exigía
+    for need in definition.needs:
+        if need.kind == "import" and need.name in origin.imports:
+            head = _import_head(origin.imports[need.name])
+            if head and head not in destination.externals and head in origin.externals:
+                # El import que viajaría con la definición le exigiría al
+                # destino un paquete que hoy no necesita.
+                return True
     if definition.name in taken[target]:
         return True  # taparía una definición del destino
     if definition.key in destination.imported_symbols:
@@ -857,18 +1159,29 @@ def _emissions(
         for need in holder.needs:
             if not need.emit or need.kind == "unresolved":
                 continue
+            resolved = graph.resolve(need)
+            if resolved == host:
+                continue
+            if need.guarded:
+                # Lo que el origen solo ligaba bajo `if TYPE_CHECKING` sale de
+                # aquí con su guarda puesta, y da igual que fuera un import o un
+                # alias de tipo: en tiempo de ejecución no existe ninguno de los
+                # dos, así que escribirlo desnudo es un ImportError al cargar.
+                # Medido: `stdnum/damm.py` define ahí su `DammTable` y la
+                # primera versión de esto dejó python-stdnum sin arrancar.
+                emission = found.setdefault(host, _Emission())
+                emission.guarded[need.name] = (
+                    modules[need.owner].imports.get(need.name)
+                    if need.kind == "import"
+                    else f"from {resolved} import {need.name}"
+                ) or f"from {resolved} import {need.name}"
+                continue
             if need.kind == "import":
-                if need.owner == host:
-                    continue
                 text = modules[need.owner].imports.get(need.name)
                 if text is None or modules[host].imports.get(need.name) == text:
                     continue
                 emission = found.setdefault(host, _Emission())
-                target = emission.guarded if need.guarded else emission.plain
-                target[need.name] = text
-                continue
-            resolved = graph.resolve(need)
-            if resolved == host:
+                emission.plain[need.name] = text
                 continue
             emission = found.setdefault(host, _Emission())
             emission.from_home.setdefault(resolved, set()).add(need.name)
@@ -903,10 +1216,13 @@ def _emitted_statements(
         names = ", ".join(sorted(emission.from_home[origin]))
         statements.append(cst.parse_statement(f"from {origin} import {names}", config=config))
     if emission.guarded:
-        if "TYPE_CHECKING" not in info.bindings:
-            statements.append(
-                cst.parse_statement("from typing import TYPE_CHECKING", config=config)
-            )
+        # Siempre, aunque el fichero ya lo importe: lo suyo puede estar
+        # cincuenta líneas más abajo y esto va en la cabecera. Un import
+        # repetido no cuesta nada; leerlo antes de tenerlo es un NameError al
+        # cargar, y así se cayó python-stdnum entero.
+        statements.append(
+            cst.parse_statement("from typing import TYPE_CHECKING", config=config)
+        )
         block = "if TYPE_CHECKING:\n" + "".join(
             f"    {emission.guarded[name]}\n" for name in sorted(emission.guarded)
         )
@@ -986,9 +1302,14 @@ class _RewriteMovedSymbols(cst.CSTTransformer):
     menos a reescribir a ciegas.
     """
 
-    def __init__(self, moves: dict[str, str], package: str, current: str) -> None:
+    def __init__(self, moves: dict[str, str], current: str) -> None:
         self.moves = moves
-        self.package = package
+        # El paquete DESDE EL QUE se cuentan los puntos de un import relativo,
+        # que es el que contiene al fichero y no el paquete raíz. Contarlos
+        # desde la raíz resuelve `from ...converters import Converter` como
+        # `converters` a secas, no encuentra nada en el diccionario y deja el
+        # import apuntando al módulo de antes: pint entero sin arrancar, con la
+        # suite en cero y sin un solo error de sintaxis que lo delate.
         self.current = current
 
     def visit_Import(self, node: cst.Import) -> bool:
@@ -1020,9 +1341,7 @@ class _RewriteMovedSymbols(cst.CSTTransformer):
         """
         try:
             module = cst.parse_module(code)
-            return module.visit(
-                _RewriteMovedSymbols(self.moves, self.package, self.current)
-            ).code
+            return module.visit(_RewriteMovedSymbols(self.moves, self.current)).code
         except (cst.ParserSyntaxError, cst.CSTValidationError):
             return None
 
@@ -1032,7 +1351,7 @@ class _RewriteMovedSymbols(cst.CSTTransformer):
         origin = "." * len(updated.relative) + (
             _dotted(updated.module) if updated.module is not None else ""
         )
-        base = _resolve_relative(origin, self.package) if updated.relative else origin
+        base = _resolve_relative(origin, self.current) if updated.relative else origin
         if not base:
             return updated
         groups: dict[str, list[cst.ImportAlias]] = {}
@@ -1101,9 +1420,7 @@ def apply(root: Path, seed: int = 0) -> TransformResult:
     # Alcance repo-wide, suite del repo incluida (§4.3.1): un import que se
     # quede apuntando al módulo de antes es un fallo de colecta, y una celda con
     # la suite en rojo no mide una práctica, mide un repositorio roto.
-    package = _package_root(root)
-    assert package is not None
-    loose = _RewriteMovedSymbols(report.symbol_moves, package.name, "")
+    loose = _RewriteMovedSymbols(report.symbol_moves, "")
     for path in doctest_files(root):
         source = read_source(path)
         # El fichero entero es texto de doctest: aquí no hay módulo que parsear.
@@ -1119,9 +1436,7 @@ def apply(root: Path, seed: int = 0) -> TransformResult:
         except cst.ParserSyntaxError:
             continue
         rewriter = _RewriteMovedSymbols(
-            report.symbol_moves,
-            package.name,
-            _module_name(path.parent / "__init__.py", root),
+            report.symbol_moves, _module_name(path.parent / "__init__.py", root)
         )
         transformed = code.visit(rewriter).code
         if transformed != source:

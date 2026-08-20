@@ -119,3 +119,178 @@ def test_a_moved_symbol_survives_in_the_manifest_next_to_the_renaming(tmp_path: 
         if sitio["path"] != f"{clave.rsplit('.', 2)[0]}/{clave.rsplit('.', 2)[1]}.py"
     }
     assert movidas, "ningún símbolo movido llegó al manifiesto"
+
+
+def run(root: Path, code: str):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-c", code], cwd=root, capture_output=True, text=True
+    )
+
+
+def test_a_relative_import_of_a_moved_symbol_is_redirected(tmp_path: Path):
+    """Los puntos de `from ..a import alpha` se cuentan desde el paquete que
+    CONTIENE al fichero, no desde el raíz. Contarlos mal no da error de sintaxis
+    ni de parseo: el nombre no se encuentra en el diccionario, el import se
+    queda apuntando al módulo de antes y el repositorio deja de arrancar
+    entero —pint, con la suite de 2.024 tests en cero—."""
+    pkg = tmp_path / "pkg"
+    (pkg / "sub").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (pkg / "b.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+    (pkg / "sub" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "sub" / "user.py").write_text(
+        "from ..a import alpha\n\n\ndef use():\n    return alpha()\n", encoding="utf-8"
+    )
+
+    resultado = b1_cohesion.apply(tmp_path, seed=4)
+
+    assert "pkg.a.alpha" in resultado.symbol_moves, "el caso no se ejerce si nada se mueve"
+    proceso = run(tmp_path, "import pkg.sub.user as u; print(u.use())")
+    assert proceso.returncode == 0, proceso.stderr
+    assert proceso.stdout.strip() == "1"
+
+
+def test_a_definition_that_shadows_a_builtin_is_followed_when_it_moves(tmp_path: Path):
+    """`format` es un builtin y a la vez el nombre de la función del módulo. Si
+    se muda y no se sigue, la llamada que queda atrás se resuelve EN SILENCIO
+    contra el builtin: no hay NameError, hay otro resultado. Así salieron 43
+    doctests de python-stdnum en rojo con el árbol importando perfectamente."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    # `render` se queda clavado en su módulo —está en su `__all__`— para que
+    # la llamada que hace a `format` sea de verdad una referencia abandonada.
+    (pkg / "a.py").write_text(
+        "__all__ = ['render']\n"
+        "\n"
+        "\n"
+        "def format(value):\n"
+        "    return '<%s>' % value\n"
+        "\n"
+        "\n"
+        "def render(value):\n"
+        "    return format(value)\n",
+        encoding="utf-8",
+    )
+    (pkg / "b.py").write_text("def other():\n    return 0\n", encoding="utf-8")
+
+    resultado = b1_cohesion.apply(tmp_path, seed=2)
+
+    assert "pkg.a.format" in resultado.symbol_moves, "el caso no se ejerce si no se mueve"
+    proceso = run(tmp_path, "import pkg.a; print(pkg.a.render(3))")
+    assert proceso.returncode == 0, proceso.stderr
+    assert proceso.stdout.strip() == "<3>"
+
+
+def test_a_doctest_of_the_module_keeps_finding_what_moved_away(tmp_path: Path):
+    """Un doctest es suite y corre con el espacio de nombres de su módulo, pero
+    vive dentro de una cadena: el análisis de nombres libres lo atraviesa sin
+    verlo y la definición se muda dejando atrás ejemplos que la llamaban."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "a.py").write_text(
+        '"""Modulo.\n'
+        "\n"
+        ">>> compact('1 2')\n"
+        "'12'\n"
+        '"""\n'
+        "\n"
+        "\n"
+        "def compact(value):\n"
+        "    return value.replace(' ', '')\n",
+        encoding="utf-8",
+    )
+    (pkg / "b.py").write_text("def other():\n    return 0\n", encoding="utf-8")
+
+    resultado = b1_cohesion.apply(tmp_path, seed=2)
+
+    assert "pkg.a.compact" in resultado.symbol_moves, "el caso no se ejerce si no se mueve"
+    proceso = run(
+        tmp_path,
+        "import doctest, sys, pkg.a; sys.exit(doctest.testmod(pkg.a).failed)",
+    )
+    assert proceso.returncode == 0, proceso.stdout + proceso.stderr
+
+
+def test_what_only_exists_for_the_type_checker_travels_with_its_guard(tmp_path: Path):
+    """Un alias declarado bajo `if TYPE_CHECKING` no existe en ejecución.
+    Escribirlo desnudo en el destino es un ImportError al cargar —el repositorio
+    entero caído, no una dosis más baja— y por eso viaja con la guarda."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    cabecera = (
+        "from __future__ import annotations\n"
+        "\n"
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from collections.abc import Sequence\n"
+        "\n"
+        "    Tabla = Sequence[int]\n"
+    )
+    (pkg / "a.py").write_text(
+        cabecera + "\n\ndef checksum(rows: Tabla | None = None) -> int:\n"
+        "    return len(rows or ())\n",
+        encoding="utf-8",
+    )
+    (pkg / "b.py").write_text(cabecera + "\n\ndef other() -> int:\n    return 0\n", encoding="utf-8")
+
+    resultado = b1_cohesion.apply(tmp_path, seed=2)
+
+    assert "pkg.a.checksum" in resultado.symbol_moves, "el caso no se ejerce si no se mueve"
+    proceso = run(tmp_path, "import pkg.a, pkg.b; print('ok')")
+    assert proceso.returncode == 0, proceso.stderr
+
+
+def test_the_suite_of_the_repository_is_not_redistributed(tmp_path: Path):
+    """En un fichero de test, dónde vive una definición ES semántica de pytest:
+    una fixture solo la ven los tests de su módulo, y `conftest.py` es el sitio
+    del que pytest lee. Repartir ahí dentro dejó la colecta de pint en cero."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (pkg / "b.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+    (pkg / "test_uno.py").write_text("def test_uno():\n    assert True\n", encoding="utf-8")
+    (pkg / "test_dos.py").write_text("def test_dos():\n    assert True\n", encoding="utf-8")
+
+    resultado = b1_cohesion.apply(tmp_path, seed=1)
+
+    tocados = set(resultado.symbol_moves) | set(resultado.symbol_moves.values())
+    assert not any("test_" in nombre for nombre in tocados), resultado.symbol_moves
+
+
+def test_a_definition_does_not_move_into_a_module_with_heavier_requirements(tmp_path: Path):
+    """`pint/matplotlib.py` importa un extra opcional. Mudar ahí dentro una
+    clase del núcleo convirtió un `import pint` que funcionaba en un
+    ModuleNotFoundError para quien no tuviera el extra."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "core.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (pkg / "extra.py").write_text(
+        "import un_paquete_que_no_esta\n\n\ndef beta():\n    return un_paquete_que_no_esta\n",
+        encoding="utf-8",
+    )
+
+    resultado = b1_cohesion.apply(tmp_path, seed=1)
+
+    assert "pkg.extra" not in resultado.symbol_moves.values(), resultado.symbol_moves
+
+
+def test_the_plan_says_how_much_dose_is_lost_and_why(tmp_path: Path):
+    """La dosis perdida es un resultado del experimento: si en un repo real casi
+    nada se puede mover, B1 mide mucho menos de lo que el spec supone y eso hay
+    que poder decirlo con un número delante, no deducirlo de un contador a cero."""
+    build(tmp_path)
+
+    informe = b1_cohesion.plan(tmp_path, seed=1)
+
+    assert informe.candidates == 4
+    assert sum(informe.excluded.values()) + len(informe.symbol_moves) == informe.candidates
