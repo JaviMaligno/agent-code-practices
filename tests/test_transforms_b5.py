@@ -376,3 +376,62 @@ def test_the_same_import_written_under_a_type_checking_guard_is_the_same_import(
     proceso = run(tmp_path, "import pkg.alfa as m; print(m.beta([1, 2]))")
     assert proceso.returncode == 0, proceso.stderr
     assert proceso.stdout.strip() == "2"
+
+
+def test_a_module_that_waits_for_its_own_package_is_not_merged_into_the_library(
+    tmp_path: Path,
+):
+    """El fallo que sqlglot enseñó y ningún fixture veía: `sqlglot/__main__.py`
+    hace `import sqlglot` y lee `sqlglot.__version__` en el nivel de módulo.
+    Nadie lo importa —es el guion de `python -m`—, así que ese código corre
+    cuando el paquete ya está entero. Fundido con un módulo de la librería, pasa
+    a correr EN MITAD de la carga del paquete y el `import sqlglot` de arriba
+    del todo muere con AttributeError: el repositorio entero caído.
+
+    La comprobación de ciclos no lo veía porque el paquete ya se importaba en
+    círculo de partida y la tolerancia se lo tragaba: fundir no añade una arista,
+    reordena cuándo corre el código, y eso la condensación no lo dice."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        "__version__ = '1'\n\nfrom .core import work\n", encoding="utf-8"
+    )
+    (pkg / "core.py").write_text(
+        "from .util import helper\n\n\ndef work():\n    return helper()\n", encoding="utf-8"
+    )
+    (pkg / "util.py").write_text(
+        "from pkg import __version__\n\n\ndef helper():\n    return 2\n", encoding="utf-8"
+    )
+    (pkg / "guion.py").write_text("import pkg\n\nATAJO = pkg.work\n", encoding="utf-8")
+    # Dos hermanos que no tocan el círculo: sin ellos este test pasaría igual el
+    # día que B5 dejara de fundir nada, que es la forma de romperlo sin verlo.
+    (pkg / "alfa.py").write_text("def alfa():\n    return 1\n", encoding="utf-8")
+    (pkg / "beta.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+
+    resultado = b5_size.apply(tmp_path, target_lines=2000)
+
+    assert resultado.moves == {"pkg.beta": "pkg.alfa"}, resultado.moves
+    proceso = run(tmp_path, "import pkg; print(pkg.work())")
+    assert proceso.returncode == 0, proceso.stderr
+    assert proceso.stdout.strip() == "2"
+
+
+def test_the_boot_script_of_a_package_is_left_alone(tmp_path: Path):
+    """`pkg/__main__.py` es lo que corre `python -m pkg`, no un módulo de la
+    librería. Absorbido, `python -m pkg` deja de existir; como anfitrión, quien
+    importe lo que se llevó dentro ejecuta la línea de comandos entera."""
+    write(
+        tmp_path,
+        alfa="def alfa():\n    return 1\n",
+        beta="def beta():\n    return 2\n",
+    )
+    (tmp_path / "pkg" / "__main__.py").write_text(
+        "import argparse\n\nPARSER = argparse.ArgumentParser()\n"
+        "\n\nif __name__ == '__main__':\n    PARSER.parse_args()\n",
+        encoding="utf-8",
+    )
+
+    resultado = b5_size.apply(tmp_path, target_lines=2000)
+
+    assert resultado.moves == {"pkg.beta": "pkg.alfa"}, resultado.moves
+    assert (tmp_path / "pkg" / "__main__.py").exists()

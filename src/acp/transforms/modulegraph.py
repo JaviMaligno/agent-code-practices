@@ -1,12 +1,16 @@
-"""El grafo de imports entre módulos, para las dos transformaciones que lo tocan.
+"""Qué parte de un repositorio ya se importaba en círculo antes de tocar nada.
 
-Vive aparte porque B1 y B5 se hacen la MISMA pregunta por razones distintas y
-con la misma consecuencia si se contesta mal: un ciclo de imports de nivel de
-módulo no degrada nada, mata el `import`, y un repositorio que no arranca se lee
-exactamente igual que un agente que fracasa (§11). B1 pregunta antes de mudar una
-definición a otro fichero; B5, antes de fundir dos ficheros en uno. Dos copias de
-esto podrían discrepar, y el día que discreparan la celda se publicaría con un
-ciclo que nadie vio venir.
+Vive aparte porque es el criterio que decide la dosis de B1 —dentro de un enredo
+que el intérprete ya sobrevive, una arista más no cambia nada; fuera, sí— y no
+tenía un solo test propio: mutarlo para que metiera todos los módulos en la
+misma componente no tumbaba ninguno de los trece fixtures de B1, o sea que la
+salida que existe para que B1 no salga con dosis cero no estaba comprobada.
+
+B5 se hace una pregunta parecida y la contesta al revés a propósito: no tolera el
+ciclo de partida, porque fundir dos módulos no añade una arista sino que cambia
+cuándo corre cada línea, y dentro de un ciclo el orden es justo lo que lo hace
+sobrevivir. Esa diferencia solo se puede leer si las dos respuestas están
+escritas por separado (ver `b5_size._Contracted`).
 """
 
 from __future__ import annotations

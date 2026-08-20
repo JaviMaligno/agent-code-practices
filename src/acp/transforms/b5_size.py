@@ -123,7 +123,6 @@ from acp.transforms.b2_hierarchy import (
 from acp.transforms.base import TransformResult, iter_transformable_files
 from acp.transforms.dependencies import module_bindings
 from acp.transforms.doctests import DOCTEST_PROMPT, doctest_files, rewrite_examples
-from acp.transforms.modulegraph import components
 
 # Los puntos de la curva que pide §6.3. El original es el cuarto punto y no
 # necesita transformación: es el árbol tal cual.
@@ -309,6 +308,9 @@ class _Frozen:
     """Lo que hace intocable a un módulo, calculado una vez por repositorio."""
 
     package: Path | None
+    # El paquete raíz como nombre de módulo, que no es siempre el del directorio:
+    # en un layout `src/` el `__init__.py` de `src/pkg/` se llama `pkg`.
+    root_module: str
     computed: frozenset[str]
     named: frozenset[str]
     star_targets: frozenset[str]
@@ -320,6 +322,20 @@ def _why_not(info: _Module, root: Path, frozen: _Frozen) -> str | None:
         return "es el __init__ del paquete"
     if info.is_test:
         return "es suite del repositorio"
+    if info.path.name == "__main__.py":
+        # El guion de `python -m paquete`. Nadie lo importa, así que su código de
+        # nivel de módulo corre cuando el paquete ya está entero; metido en un
+        # fichero de la librería pasa a correr en mitad de la carga.
+        return "es el guion de arranque del paquete"
+    if frozen.root_module and frozen.root_module in info.module_deps:
+        # `import paquete` desde dentro del propio paquete es la firma de «yo
+        # corro cuando esto ya está montado»: lo que se lee después es un
+        # atributo que el `__init__` todavía no ha puesto si el módulo se carga
+        # antes de tiempo. Medido sobre sqlglot: `sqlglot/__main__.py` lee
+        # `sqlglot.__version__`, y fundirlo con tres módulos de la librería
+        # convirtió `import sqlglot` en un AttributeError —el repositorio entero
+        # caído, con la suite en cero—.
+        return "espera a que su propio paquete esté cargado"
     if frozen.package is None or not (
         frozen.package == info.path.parent or frozen.package in info.path.parents
     ):
@@ -347,6 +363,7 @@ def _why_not(info: _Module, root: Path, frozen: _Frozen) -> str | None:
 
 
 def _frozen(root: Path, modules: dict[str, _Module]) -> _Frozen:
+    package = _package_root(root)
     star_targets: set[str] = set()
     for info in modules.values():
         for statement, _ in _module_scope(info.tree):
@@ -359,7 +376,8 @@ def _frozen(root: Path, modules: dict[str, _Module]) -> _Frozen:
                 if origin in modules:
                     star_targets.add(origin)
     return _Frozen(
-        package=_package_root(root),
+        package=package,
+        root_module=_module_name(package / "__init__.py", root) if package else "",
         # Las dos preguntas ya se las hace B2 por la misma razón —un módulo al
         # que se llega por un nombre que no existe hasta que corre no se puede
         # renombrar— y aquí el nombre del absorbido desaparece igual.
@@ -438,28 +456,32 @@ def _collides(candidate: _Module, member: _Module) -> str | None:
 class _Contracted:
     """El grafo de imports con cada grupo ya fundido en un solo nodo.
 
-    Fundir dos módulos contrae dos nodos en uno, y eso crea un ciclo en cuanto
-    hubiera un camino entre ellos que pase por fuera del grupo. Se parte de la
-    condensación —cada componente fuertemente conexa es ya un nodo— porque un
-    repositorio puede importarse en círculo y sobrevivir; sin tolerar lo que ya
-    estaba, un solo ciclo de partida rechazaría todas las fusiones y la celda
-    saldría con dosis cero, que se lee igual que una que preserva el repo.
+    Fundir dos módulos contrae dos nodos en uno, y eso cierra un ciclo en cuanto
+    hubiera un camino entre ellos que pase por fuera del grupo. Un ciclo no da
+    una dosis rara: mata el `import`.
+
+    **Aquí no se tolera el ciclo que ya estaba**, y esa es la diferencia con B1.
+    B1 añade una arista a un grafo, y dentro de un enredo que el intérprete ya
+    sobrevive una arista más no cambia nada. B5 no añade una arista: cambia
+    CUÁNDO corre cada línea. Dentro de un ciclo, el orden en que aparecen los
+    nombres es lo único que lo hace sobrevivir —quien vuelve a entrar en el
+    módulo a medias encuentra lo que ya se ejecutó y nada más—, y concatenar
+    mueve las definiciones del absorbido detrás del punto por el que se vuelve a
+    entrar. Medido sobre sqlglot: `sqlglot/dialects/dialect.py` importa
+    `sqlglot/parsers/base.py`, que le importa de vuelta un nombre que la fusión
+    acababa de mudar más abajo, y `import sqlglot` murió con un ImportError de
+    import circular. Como la comprobación es local —¿el nodo fundido se alcanza
+    a sí mismo?— no hace falta ninguna tolerancia para tener dosis: las fusiones
+    que no tocan un ciclo se siguen aceptando.
     """
 
     def __init__(self, modules: dict[str, _Module]) -> None:
-        edges = [
-            (name, target)
-            for name, info in modules.items()
-            for target in sorted(info.graph_deps)
-            if target in modules
-        ]
-        labels = components(edges)
-        self.node = {name: f"c{labels[name]}" if name in labels else name for name in modules}
+        self.node = {name: name for name in modules}
         self.out: dict[str, set[str]] = {}
-        for origin, target in edges:
-            source, destination = self.node[origin], self.node[target]
-            if source != destination:
-                self.out.setdefault(source, set()).add(destination)
+        for name, info in modules.items():
+            for target in sorted(info.graph_deps):
+                if target in modules and target != name:
+                    self.out.setdefault(name, set()).add(target)
 
     def would_cycle(self, group: list[_Module], candidate: _Module) -> bool:
         merged = {self.node[member.name] for member in group} | {self.node[candidate.name]}
