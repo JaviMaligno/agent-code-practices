@@ -347,3 +347,32 @@ def test_nothing_changes_directory(tmp_path: Path):
         origen.rsplit(".", 1)[0] == destino.rsplit(".", 1)[0]
         for origen, destino in resultado.moves.items()
     ), resultado.moves
+
+
+def test_the_same_import_written_under_a_type_checking_guard_is_the_same_import(
+    tmp_path: Path,
+):
+    """Bajo `if TYPE_CHECKING` el import no se ejecuta, así que no es una arista;
+    pero SÍ liga el nombre para quien lee el módulo, y leerlo como «los dos ligan
+    Sequence, que se pisan» rechaza la fusión sin motivo. Medido sobre sqlglot:
+    sus dialectos comparten así `DialectType`, `Dialect` y `exp`."""
+    cabecera = (
+        "from __future__ import annotations\n"
+        "\n"
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from collections.abc import Sequence\n"
+    )
+    write(
+        tmp_path,
+        alfa=cabecera + "\n\ndef alpha(rows: Sequence[int]) -> int:\n    return len(rows)\n",
+        zeta=cabecera + "\n\ndef beta(rows: Sequence[int]) -> int:\n    return len(rows)\n",
+    )
+
+    resultado = b5_size.apply(tmp_path, target_lines=2000)
+
+    assert resultado.moves == {"pkg.zeta": "pkg.alfa"}, resultado.moves
+    proceso = run(tmp_path, "import pkg.alfa as m; print(m.beta([1, 2]))")
+    assert proceso.returncode == 0, proceso.stderr
+    assert proceso.stdout.strip() == "2"

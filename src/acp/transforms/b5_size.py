@@ -205,11 +205,14 @@ def _read_imports(info: _Module, modules: dict[str, _Module]) -> None:
     symbol_deps: set[str] = set()
     graph_deps: set[str] = set()
     for statement, guarded in _module_scope(info.tree):
-        if guarded:
-            continue
+        # La guarda decide si el import es una ARISTA —bajo `if TYPE_CHECKING` no
+        # se ejecuta nunca—, pero no si liga el nombre: para quien lee el módulo
+        # lo liga igual, y sin anotarlo dos ficheros que comparten el mismo
+        # import de tipos se leen como dos que se pisan. Medido sobre sqlglot:
+        # así comparten `DialectType`, `Dialect` y `exp` sus dialectos.
         if isinstance(statement, ast.Import):
             for alias in statement.names:
-                if alias.name in modules:
+                if alias.name in modules and not guarded:
                     module_deps.add(alias.name)
                     graph_deps.add(alias.name)
                 info.import_text[(alias.asname or alias.name).split(".")[0]] = (
@@ -223,13 +226,15 @@ def _read_imports(info: _Module, modules: dict[str, _Module]) -> None:
         for alias in statement.names:
             if alias.name == "*":
                 info.stars = True
-                if origin in modules:
+                if origin in modules and not guarded:
                     module_deps.add(origin)
                     graph_deps.add(origin)
                 continue
             bound = alias.asname or alias.name
             tail = f" as {alias.asname}" if alias.asname else ""
             info.import_text[bound] = f"from {written} import {alias.name}{tail}"
+            if guarded:
+                continue
             submodule = f"{origin}.{alias.name}"
             if submodule in modules:
                 # `from pkg import util` no trae un símbolo, trae un fichero, y
