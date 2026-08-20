@@ -285,6 +285,14 @@ def validate_task(
     mismo repo pagando una sola instalación y una sola corrida de referencia.
     """
     if session is not None:
+        # La sesión tiene UN árbol dentro. Si el repo que se le pasa no es ese,
+        # lo que se mediría es el árbol de la sesión: un veredicto sobre un
+        # fichero que nadie parcheó, indistinguible de una tarea que no rompe
+        # nada. Es exactamente la clase de fontanería que §5.6 manda no callar.
+        if resolve_locations(repo, None)[0] != session.repo:
+            raise ValueError(
+                f"la sesión abierta es de otro árbol ({session.repo}), no de {repo}"
+            )
         return _validate_in(session, session.repo, task)
     with SuiteSession(
         repo, image=image, timeout=timeout, install_repo=install_repo, prepare=prepare

@@ -13,7 +13,14 @@ import sys
 
 import pytest
 
-from acp.tasks.validate import PER_TEST_ARGS, compare_runs, parse_verbose_outcomes
+from acp.tasks.models import Task
+from acp.tasks.validate import (
+    PER_TEST_ARGS,
+    SuiteSession,
+    compare_runs,
+    parse_verbose_outcomes,
+    validate_task,
+)
 
 
 def test_a_task_is_valid_when_it_breaks_exactly_what_it_should():
@@ -175,3 +182,18 @@ def test_a_repo_that_asks_for_quiet_cannot_silence_the_per_test_result(tmp_path)
     )
 
     assert parse_verbose_outcomes(corrida.stdout) == {"test_x.py::test_a": "passed"}
+
+
+def test_validating_against_a_session_of_another_tree_is_loud(tmp_path):
+    """La sesión es un contenedor con UN árbol dentro. Validar contra ella una
+    tarea de otro clon mediría el árbol de la sesión y llamaría a eso el
+    resultado de la otra tarea: un veredicto sobre un fichero que nadie parcheó,
+    indistinguible de una tarea que no rompe nada."""
+    tarea = Task(
+        task_id="t", repo="a", module="pkg.core", symbol="f", stratum="generic",
+        patch="", fail_to_pass=["x"],
+    )
+    sesion = SuiteSession(tmp_path / "a")
+
+    with pytest.raises(ValueError, match="otro árbol"):
+        validate_task(tmp_path / "b", tarea, session=sesion)
