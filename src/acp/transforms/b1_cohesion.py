@@ -46,9 +46,9 @@ de módulo fuera de la suite y de los `__init__`):
 
 | repo | candidatas | movidas | por qué se pierde el resto |
 |---|---|---|---|
-| python-stdnum | 993 | 33 (3,3%) | 883 se nombran como atributo o dentro de un texto |
-| pint | 275 | 76 (28%) | 311 en módulos congelados, 98 cerrarían un ciclo |
-| sqlglot | 839 | 234 (28%) | 1.292 en módulos congelados, 488 cerrarían un ciclo |
+| python-stdnum | 993 | 32 (3,2%) | 883 se nombran como atributo o dentro de un texto |
+| pint | 275 | 55 (20%) | 311 en módulos congelados, 79 cerrarían un ciclo, 40 decoradas |
+| sqlglot | 839 | 226 (27%) | 1.292 en módulos congelados, 481 cerrarían un ciclo, 15 decoradas |
 | holidays | 1.118 | 712 (64%) | 428 en módulos congelados, 394 cerrarían un ciclo |
 
 La tabla bajó al poner cuatro guardas que faltaban —módulos que se suplantan en
@@ -56,6 +56,54 @@ La tabla bajó al poner cuatro guardas que faltaban —módulos que se suplantan
 el repositorio ya tenía, y `__main__.py`—: es dosis pagada a cambio de que el
 repositorio arranque, y cuesta poco (python-stdnum 36→33, sqlglot 272→234, pint
 y holidays casi igual).
+
+Y volvió a bajar por tres guardas más. Las dos primeras tapan lo contrario que
+las cuatro anteriores, y es peor: aquellas eran repositorios que dejaban de
+arrancar, o sea fallos que se ven; estas dos son **el programa cambia y todo
+sigue verde** (§11). La tercera salió de ponerlas: al cambiar el reparto, pint
+dejó de arrancar por un defecto que ya estaba y que ninguna corrida había
+tocado.
+
+- **Los dunders del módulo, que el guarda decía tapar y no tapaba.**
+  `_MODULE_DUNDERS` está aquí desde el principio, pero cinco de sus nueve
+  nombres —`__name__`, `__doc__`, `__package__`, `__spec__`, `__loader__`—
+  salen en `dir(builtins)`, así que la resta de builtins de `_needs_of` se los
+  comía antes de que el guarda pudiera verlos y solo protegía a `__file__`,
+  `__path__`, `__all__` y `__builtins__`. Medido: una definición que devuelve
+  `__name__` se mudaba y pasaba a decir el nombre del módulo destino, sin error
+  de ninguna clase. Cuesta UNA definición en python-stdnum (33→32:
+  `_get_resource_stream`, que se iba de `stdnum.numdb` con `__name__` y
+  `__package__` dentro) y ninguna en los otros tres.
+- **Las definiciones que decora algo de su propio módulo.** Un decorador corre
+  al importar el fichero DONDE ESTÁ ESCRITA la definición y la recibe entera; si
+  la apunta en una tabla —`@implements` en pint, `@register`, `@trait` en
+  sqlglot— mudarla manda esa anotación a un fichero que puede no importarse
+  nunca. Reproducido en fixture: el registro se quedó vacío, la suite siguió
+  verde y el programa era otro. Saber si un decorador registra o solo envuelve
+  exige ejecutarlo, así que la señal es la única legible —que el nombre raíz del
+  decorador lo ligue el módulo, o sea que sea código del repositorio o de una
+  dependencia suya y no un builtin— y se lleva por delante también envoltorios
+  puros como `@dataclass` o `@functools.lru_cache`. La dosis que cuesta está
+  medida: pint 76→55 (de 28% a 20%, 40 definiciones, 22 de ellas los
+  `@implements` de `pint.facets.numpy`), sqlglot 234→226, python-stdnum y
+  holidays igual. En pint el peligro era latente y no medido —la cadena de
+  `pint/facets/numpy/__init__.py` importa esos tres módulos, así que los 92
+  ufuncs seguían registrados—, y se paga igual: distinguir el caso latente del
+  que rompe también exige ejecutar el programa.
+- **Los imports que viven dentro de un `try` o de un `if`.** Al destino se le
+  copia el import que la definición necesitaba, y copiar uno de esos lo vuelve
+  obligatorio: `pint/facets/numpy/quantity.py` liga `UFloat` en un
+  `try: from uncertainties import UFloat / except ImportError:` —uncertainties es
+  un extra opcional— y la definición mudada se llevó el import desnudo, así que
+  `import pint` empezó a morir con `ModuleNotFoundError` para quien no tuviera el
+  extra: 2.024 tests a cero. Traerlo del origen tampoco vale —en ese `except`
+  pint no vuelve a ligar ese nombre— y escribir la guarda buena exigiría copiar
+  la rama de repuesto, o sea entender qué hace. Se excluye, y sale gratis: los
+  cuatro finalistas mueven exactamente el mismo número de definiciones con este
+  guarda que sin él. Es la misma familia que mira `_external_requirements` desde
+  el otro lado, y el defecto llevaba ahí desde el principio: no lo destapó una
+  corrida sino un reparto distinto, que es lo que hay que recordar antes de leer
+  una celda verde como una prueba de que no queda nada de esto.
 
 **DÓNDE ESTÁ VERIFICADA Y DÓNDE NO** (lo segundo importa más):
 
@@ -219,6 +267,10 @@ class _ModuleInfo:
     tree: ast.Module
     bindings: dict[str, str] = field(default_factory=dict)
     guarded: frozenset[str] = frozenset()
+    # Nombres que el módulo liga con un import que NO está en su primer nivel:
+    # dentro de un `try/except ImportError` o de un `if`. Existen a veces, y con
+    # un valor distinto en la otra rama.
+    conditional: frozenset[str] = frozenset()
     stars: tuple[str, ...] = ()
     # Los módulos DEL REPO de los que este hace `import *`, ya en absoluto. Un
     # `import *` es una dependencia de import tan dura como la que más, y
@@ -265,6 +317,7 @@ def _read_modules(root: Path, package: Path) -> dict[str, _ModuleInfo]:
             tree=tree,
             bindings=module_bindings(tree),
             guarded=_type_checking_bindings(tree),
+            conditional=_conditional_imports(tree),
             stars=tuple(_star_statements(tree)),
             imports=_import_statements(tree),
             is_init=path.name == "__init__.py",
@@ -315,6 +368,46 @@ def _type_checking_bindings(tree: ast.Module) -> frozenset[str]:
             block = ast.Module(body=statement.body, type_ignores=[])
             found.update(module_bindings(block))
     return frozenset(found)
+
+
+def _conditional_imports(tree: ast.Module) -> frozenset[str]:
+    """Nombres que solo trae un import metido dentro de un `try` o de un `if`.
+
+    Copiar ese import al destino desnudo es cambiar lo que el destino exige.
+    `pint/facets/numpy/quantity.py` liga `UFloat` dentro de un
+    `try: from uncertainties import UFloat / except ImportError:` —uncertainties
+    es un extra opcional de pint— y usarlo solo detrás de `HAS_UNCERTAINTIES`.
+    Una definición suya mudada se llevó el import sin la red, y `import pint`
+    pasó a morir con `ModuleNotFoundError` para cualquiera que no tuviera el
+    extra: la suite entera de 2.024 tests a cero.
+
+    Importarlo del origen tampoco vale, y por eso esto excluye en vez de
+    reescribir: en ese mismo `except` pint NO vuelve a ligar `UFloat` —liga
+    `Ufloat`, con la mayúscula cambiada—, así que `from ...quantity import
+    UFloat` fallaría igual sin el extra. Escribir la guarda buena exige copiar
+    también la rama de repuesto, o sea entender qué hace, y eso ya no es mover.
+
+    Es la misma familia que `_external_requirements` mira desde el otro lado
+    —qué exige el fichero que recibe— y la que ese docstring deja fuera a
+    propósito: un import dentro de un `try` es justo el que el módulo ya sabe
+    que puede faltar.
+
+    Un nombre que además se importa en el primer nivel no cuenta: ahí el import
+    existe siempre y copiarlo es fiel. Los de `if TYPE_CHECKING` tampoco, que
+    tienen su propio camino y salen al destino con la guarda puesta.
+    """
+    plain: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            plain.update(module_bindings(ast.Module(body=[statement], type_ignores=[])))
+    nested: set[str] = set()
+    top = {id(statement) for statement in tree.body}
+    for statement, guarded in _module_scope(tree):
+        if guarded or id(statement) in top:
+            continue
+        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            nested.update(module_bindings(ast.Module(body=[statement], type_ignores=[])))
+    return frozenset(nested - plain)
 
 
 def _is_type_checking(test: ast.expr) -> bool:
@@ -781,7 +874,14 @@ def _needs_of(node: ast.AST, info: _ModuleInfo) -> tuple[list[_Need], bool, bool
     # como builtin hacía que una referencia a `format` se resolviera en silencio
     # contra el de Python —sin NameError, devolviendo otra cosa— y así salieron
     # 43 doctests en rojo que ningún fixture podía enseñar.
-    shadowed = _BUILTINS - set(info.bindings)
+    # A los builtins hay que quitarles antes los dunders del módulo, porque
+    # `dir(builtins)` contiene cinco de los nueve —`__name__`, `__doc__`,
+    # `__package__`, `__spec__`, `__loader__`—: sin esta resta se los comía la
+    # línea de abajo y el guarda de `_MODULE_DUNDERS` no llegaba a verlos nunca,
+    # solo protegía a `__file__`, `__path__`, `__all__` y `__builtins__`. Y los
+    # cinco que se colaban son justo los que cambian de valor al mudar la
+    # definición: la que devuelve `__name__` pasaba a decir el módulo destino.
+    shadowed = (_BUILTINS - _MODULE_DUNDERS) - set(info.bindings)
     wanted = free_names(node) - shadowed - {own}
     if DOCTEST_PROMPT in info.source:
         # `ast.get_source_segment` vuelve a partir el fichero entero en líneas
@@ -806,6 +906,12 @@ def _needs_of(node: ast.AST, info: _ModuleInfo) -> tuple[list[_Need], bool, bool
                 stars = True
             else:
                 unresolved = True
+            continue
+        if kind == "import" and name in info.conditional:
+            # El import existe a veces. Copiarlo al destino lo vuelve
+            # obligatorio, y traerlo del origen tampoco conserva la rama de
+            # repuesto: esta definición no se mueve.
+            unresolved = True
             continue
         needs.append(
             _Need(
@@ -946,7 +1052,48 @@ def _why_not(definition: _Definition, info: _ModuleInfo, mentioned: _Untouchable
         return "nombrada como atributo, en un texto o en un doctest"
     if _declares_global(definition, info):
         return "usa global"
+    if _decorated_by_its_module(definition, info):
+        return "la decora algo del módulo"
     return None
+
+
+def _decorated_by_its_module(definition: _Definition, info: _ModuleInfo) -> bool:
+    """Si algo del espacio de nombres del módulo recibe la definición al importar.
+
+    Un decorador no es una llamada más: corre cuando se importa el fichero DONDE
+    ESTÁ ESCRITA la definición, y recibe la definición entera. Si lo único que
+    hace es envolverla, mudarla da igual; si la APUNTA en una tabla —`@register`,
+    `@implements`, `@dialect`— la anotación se muda con ella, y el fichero destino
+    puede no importarse nunca. Medido en laboratorio: `@register('double')` viajó
+    a un módulo que nadie carga, el registro se quedó vacío y no falló nada. Ese
+    es el peor modo de fallo posible aquí, porque no se ve: sin ImportError, sin
+    NameError, la suite verde y el programa cambiado (§11).
+
+    Cuál de las dos cosas hace un decorador no se sabe sin ejecutarlo, así que la
+    señal es la que se puede leer: que el nombre raíz del decorador lo ligue el
+    módulo —lo defina o lo importe—, o sea que sea código del repositorio o de
+    una dependencia suya y no un builtin: a `@property` o `@staticmethod` no los
+    liga el módulo, así que lo que decoran sigue entrando en el reparto.
+
+    Es deliberadamente de más: un envoltorio puro se queda quieto sin necesidad.
+    Ese es el precio declarado, y es dosis; lo otro sería un repositorio en verde
+    que hace otra cosa, que no se puede medir.
+    """
+    for node in info.tree.body:
+        if getattr(node, "name", None) != definition.name:
+            continue
+        return any(
+            _decorator_root(decorator) in info.bindings
+            for decorator in getattr(node, "decorator_list", [])
+        )
+    return False
+
+
+def _decorator_root(node: ast.expr) -> str:
+    """El nombre por el que empieza un decorador: `a.b(c)` -> `a`."""
+    while isinstance(node, (ast.Call, ast.Attribute)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return node.id if isinstance(node, ast.Name) else ""
 
 
 def _declares_global(definition: _Definition, info: _ModuleInfo) -> bool:

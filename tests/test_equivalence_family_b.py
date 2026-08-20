@@ -90,9 +90,13 @@ class Cell:
 # describiendo lo que hay, y una copia instalada es el modo más parecido a lo
 # que verá el agente. Medido: B1 solo escribe dentro del paquete raíz —51 rutas
 # en python-stdnum, 50 en pint—, ni `pyproject.toml` ni `setup.py` cambian.
-# La celda de python-stdnum mide poco y hay que saberlo al leerla: 33 de 993
-# definiciones (3,3%), porque el resto se nombra por atributo o dentro de un
-# texto; la de pint mueve 76 de 275 (28%). Las dos producen el mismo árbol byte
+# La celda de python-stdnum mide poco y hay que saberlo al leerla: 32 de 993
+# definiciones (3,2%), porque el resto se nombra por atributo o dentro de un
+# texto; la de pint mueve 55 de 275 (20%). Las dos bajaron —eran 33 y 76— al
+# sacar del reparto lo que lee `__name__`, lo que decora algo de su módulo y lo
+# que necesita un import metido en un `try`, y las dos se volvieron a correr
+# enteras con ese árbol nuevo: es lo que exige cambiar la dosis de una celda ya
+# verificada, porque el árbol que se verificó ya no es el que produce el código. Las dos producen el mismo árbol byte
 # a byte al repetirlas, que es lo que exige §5.4.4 y aquí está comprobado sobre
 # el repositorio real y no solo sobre un fixture.
 #

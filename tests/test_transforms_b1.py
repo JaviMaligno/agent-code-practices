@@ -537,3 +537,190 @@ def test_the_boot_script_of_a_package_neither_gives_nor_receives(tmp_path: Path)
         cwd=tmp_path, capture_output=True, text=True,
     )
     assert proceso.returncode == 0, proceso.stderr
+
+
+def test_a_definition_that_reads_the_module_name_stays_where_it_is(tmp_path: Path):
+    """El guarda de dunders estaba muerto justo para los que más duelen.
+
+    `_MODULE_DUNDERS` sale de `dir(builtins)` para cinco de sus nueve nombres
+    —`__name__`, `__doc__`, `__package__`, `__spec__`, `__loader__`—, así que la
+    resta de builtins de `_needs_of` se los comía ANTES de que el guarda pudiera
+    verlos y solo llegaban a él `__all__`, `__builtins__`, `__file__` y
+    `__path__`. Resultado: una definición que lee `__name__` se mudaba y pasaba
+    a decir el nombre del módulo destino. No hay error de ninguna clase; hay
+    otro valor, que es el modo de fallo que este experimento no puede permitirse
+    (§11). Es exactamente lo que el comentario de `_MODULE_DUNDERS` dice evitar.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "naming.py").write_text(
+        "def who():\n"
+        "    return __name__\n"
+        "\n"
+        "\n"
+        "def submodule(x):\n"
+        '    return f"{__name__}.{x}"\n'
+        "\n"
+        "\n"
+        "def plain(x):\n"
+        "    return x + 1\n",
+        encoding="utf-8",
+    )
+    (pkg / "spare.py").write_text(
+        "def other():\n    return 0\n\n\ndef another():\n    return 1\n", encoding="utf-8"
+    )
+
+    resultado = b1_cohesion.apply(tmp_path, seed=1)
+
+    assert resultado.symbol_moves, "no movió nada: el test no distingue nada"
+    assert "pkg.naming.who" not in resultado.symbol_moves, resultado.symbol_moves
+    assert "pkg.naming.submodule" not in resultado.symbol_moves, resultado.symbol_moves
+    proceso = run(tmp_path, "import pkg.naming; print(pkg.naming.who(), pkg.naming.submodule('sub'))")
+    assert proceso.returncode == 0, proceso.stderr
+    assert proceso.stdout.split() == ["pkg.naming", "pkg.naming.sub"]
+
+
+def test_a_definition_registered_by_its_decorator_stays_where_it_is(tmp_path: Path):
+    """El modo de fallo más peligroso de la familia: el registro se vacía y todo
+    sigue verde.
+
+    Un decorador del propio módulo no envuelve nada, APUNTA la definición en una
+    tabla, y lo hace al importar el fichero donde está escrita. Mudarla manda esa
+    anotación a otro módulo, que puede no importarse nunca: aquí `@register` viajó
+    a un fichero que nadie carga y `PLUGINS` se quedó vacío. No hay ImportError ni
+    NameError —compila, importa y colecta igual— y el programa es otro. Como no
+    se puede saber sin ejecutar si un decorador registra o solo envuelve, la
+    salida es la del resto del fichero: se saca del reparto lo que no se puede
+    mover con seguridad y se declara la dosis perdida.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "plugins.py").write_text(
+        "PLUGINS = {}\n"
+        "\n"
+        "\n"
+        "def register(name):\n"
+        "    def wrap(fn):\n"
+        "        PLUGINS[name] = fn\n"
+        "        return fn\n"
+        "    return wrap\n"
+        "\n"
+        "\n"
+        "@register('double')\n"
+        "def double(x):\n"
+        "    return x * 2\n"
+        "\n"
+        "\n"
+        "@register('triple')\n"
+        "def triple(x):\n"
+        "    return x * 3\n",
+        encoding="utf-8",
+    )
+    (pkg / "reader.py").write_text(
+        "def read(path):\n    return path\n\n\ndef write(path):\n    return path\n",
+        encoding="utf-8",
+    )
+
+    resultado = b1_cohesion.apply(tmp_path, seed=1)
+
+    assert resultado.symbol_moves, "no movió nada: el test no distingue nada"
+    assert "pkg.plugins.double" not in resultado.symbol_moves, resultado.symbol_moves
+    assert "pkg.plugins.triple" not in resultado.symbol_moves, resultado.symbol_moves
+    proceso = run(tmp_path, "import pkg.plugins; print(sorted(pkg.plugins.PLUGINS))")
+    assert proceso.returncode == 0, proceso.stderr
+    assert proceso.stdout.strip() == "['double', 'triple']"
+
+
+def test_the_decorator_counts_even_when_it_comes_from_another_module(tmp_path: Path):
+    """El caso normal en un repo de verdad: el decorador que registra no se
+    define donde se usa, se importa —`@implements(...)` de pint vive en
+    `pint.facets.numpy.numpy_func` y decora definiciones de tres módulos—. Lo que
+    hace peligrosa la mudanza no es dónde está escrito el decorador sino que la
+    anotación ocurre al importar el fichero de la DEFINICIÓN, así que la señal
+    tiene que mirar lo que el módulo liga, importes incluidos."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "registro.py").write_text(
+        "TABLA = {}\n"
+        "\n"
+        "\n"
+        "def apunta(fn):\n"
+        "    TABLA[fn.__name__] = fn\n"
+        "    return fn\n",
+        encoding="utf-8",
+    )
+    (pkg / "usa.py").write_text(
+        "from pkg.registro import apunta\n"
+        "\n"
+        "\n"
+        "@apunta\n"
+        "def suma(a, b):\n"
+        "    return a + b\n"
+        "\n"
+        "\n"
+        "def resta(a, b):\n"
+        "    return a - b\n",
+        encoding="utf-8",
+    )
+    (pkg / "otro.py").write_text(
+        "def alfa():\n    return 1\n\n\ndef beta():\n    return 2\n", encoding="utf-8"
+    )
+
+    # La semilla no es de adorno: con esta, y solo con esta de las siete
+    # primeras, el reparto sin guarda se llevaba `suma` a `pkg.otro`.
+    resultado = b1_cohesion.apply(tmp_path, seed=4)
+
+    assert resultado.symbol_moves, "no movió nada: el test no distingue nada"
+    assert "pkg.usa.suma" not in resultado.symbol_moves, resultado.symbol_moves
+    proceso = run(tmp_path, "import pkg.usa, pkg.registro; print(sorted(pkg.registro.TABLA))")
+    assert proceso.returncode == 0, proceso.stderr
+    assert proceso.stdout.strip() == "['suma']"
+
+
+def test_an_import_that_lives_inside_a_try_does_not_travel(tmp_path: Path):
+    """Lo que dejó la suite de pint en cero, y ningún fixture enseñaba.
+
+    `pint/facets/numpy/quantity.py` liga `UFloat` dentro de un `try/except
+    ImportError` —uncertainties es un extra opcional— y lo usa solo detrás de
+    `HAS_UNCERTAINTIES`. B1 mudó una definición suya copiando el import al
+    destino DESNUDO, y ahí ya no es opcional: `import pint` pasó a morir con
+    `ModuleNotFoundError` para quien no tuviera el extra, o sea 2.024 tests a
+    cero. Traerlo del origen tampoco arregla nada —en el `except`, pint no
+    vuelve a ligar ese nombre—, así que la definición se queda donde está.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "opcional.py").write_text(
+        "try:\n"
+        "    from paquete_que_no_existe import COSA\n"
+        "\n"
+        "    TIENE = True\n"
+        "except ImportError:\n"
+        "    TIENE = False\n"
+        "\n"
+        "\n"
+        "def usa(valor):\n"
+        "    if TIENE:\n"
+        "        return COSA\n"
+        "    return valor\n"
+        "\n"
+        "\n"
+        "def simple(valor):\n"
+        "    return valor\n",
+        encoding="utf-8",
+    )
+    (pkg / "otro.py").write_text(
+        "def alfa():\n    return 1\n\n\ndef beta():\n    return 2\n", encoding="utf-8"
+    )
+
+    resultado = b1_cohesion.apply(tmp_path, seed=1)
+
+    assert resultado.symbol_moves, "no movió nada: el test no distingue nada"
+    assert "pkg.opcional.usa" not in resultado.symbol_moves, resultado.symbol_moves
+    proceso = run(tmp_path, "import pkg.opcional, pkg.otro; print('arranca')")
+    assert proceso.returncode == 0, proceso.stderr
+    assert proceso.stdout.strip() == "arranca"
