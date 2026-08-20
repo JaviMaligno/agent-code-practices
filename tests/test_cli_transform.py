@@ -411,3 +411,99 @@ def test_the_manifest_keeps_a_symbol_that_travelled_without_its_module(
     manifest = json.loads(manifest_path_for(destination).read_text(encoding="utf-8"))
     assert manifest["symbols"]["pkg.nif.compact"]["path"] == "pkg/otro.py"
     assert manifest["symbols"]["pkg.nif.validate"]["path"] == "pkg/nif.py"
+
+
+def build_curve_repo(root: Path, modules: int = 12, lines: int = 1) -> Path:
+    """Un paquete de hermanos fundibles, con el tamaño de módulo como parámetro:
+    es lo único que decide cuántos puntos tiene la curva de B5 en un árbol."""
+    pkg = root / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    for index in range(modules):
+        cuerpo = "\n".join(f"    paso{n} = {n}" for n in range(lines))
+        (pkg / f"m{index}.py").write_text(
+            f"def f{index}(value):\n{cuerpo}\n    return value\n", encoding="utf-8"
+        )
+    return root
+
+
+def test_a_curve_point_this_repo_does_not_have_is_refused(tmp_path: Path):
+    """El punto de 10.000 de pint no existe: produce el mismo árbol que el de
+    2.000, byte a byte. Quien lo pidiera gastaría dos suites en contenedor para
+    medir dos veces la misma condición, y la curva de §6.3 saldría con un cuarto
+    punto que en realidad es el tercero repetido. La corrida no falla sola: sin
+    esta guarda termina en verde y el manifiesto dice `B5-10000`."""
+    source = build_curve_repo(tmp_path / "repo")
+
+    try:
+        transform_repo(source, ["B5-10000"], tmp_path / "work")
+    except ValueError as error:
+        assert "B5-10000" in str(error) and "B5-500" in str(error), error
+    else:
+        raise AssertionError("debería haber rechazado un punto que no existe")
+
+    # Y no deja un árbol a medio escribir con nombre de condición: quien recoja
+    # el directorio de la campaña no puede encontrarse una celda fantasma.
+    assert not (tmp_path / "work").exists()
+
+
+def test_a_curve_point_that_would_not_change_anything_is_refused(tmp_path: Path):
+    """La otra forma de no existir, la de python-stdnum y holidays: los tres
+    techos dan dosis cero y el árbol es una copia byte a byte del original. La
+    celda se leería como «B5 conserva el repositorio» cuando lo que hubo fue un
+    `cp -r`."""
+    source = tmp_path / "repo"
+    pkg = source / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    for index in range(6):
+        (pkg / f"m{index}.py").write_text(
+            f"def validate(value):\n    return value + {index}\n", encoding="utf-8"
+        )
+
+    try:
+        transform_repo(source, ["B5-500"], tmp_path / "work")
+    except ValueError as error:
+        assert "original" in str(error), error
+    else:
+        raise AssertionError("debería haber rechazado una curva que no existe")
+
+
+def test_the_points_the_repo_does_have_are_applied(tmp_path: Path):
+    """La guarda no puede comerse la curva entera: donde los techos sí producen
+    árboles distintos, los tres puntos siguen siendo condiciones pedibles."""
+    for ceiling in (500, 2000, 10000):
+        source = build_curve_repo(tmp_path / f"repo{ceiling}", lines=200)
+        destination = transform_repo(
+            source, [f"B5-{ceiling}"], tmp_path / f"work{ceiling}"
+        )
+        assert len(list((destination / "pkg").glob("*.py"))) < 13
+
+
+def test_a_duplicate_point_can_still_be_written_if_it_is_asked_for_on_purpose(
+    tmp_path: Path,
+):
+    """Comprobar que 10.000 y 2.000 dan el mismo árbol exige escribir los dos, y
+    ese test es el que sostiene la afirmación. La excusa existe solo en Python y
+    hay que escribirla: desde la línea de comandos —que es por donde corre la
+    campaña— no hay forma de pedir un punto que no existe."""
+    source = build_curve_repo(tmp_path / "repo")
+
+    destination = transform_repo(
+        source, ["B5-10000"], tmp_path / "work", allow_duplicate_point=True
+    )
+
+    assert (destination / "pkg" / "m0.py").exists()
+
+
+def test_the_command_line_has_no_way_to_ask_for_a_point_that_does_not_exist(
+    tmp_path: Path,
+):
+    source = build_curve_repo(tmp_path / "repo")
+
+    try:
+        main(["transform", str(source), "--apply", "B5-10000", "--out", str(tmp_path / "work")])
+    except ValueError as error:
+        assert "B5-500" in str(error), error
+    else:
+        raise AssertionError("debería haber rechazado un punto que no existe")

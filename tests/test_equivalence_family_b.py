@@ -120,6 +120,15 @@ class Cell:
 # `test_the_size_curve_saturates_before_its_last_point`—, así que gastarle una
 # celda sería comparar un árbol ya verificado consigo mismo.
 #
+# Cuántos puntos tiene la curva en cada finalista, medido con `curve_points`
+# sobre los clones y contando el original: sqlglot 4 (0/33/55/58 absorbidos),
+# pint 3 (0/12/20, y el techo de 10.000 repite el de 2.000), python-stdnum 1 y
+# holidays 1 —dosis cero en los tres techos—. O sea que el eje de tamaño de §6.3
+# solo se puede leer con cuatro puntos en sqlglot, con tres en pint, y en los
+# otros dos no se mide: no es que el tamaño no les afecte, es que no hubo
+# transformación. Pedir un punto que el repositorio no tiene está rechazado en
+# `transform_repo`, así que esta cuenta no se puede saltar por descuido.
+#
 # sqlglot es donde B5 tiene la dosis mayor (55 módulos absorbidos, 184→129
 # ficheros) y quedó verificado a mano —1.231 tests iguales antes y después— pero
 # fuera de la matriz: son diez minutos de contenedor más en cada corrida, y lo
@@ -388,8 +397,17 @@ def test_the_size_curve_saturates_before_its_last_point(tmp_path: Path):
     """
     clone = clone_repo(REPOS["pint"], tmp_path / "repo")
 
+    # `allow_duplicate_point` porque comprobar que dos techos dan el mismo árbol
+    # exige escribir los dos, y `transform_repo` ya rechaza por su cuenta el
+    # punto que no existe: este es el test que sostiene esa guarda, así que es
+    # el único sitio donde la excusa está justificada.
     trees = {
-        ceiling: _files(transform_repo(clone, [f"B5-{ceiling}"], tmp_path / f"c{ceiling}"))
+        ceiling: _files(
+            transform_repo(
+                clone, [f"B5-{ceiling}"], tmp_path / f"c{ceiling}",
+                allow_duplicate_point=True,
+            )
+        )
         for ceiling in b5_size.CURVE
     }
 
@@ -401,6 +419,14 @@ def test_the_size_curve_saturates_before_its_last_point(tmp_path: Path):
     # día 10.000 moviera algo más que 2.000, ese punto pasaría a ser un árbol sin
     # verificar —no tiene celda— y hay que enterarse aquí.
     assert trees[10000] == trees[2000]
+
+    # Y que el repositorio lo declara sin escribir nada: es lo que impide gastar
+    # la celda. Tres puntos, no cuatro.
+    points = b5_size.curve_points(clone)
+    assert [point.transform for point in points if point.distinct] == [
+        "original", "B5-500", "B5-2000",
+    ]
+    assert points[-1].same_tree_as == "B5-2000"
 
 
 def test_the_size_curve_does_not_saturate_on_a_repository_of_bigger_modules(
@@ -421,11 +447,17 @@ def test_the_size_curve_does_not_saturate_on_a_repository_of_bigger_modules(
     """
     clone = clone_repo(REPOS["sqlglot"], tmp_path / "repo")
 
-    absorbed = [
-        b5_size.plan(clone, target_lines=ceiling).absorbed for ceiling in b5_size.CURVE
-    ]
+    points = b5_size.curve_points(clone)
 
-    assert len(set(absorbed)) == len(absorbed), absorbed
+    # Los cuatro, y por plan de fusiones y no por número de módulos absorbidos:
+    # dos techos podrían absorber la misma cantidad agrupando distinto, y lo que
+    # decide si son la misma condición es el árbol que sale.
+    assert all(point.distinct for point in points), [
+        point.describe() for point in points
+    ]
+    assert [point.absorbed for point in points] == [0, 33, 55, 58], [
+        point.describe() for point in points
+    ]
 
 
 def test_b1_publishes_a_complete_and_true_identity_map_of_a_real_repo(tmp_path: Path):

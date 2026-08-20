@@ -10,7 +10,7 @@ from acp.models import RepoProfile
 from acp.report import comparison_table, render_profile
 from acp.suite import run_suite_in_docker, run_suite_in_venv
 from acp.symbols import build_symbol_map, relocate_symbols
-from acp.transforms import TRANSFORMS
+from acp.transforms import TRANSFORMS, b5_size
 from acp.transforms.base import copy_tree
 
 # Los dos se conservan a propósito (§2 del spec): con contenedor el aislamiento
@@ -34,6 +34,7 @@ def profile_repo(
     run_suite: bool = True,
     runner: str | None = None,
     prepare: str | None = None,
+    install_repo: bool = True,
 ) -> RepoProfile:
     profile = RepoProfile(
         name=name,
@@ -45,7 +46,18 @@ def profile_repo(
     )
     if run_suite:
         run = suite_runner(runner)
-        profile.suite = run(root, prepare=prepare) if prepare else run(root)
+        # `install_repo` viaja SIEMPRE, con `prepare` y sin él: es el único modo
+        # con el que se pueden verificar los árboles de B1, B2 y B5 —el árbol
+        # transformado ya no encaja con lo que declara su pyproject, así que se
+        # instalan sus dependencias y se alcanza el código por ruta (§5.6)— y
+        # dejarlo colgando de la rama de `prepare` lo volvería inalcanzable
+        # justo para los repos que no tienen paso de build. `prepare`, en
+        # cambio, sigue condicionado porque el ejecutor sin contenedor no lo
+        # acepta: pasarlo siempre rompería `--runner venv`.
+        options: dict = {"install_repo": install_repo}
+        if prepare:
+            options["prepare"] = prepare
+        profile.suite = run(root, **options)
     return profile
 
 
@@ -134,11 +146,82 @@ def _reject_manifest_inside_the_tree(destination: Path, manifest: Path) -> None:
         )
 
 
+def _curve_ceiling(transform_id: str) -> int | None:
+    """El techo de líneas que pide una condición, si es un punto de la curva."""
+    if transform_id == "B5":
+        return b5_size.DEFAULT_TARGET_LINES
+    if transform_id.startswith("B5-"):
+        return int(transform_id.split("-", 1)[1])
+    return None
+
+
+def _reject_a_curve_point_this_repo_does_not_have(
+    source: Path, transform_ids: list[str]
+) -> None:
+    """B5 no es una celda sino una curva, y sus puntos no existen en abstracto.
+
+    §6.3 supone cuatro —el original y tres techos— y el número real es del
+    sustrato: en pint son tres (2.000 y 10.000 producen el mismo árbol byte a
+    byte) y en python-stdnum y en holidays es uno (los tres techos dan dosis
+    cero, y el árbol es una copia). Pedir uno que no existe no falla solo: la
+    corrida termina en verde, la suite pasa, el manifiesto dice `B5-10000` y la
+    curva sale publicada con un punto que es otro repetido.
+
+    Por eso se comprueba ANTES de copiar el árbol: una celda fantasma escrita a
+    medias en el directorio de la campaña es peor que un error. Cuesta un `plan`
+    por cada techo hasta el pedido —uno para B5-500, tres para B5-10000, y en
+    sqlglot, el repositorio más grande de la matriz, alrededor de un minuto cada
+    uno—; al lado de las dos suites en contenedor que gastaría la celda repetida
+    no se nota.
+
+    Se mira el árbol de ORIGEN, y eso deja algo fuera y declarado: si algún día
+    una celda combinara B1 con un punto de la curva, B1 correría antes (§4.2) y
+    el árbol que le llega a B5 no sería este. Hoy las celdas de B5 en la matriz
+    aplican B5 sola, así que la comprobación es exacta para lo que hay.
+    """
+    requested = {
+        transform_id: ceiling
+        for transform_id in transform_ids
+        if (ceiling := _curve_ceiling(transform_id)) is not None
+    }
+    if not requested:
+        return
+
+    top = max(requested.values())
+    ceilings = tuple(sorted({*(c for c in b5_size.CURVE if c <= top), *requested.values()}))
+    points = {point.transform: point for point in b5_size.curve_points(source, ceilings)}
+    curve = ", ".join(point.describe() for point in points.values() if point.distinct)
+
+    for transform_id, ceiling in sorted(requested.items(), key=lambda item: item[1]):
+        point = points[f"B5-{ceiling}"]
+        if point.distinct:
+            continue
+        # Las dos formas de no existir se dicen distintas porque llevan a sitios
+        # distintos: un punto repetido significa gastar la celda en otro techo,
+        # y una dosis cero significa que en este repositorio no hay eje de
+        # tamaño que medir y hay que decirlo en la tabla, no buscar otro techo.
+        if point.same_tree_as == "original":
+            problem = (
+                "no funde nada, así que el árbol sería una copia del original y "
+                "la celda se leería como «B5 conserva el repositorio»"
+            )
+        else:
+            problem = (
+                f"produce el mismo árbol que {point.same_tree_as}, así que la "
+                "celda mediría dos veces la misma condición"
+            )
+        raise ValueError(
+            f"{transform_id} no es un punto de la curva en este repositorio: "
+            f"{problem} (§6.3). Los puntos que este repositorio sí tiene: {curve}"
+        )
+
+
 def transform_repo(
     source: Path,
     transform_ids: list[str],
     destination: Path,
     manifest: Path | None = None,
+    allow_duplicate_point: bool = False,
 ) -> Path:
     """Aplica transformaciones sobre una copia y deja constancia de qué se hizo.
 
@@ -154,6 +237,12 @@ def transform_repo(
 
     manifest_destination = manifest_path_for(destination, manifest)
     _reject_manifest_inside_the_tree(destination, manifest_destination)
+    # La excusa solo existe en Python y hay que escribirla: el test que sostiene
+    # que dos techos dan el mismo árbol tiene que escribir los dos. El CLI no la
+    # expone, así que desde la línea de comandos —por donde corre la campaña— no
+    # hay forma de pedir un punto que no existe.
+    if not allow_duplicate_point:
+        _reject_a_curve_point_this_repo_does_not_have(source, transform_ids)
 
     symbols = build_symbol_map(source)
     root = copy_tree(source, destination)
@@ -211,6 +300,12 @@ def main(argv: list[str] | None = None) -> int:
         help="dónde se ejecuta la suite del candidato",
     )
     profile_parser.add_argument(
+        "--no-install-repo", action="store_true",
+        help="instala las dependencias declaradas pero no el repositorio, y la "
+             "suite alcanza el código por ruta: es el único modo válido para un "
+             "árbol transformado por B1, B2 o B5 (§5.6)",
+    )
+    profile_parser.add_argument(
         "--prepare", default=None,
         help="paso de build propio del repo que su suite necesita, p. ej. generar traducciones",
     )
@@ -247,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "profile":
         profile = profile_repo(
             args.path, name=args.name, run_suite=not args.no_suite, runner=args.runner,
-            prepare=args.prepare,
+            prepare=args.prepare, install_repo=not args.no_install_repo,
         )
         destination = args.out / f"{args.name}.md"
         destination.write_text(render_profile(profile), encoding="utf-8")

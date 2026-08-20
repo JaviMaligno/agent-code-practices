@@ -102,7 +102,10 @@ def test_an_absorbed_symbol_survives_in_the_manifest(tmp_path: Path):
     source = tmp_path / "repo"
     build(source)
 
-    destination = transform_repo(source, ["A2", "B5-2000"], tmp_path / "work")
+    # B5-500 y no B5-2000: en este árbol de módulos de cinco líneas el primer
+    # techo ya funde todo lo fundible, así que 2.000 sería el mismo árbol otra
+    # vez y `transform_repo` lo rechaza —el punto no existe aquí (§6.3)—.
+    destination = transform_repo(source, ["A2", "B5-500"], tmp_path / "work")
 
     manifest = json.loads(manifest_path_for(destination).read_text(encoding="utf-8"))
     assert "pkg.m3.f3" in manifest["symbols"], sorted(manifest["symbols"])
@@ -435,3 +438,115 @@ def test_the_boot_script_of_a_package_is_left_alone(tmp_path: Path):
 
     assert resultado.moves == {"pkg.beta": "pkg.alfa"}, resultado.moves
     assert (tmp_path / "pkg" / "__main__.py").exists()
+
+
+def build_sized(root: Path, modules: int = 12, lines: int = 200) -> None:
+    """Módulos lo bastante grandes para que el techo sea lo que corta.
+
+    Con módulos de cinco líneas los tres techos caben todos y la curva se
+    colapsa en un punto; eso es justo el otro fixture. Aquí cada techo agrupa
+    un número distinto de hermanos, que es la forma que §6.3 supone.
+    """
+    pkg = root / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    for index in range(modules):
+        cuerpo = "\n".join(f"    paso{n} = {n}" for n in range(lines))
+        (pkg / f"m{index}.py").write_text(
+            f"def f{index}(value):\n{cuerpo}\n    return value\n", encoding="utf-8"
+        )
+
+
+def test_the_curve_declares_how_many_distinct_points_it_produces_on_this_repo(
+    tmp_path: Path,
+):
+    """§6.3 supone cuatro puntos y el número real depende del sustrato.
+
+    Medido sobre los finalistas: sqlglot da los cuatro, pint tres —2.000 y
+    10.000 producen el mismo árbol byte a byte— y python-stdnum y holidays uno,
+    el original. Un punto repetido no se ve al mirarlo: la corrida termina bien,
+    la suite pasa y la celda entra en la tabla como si midiera algo.
+    """
+    build(tmp_path, modules=12)
+
+    points = b5_size.curve_points(tmp_path)
+
+    # Con módulos de cinco líneas, el primer techo ya se lo lleva todo: los dos
+    # de arriba no son condiciones nuevas, son el mismo árbol otra vez.
+    assert [point.transform for point in points if point.distinct] == [
+        "original", "B5-500",
+    ]
+    duplicados = {point.transform: point.same_tree_as for point in points if not point.distinct}
+    assert duplicados == {"B5-2000": "B5-500", "B5-10000": "B5-500"}
+
+
+def test_a_repo_where_nothing_can_be_merged_has_no_curve(tmp_path: Path):
+    """La dosis cero de python-stdnum y holidays, en pequeño: todos los módulos
+    ligan el mismo nombre, así que ningún techo funde nada y los tres puntos son
+    el original. Una línea plana ahí no dice «el tamaño no importa», dice que no
+    hubo transformación."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    for index in range(6):
+        (pkg / f"m{index}.py").write_text(
+            f"def validate(value):\n    return value + {index}\n", encoding="utf-8"
+        )
+
+    points = b5_size.curve_points(tmp_path)
+
+    assert [point.transform for point in points if point.distinct] == ["original"]
+    assert all(point.absorbed == 0 for point in points)
+    assert all(point.same_tree_as == "original" for point in points[1:])
+
+
+def test_a_repo_of_bigger_modules_has_the_four_points_the_design_asks_for(
+    tmp_path: Path,
+):
+    """La otra mitad: la saturación es del repositorio, no de B5. Sin esto, la
+    guarda podría estar declarando «no hay curva» en todas partes y los tests
+    de arriba pasarían igual."""
+    build_sized(tmp_path)
+
+    points = b5_size.curve_points(tmp_path)
+
+    assert [point.transform for point in points] == [
+        "original", "B5-500", "B5-2000", "B5-10000",
+    ]
+    assert all(point.distinct for point in points)
+    assert [point.absorbed for point in points] == [0, 6, 10, 11]
+
+
+def test_two_points_with_the_same_plan_write_the_same_tree(tmp_path: Path):
+    """Lo que sostiene que `curve_points` puede decidir sin escribir el árbol:
+    el mismo plan de fusiones produce el mismo fichero byte a byte. Si esto
+    dejara de ser verdad, la guarda estaría rechazando puntos que sí existen."""
+    build(tmp_path / "a", modules=12)
+    build(tmp_path / "b", modules=12)
+
+    b5_size.apply(tmp_path / "a", target_lines=2000)
+    b5_size.apply(tmp_path / "b", target_lines=10000)
+
+    def arbol(root: Path) -> dict[str, str]:
+        return {
+            str(path.relative_to(root)): path.read_text(encoding="utf-8")
+            for path in sorted(root.rglob("*.py"))
+        }
+
+    assert arbol(tmp_path / "a") == arbol(tmp_path / "b")
+
+
+def test_two_points_that_absorb_the_same_number_of_modules_are_still_two_points(
+    tmp_path: Path,
+):
+    """Contar módulos absorbidos no vale para decidir si dos techos son la misma
+    condición: aquí los dos absorben dos y dejan tres ficheros, pero uno hace
+    dos parejas y el otro un trío y un suelto. El árbol que ve el agente es
+    distinto, así que son dos puntos, y lo que lo distingue es el plan de
+    fusiones entero."""
+    build_sized(tmp_path, modules=4)
+
+    points = b5_size.curve_points(tmp_path, ceilings=(500, 700))
+
+    assert [point.absorbed for point in points] == [0, 2, 2]
+    assert all(point.distinct for point in points)

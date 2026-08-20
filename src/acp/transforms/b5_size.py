@@ -44,12 +44,23 @@ y el directorio donde vive. Eso es lo que separa esta curva de B1 y de B2.
 **La dosis, medida sobre los cuatro finalistas.** Candidatos son los módulos que
 pueden participar; absorbidos, los que desaparecen dentro de otro:
 
-| repo | candidatos | absorbidos 500 / 2.000 / 10.000 | qué se queda fuera |
-|---|---|---|---|
-| python-stdnum | 0 de 368 | 0 / 0 / 0 | 251 se alcanzan por nombre construido |
-| holidays | 0 de 658 | 0 / 0 / 0 | 323 se alcanzan por nombre construido |
-| pint | 56 de 110 | 12 / 20 / 20 | 38 son suite, 15 son `__init__` |
-| sqlglot | 88 de 252 | 33 / 55 / 58 | 69 por nombre construido, 60 suite, 12 con `import *` |
+| repo | candidatos | absorbidos 500 / 2.000 / 10.000 | puntos | qué se queda fuera |
+|---|---|---|---|---|
+| python-stdnum | 0 de 368 | 0 / 0 / 0 | **1** | 251 se alcanzan por nombre construido |
+| holidays | 0 de 658 | 0 / 0 / 0 | **1** | 323 se alcanzan por nombre construido |
+| pint | 56 de 110 | 12 / 20 / 20 | **3** | 38 son suite, 15 son `__init__` |
+| sqlglot | 88 de 252 | 33 / 55 / 58 | **4** | 69 por nombre construido, 60 suite, 12 con `import *` |
+
+La columna de puntos es la que hay que leer antes de gastar una celda, y la
+publica `curve_points()` sobre cualquier árbol sin escribir nada: cuenta las
+condiciones DISTINTAS que produce la curva ahí, contando el original. §6.3 supone
+cuatro y solo sqlglot los tiene. En pint el techo de 10.000 produce el mismo
+árbol byte a byte que el de 2.000 —el mismo plan de fusiones, 20 módulos
+absorbidos los dos—, y en python-stdnum y holidays los tres techos son el árbol
+original. Pedir un punto que este repositorio no tiene está rechazado
+(`_reject_a_curve_point_this_repo_does_not_have` del CLI): la corrida no falla
+sola —termina en verde, con el manifiesto diciendo `B5-10000`— y la curva saldría
+publicada con un punto que es otro repetido.
 
 Y el eje que de verdad se mueve, en el punto de 2.000 líneas y sobre los
 ficheros de código (sin la suite, que no se funde):
@@ -78,10 +89,14 @@ Cuatro cosas que hay que saber antes de gastar una celda aquí:
   bastaría: todos sus módulos definen `validate`, `is_valid`, `compact` y
   `format`, así que ninguna pareja suya podría fundirse sin taparse.
 - **La curva satura pronto.** En pint, 2.000 y 10.000 producen el mismo árbol, y
-  en sqlglot casi: con módulos que ya son pequeños, lo que limita deja de ser el
-  techo y pasa a ser la compatibilidad entre hermanos. El cuarto punto de §6.3
-  puede no existir en estos repositorios, y eso hay que decirlo antes de
-  interpretar una curva plana como «el tamaño no importa».
+  en sqlglot casi —entre esos dos techos solo se ganan 3 módulos, 55 contra 58—:
+  con módulos que ya son pequeños, lo que limita deja de ser el techo y pasa a
+  ser la compatibilidad entre hermanos, que no depende de él. El cuarto punto de
+  §6.3 puede no existir en estos repositorios, y eso hay que decirlo antes de
+  interpretar una curva plana como «el tamaño no importa»: entre dos puntos que
+  son el mismo árbol, una línea plana no dice nada del agente, dice que se midió
+  dos veces la misma condición. Y donde la dosis es cero en los tres techos no
+  hay curva ninguna: lo que se compararía es el repositorio consigo mismo.
 - **Verificado en repo real, no solo en fixtures**, con la suite entera antes y
   después: pint 2.024 pasan / 0 fallan en las dos, con 20 módulos absorbidos;
   sqlglot 1.231 / 0 en las dos, con 55. Hizo falta: sqlglot salió sin poder
@@ -549,6 +564,77 @@ class Plan:
 def plan(root: Path, target_lines: int = DEFAULT_TARGET_LINES) -> Plan:
     built = _build(root, target_lines)
     return built[0] if built is not None else Plan()
+
+
+@dataclass(frozen=True)
+class CurvePoint:
+    """Un punto de la curva de §6.3 **sobre un repositorio concreto**.
+
+    Existe porque el número de puntos no es una propiedad del diseño sino del
+    sustrato, y hasta ahora solo se sabía después de escribir los árboles y
+    compararlos a mano. Medido sobre los cuatro finalistas: sqlglot tiene los
+    cuatro puntos (0 / 33 / 55 / 58 módulos absorbidos), pint tres —2.000 y
+    10.000 dan el mismo árbol byte a byte, 20 absorbidos los dos—, y
+    python-stdnum y holidays uno solo, el original, porque su dosis es cero en
+    los tres techos.
+    """
+
+    transform: str
+    ceiling: int | None
+    absorbed: int
+    files_after: int
+    # Qué punto anterior produce este mismo árbol; `None` si es uno nuevo. El
+    # original cuenta como punto: un techo con dosis cero apunta a él, que es
+    # exactamente lo que pasa en python-stdnum y en holidays.
+    same_tree_as: str | None = None
+
+    @property
+    def distinct(self) -> bool:
+        return self.same_tree_as is None
+
+    def describe(self) -> str:
+        if self.ceiling is None:
+            return f"original ({self.files_after} módulos)"
+        return f"B5-{self.ceiling} ({self.absorbed} absorbidos, {self.files_after} módulos)"
+
+
+def curve_points(root: Path, ceilings: tuple[int, ...] = CURVE) -> list[CurvePoint]:
+    """Cuántas condiciones DISTINTAS produce la curva sobre este árbol.
+
+    Se decide con `plan`, que no escribe nada, y comparando el plan de fusiones
+    en su orden: dos techos con el mismo plan producen el mismo fichero byte a
+    byte —lo verifica `test_two_points_with_the_same_plan_write_the_same_tree`—,
+    así que no hace falta escribir los árboles para saber si son el mismo. Y hay
+    que saberlo antes: escribirlos y compararlos cuesta dos corridas de suite en
+    contenedor, y la que sobra se lee como un punto de la curva.
+
+    Las exclusiones no dependen del techo (`_why_not` no lo mira), así que lo
+    único que puede cambiar entre puntos es qué hermanos entran en cada grupo.
+    """
+    plans = {ceiling: plan(root, target_lines=ceiling) for ceiling in sorted(ceilings)}
+    files_before = next(iter(plans.values())).files_before if plans else 0
+
+    # El original es el primer punto de la curva (§6.3) y el árbol sin tocar:
+    # su plan de fusiones está vacío, así que un techo de dosis cero cae aquí
+    # solo, sin caso especial.
+    seen: dict[tuple, str] = {(): "original"}
+    points = [CurvePoint(transform="original", ceiling=None, absorbed=0, files_after=files_before)]
+    for ceiling, report in plans.items():
+        name = f"B5-{ceiling}"
+        # En su orden y no ordenado: el orden de `moves` es el de los grupos, y
+        # el orden dentro del fichero fundido es parte del árbol resultante.
+        fingerprint = tuple(report.moves.items())
+        points.append(
+            CurvePoint(
+                transform=name,
+                ceiling=ceiling,
+                absorbed=report.absorbed,
+                files_after=report.files_after,
+                same_tree_as=seen.get(fingerprint),
+            )
+        )
+        seen.setdefault(fingerprint, name)
+    return points
 
 
 def _build(root: Path, target_lines: int):
