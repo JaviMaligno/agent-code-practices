@@ -1,0 +1,154 @@
+"""La parte pura de la validación: leer el resultado POR TEST y compararlo.
+
+§3.3 pide que una tarea rompa **un conjunto concreto de tests y no otros**. Eso
+no se puede responder con el resumen de pytest, que solo da totales: dos
+corridas con `1 failed` pueden ser dos fallos distintos. Hace falta el resultado
+por test, y compararlo antes/después.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from acp.tasks.validate import compare_runs, parse_verbose_outcomes
+
+
+def test_a_task_is_valid_when_it_breaks_exactly_what_it_should():
+    report = compare_runs(
+        before={"t_a": "passed", "t_b": "passed", "t_c": "passed"},
+        after={"t_a": "failed", "t_b": "passed", "t_c": "passed"},
+        fail_to_pass=["t_a"],
+    )
+
+    assert report.valid is True
+
+
+def test_a_task_that_breaks_more_than_it_declares_is_not_valid():
+    """Una tarea que tumba media suite no mide si el agente arregló el fallo:
+    mide si sobrevivió al desastre."""
+    report = compare_runs(
+        before={"t_a": "passed", "t_b": "passed"},
+        after={"t_a": "failed", "t_b": "failed"},
+        fail_to_pass=["t_a"],
+    )
+
+    assert report.valid is False
+    assert report.unexpected_failures == ["t_b"]
+
+
+def test_a_task_that_breaks_nothing_is_not_a_task():
+    report = compare_runs(
+        before={"t_a": "passed"},
+        after={"t_a": "passed"},
+        fail_to_pass=["t_a"],
+    )
+
+    assert report.valid is False
+
+
+def test_the_tests_that_already_failed_are_not_held_against_the_task():
+    """Un test roto en el repo original no lo rompió la tarea, y exigir que
+    pase dejaría fuera tareas buenas por un defecto ajeno."""
+    report = compare_runs(
+        before={"t_a": "passed", "t_flaky": "failed"},
+        after={"t_a": "failed", "t_flaky": "failed"},
+        fail_to_pass=["t_a"],
+    )
+
+    assert report.valid is True
+
+
+def test_a_test_that_vanished_after_the_patch_did_not_pass():
+    """Si el parche impide colectar un test, ese test dejó de demostrar nada.
+    Contarlo como 'sigue verde' porque no aparece en rojo es exactamente el modo
+    de fallo que §3.3 quiere evitar: una tarea que rompe la suite sin decirlo."""
+    report = compare_runs(
+        before={"t_a": "passed", "t_b": "passed"},
+        after={"t_a": "failed"},
+        fail_to_pass=["t_a"],
+    )
+
+    assert report.valid is False
+    assert report.unexpected_failures == ["t_b"]
+
+
+def test_an_error_counts_as_broken_just_like_a_failure():
+    """pytest distingue el fallo de la aserción del error al preparar el test.
+    Para la tarea son lo mismo: el test dejó de demostrar que el código está
+    bien."""
+    report = compare_runs(
+        before={"t_a": "passed"},
+        after={"t_a": "error"},
+        fail_to_pass=["t_a"],
+    )
+
+    assert report.valid is True
+
+
+def test_the_report_says_which_tests_actually_broke():
+    """Lo que el generador de la fase 5 necesita cuando su declaración se queda
+    corta: los tests que de verdad se rompieron, para volver a declarar la tarea
+    sin pagar otras dos corridas de suite."""
+    report = compare_runs(
+        before={"t_a": "passed", "t_b": "passed", "t_c": "passed"},
+        after={"t_a": "failed", "t_b": "failed", "t_c": "passed"},
+        fail_to_pass=["t_a"],
+    )
+
+    assert report.observed_failures == ["t_a", "t_b"]
+
+
+VERBOSE = """\
+============================= test session starts ==============================
+collecting ... collected 4 items
+
+stdnum/mx/curp.py::stdnum.mx.curp PASSED                                 [ 25%]
+stdnum/mx/rfc.py::stdnum.mx.rfc FAILED                                   [ 50%]
+tests/test_iban.doctest::test_iban.doctest SKIPPED (sin red)             [ 75%]
+tests/test_x.py::test_con espacios[un valor] PASSED                      [100%]
+
+=========================== short test summary info ============================
+FAILED stdnum/mx/rfc.py::stdnum.mx.rfc
+========================= 1 failed, 2 passed, 1 skipped ========================
+"""
+
+
+def test_the_outcome_of_every_test_is_read_from_the_verbose_run():
+    assert parse_verbose_outcomes(VERBOSE) == {
+        "stdnum/mx/curp.py::stdnum.mx.curp": "passed",
+        "stdnum/mx/rfc.py::stdnum.mx.rfc": "failed",
+        "tests/test_iban.doctest::test_iban.doctest": "skipped",
+        "tests/test_x.py::test_con espacios[un valor]": "passed",
+    }
+
+
+def test_the_summary_lines_are_not_mistaken_for_results():
+    """`short test summary info` repite cada fallo con el veredicto DELANTE. Si
+    esas líneas entraran, un nodeid quedaría partido y el conjunto medido no
+    sería el que corrió."""
+    outcomes = parse_verbose_outcomes(VERBOSE)
+
+    assert all(not key.startswith("FAILED") for key in outcomes)
+    assert len(outcomes) == 4
+
+
+def test_the_progress_percentage_is_optional():
+    """Sin terminal pytest no siempre cierra la línea con el porcentaje, y con
+    xdist lo pone DELANTE. Colgar la lectura del porcentaje ataría el circuito
+    de medida a un detalle de presentación."""
+    assert parse_verbose_outcomes("a.py::t PASSED\n") == {"a.py::t": "passed"}
+
+
+def test_xdist_puts_the_verdict_first_and_the_nodeid_last():
+    """Alguno de los finalistas lleva `-n auto` en sus addopts, y ahí la línea
+    es `[gw0] [ 50%] PASSED nodeid`. Leerla mal no daría un error: daría un
+    conjunto vacío, que se leería como 'la tarea no rompe nada'."""
+    salida = "[gw0] [ 50%] FAILED stdnum/mx/rfc.py::stdnum.mx.rfc \n"
+
+    assert parse_verbose_outcomes(salida) == {"stdnum/mx/rfc.py::stdnum.mx.rfc": "failed"}
+
+
+def test_a_line_that_is_not_a_result_is_not_read_as_one():
+    ruido = "platform darwin -- Python 3.12.8\nrootdir: /repo\nplugins: cov-7.1.0\n"
+
+    assert parse_verbose_outcomes(ruido) == {}
