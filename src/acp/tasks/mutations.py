@@ -235,6 +235,13 @@ class _SwapArgs(_Scoped):
 
 def _apply(mutation: _Scoped, module: cst.Module) -> cst.Module | None:
     mutated = module.visit(mutation)
+    # Un símbolo que no está es un fallo del generador, no una forma que no
+    # aplica. Devolver `None` en los dos casos los haría indistinguibles: el
+    # generador leería un nombre mal escrito como "esta función no tiene
+    # comparaciones", buscaría otra y nadie se enteraría de que la tarea que
+    # quería fabricar nunca se intentó.
+    if not mutation.found:
+        raise LookupError(f"{'.'.join(mutation.target)!r} no está definido en el fuente")
     return mutated if mutation.applied else None
 
 
@@ -243,7 +250,16 @@ def _invert_condition(module: cst.Module, symbol: str) -> cst.Module | None:
 
 
 def _off_by_one(module: cst.Module, symbol: str) -> cst.Module | None:
-    return _apply(_OffByOne(symbol, only_in_comparison=True), module)
+    # Primero el límite de una comparación, y solo si no hay, cualquier otra
+    # constante entera de la función. La segunda pasada no es un capricho: las
+    # funciones aritméticas de los finalistas —`checksum` de python-stdnum es
+    # `int(number) % 97`, sin una sola comparación— son donde el off-by-one es
+    # más natural, y un catálogo que no aplicara ahí dejaría el estrato genérico
+    # concentrado en las funciones con `if`, que son otra población.
+    boundary = _apply(_OffByOne(symbol, only_in_comparison=True), module)
+    if boundary is not None:
+        return boundary
+    return _apply(_OffByOne(symbol, only_in_comparison=False), module)
 
 
 def _drop_none_check(module: cst.Module, symbol: str) -> cst.Module | None:
