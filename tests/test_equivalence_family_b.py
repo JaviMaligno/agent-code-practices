@@ -385,6 +385,31 @@ def test_the_size_curve_saturates_before_its_last_point(tmp_path: Path):
     assert trees[10000] == trees[2000]
 
 
+def test_the_size_curve_does_not_saturate_on_a_repository_of_bigger_modules(
+    tmp_path: Path,
+):
+    """Y que la saturación es del repositorio, no de B5.
+
+    Es la otra mitad de la afirmación anterior y hace falta, porque con un solo
+    repositorio medido lo honesto sería quitar el tercer punto de la curva en
+    todas partes —y en sqlglot sí existe: 33, 55 y 58 módulos absorbidos, tres
+    árboles distintos—. Lo que decide es el tamaño de los módulos de partida, así
+    que cada sustrato de la campaña tiene que responder esta pregunta por su
+    cuenta antes de gastar la corrida.
+
+    Se mide con `plan`, que no escribe nada: aquí solo hace falta saber si los
+    tres techos son condiciones distintas, y las tres corridas de `apply` sobre
+    sqlglot costarían cuatro minutos para contestar lo mismo.
+    """
+    clone = clone_repo(REPOS["sqlglot"], tmp_path / "repo")
+
+    absorbed = [
+        b5_size.plan(clone, target_lines=ceiling).absorbed for ceiling in b5_size.CURVE
+    ]
+
+    assert len(set(absorbed)) == len(absorbed), absorbed
+
+
 def test_b1_publishes_a_complete_and_true_identity_map_of_a_real_repo(tmp_path: Path):
     """Que la celda de B1 sea equivalente no dice nada de si se puede LEER.
 
