@@ -306,3 +306,44 @@ def test_a_module_someone_star_imports_stays_where_it_is(tmp_path: Path):
     assert "pkg.publico" not in resultado.moves, resultado.moves
     proceso = run(tmp_path, "import pkg.cliente as c; print(c.usa())")
     assert proceso.returncode == 0, proceso.stderr
+
+
+def test_no_definition_is_lost_and_none_is_renamed(tmp_path: Path):
+    """Lo que B5 cambia es el tamaño del fichero y nada más. Perder una
+    definición al concatenar no da error: da un AttributeError la primera vez
+    que alguien la pide, que es a mitad de la corrida del agente."""
+    from acp.symbols import build_symbol_map
+
+    build(tmp_path)
+    antes = sorted(sitio.current_name for sitio in build_symbol_map(tmp_path).values())
+
+    resultado = b5_size.apply(tmp_path, target_lines=2000)
+
+    assert resultado.moves, "no fundió nada: el invariante no se está ejerciendo"
+    despues = sorted(sitio.current_name for sitio in build_symbol_map(tmp_path).values())
+    assert despues == antes
+
+
+def test_nothing_changes_directory(tmp_path: Path):
+    """B5 varía el tamaño sin tocar la organización, y B2 al revés (§4.2). Si
+    esta además moviera código entre directorios, ninguna de las dos celdas
+    sería atribuible; y de paso dejarían de valer los imports relativos y las
+    rutas que se cuentan desde `__file__`."""
+    pkg = tmp_path / "pkg"
+    (pkg / "sub").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "sub" / "__init__.py").write_text("", encoding="utf-8")
+    for nombre, cuerpo in (("uno", "alpha"), ("dos", "beta")):
+        (pkg / f"{nombre}.py").write_text(f"def {cuerpo}():\n    return 1\n", encoding="utf-8")
+    for nombre, cuerpo in (("tres", "gamma"), ("cuatro", "delta")):
+        (pkg / "sub" / f"{nombre}.py").write_text(
+            f"def {cuerpo}():\n    return 1\n", encoding="utf-8"
+        )
+
+    resultado = b5_size.apply(tmp_path, target_lines=10000)
+
+    assert len(resultado.moves) == 2, resultado.moves
+    assert all(
+        origen.rsplit(".", 1)[0] == destino.rsplit(".", 1)[0]
+        for origen, destino in resultado.moves.items()
+    ), resultado.moves
