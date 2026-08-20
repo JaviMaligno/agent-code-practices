@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 candidates/
 out/
+
+# Clones de trabajo y salidas del pre-flight
+candidates/

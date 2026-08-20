@@ -1,0 +1,34 @@
+{
+  "task_id": "python-stdnum-003",
+  "repo": "python-stdnum",
+  "module": "stdnum.mu.nid",
+  "symbol": "validate",
+  "stratum": "generic",
+  "patch": "--- a/stdnum/mu/nid.py\n+++ b/stdnum/mu/nid.py\n@@ -80,8 +80,6 @@\n def validate(number: str) -> str:\n     \"\"\"Check if the number is a valid ID number.\"\"\"\n     number = compact(number)\n-    if len(number) != 14:\n-        raise InvalidLength()\n     if not _nid_re.match(number):\n         raise InvalidFormat()\n     if calc_check_digit(number) != number[-1]:\n",
+  "fail_to_pass": [
+    "tests/test_mu_nid.doctest::test_mu_nid.doctest"
+  ],
+  "pass_to_pass": [
+    "stdnum/__init__.py::stdnum",
+    "stdnum/be/ssn.py::stdnum.be.ssn",
+    "stdnum/cn/ric.py::stdnum.cn.ric",
+    "stdnum/dk/cpr.py::stdnum.dk.cpr",
+    "stdnum/es/nif.py::stdnum.es.nif",
+    "stdnum/fr/nir.py::stdnum.fr.nir",
+    "stdnum/id/nik.py::stdnum.id.nik",
+    "stdnum/ismn.py::stdnum.ismn",
+    "stdnum/kr/rrn.py::stdnum.kr.rrn",
+    "stdnum/mz/nuit.py::stdnum.mz.nuit",
+    "stdnum/pl/pesel.py::stdnum.pl.pesel",
+    "stdnum/sk/dph.py::stdnum.sk.dph",
+    "stdnum/us/rtn.py::stdnum.us.rtn",
+    "tests/test_be_bis.doctest::test_be_bis.doctest",
+    "tests/test_cn_uscc.doctest::test_cn_uscc.doctest",
+    "tests/test_ec_ci.doctest::test_ec_ci.doctest",
+    "tests/test_fr_rcs.doctest::test_fr_rcs.doctest",
+    "tests/test_is_kennitala.doctest::test_is_kennitala.doctest",
+    "tests/test_ma_ice.doctest::test_ma_ice.doctest",
+    "tests/test_py_ruc.doctest::test_py_ruc.doctest"
+  ],
+  "min_files_to_judge": 1
+}

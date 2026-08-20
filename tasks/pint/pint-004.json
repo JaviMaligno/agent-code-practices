@@ -1,0 +1,35 @@
+{
+  "task_id": "pint-004",
+  "repo": "pint",
+  "module": "pint.delegates.formatter._to_register",
+  "symbol": "register_unit_format",
+  "stratum": "generic",
+  "patch": "--- a/pint/delegates/formatter/_to_register.py\n+++ b/pint/delegates/formatter/_to_register.py\n@@ -70,7 +70,7 @@\n                 **babel_kwds: Unpack[BabelKwds],\n             ) -> str:\n                 with override_locale(\n-                    mspec, babel_kwds.get(\"locale\", None)\n+                    mspec, babel_kwds.get(None, \"locale\")\n                 ) as format_number:\n                     if isinstance(magnitude, ndarray) and magnitude.ndim > 0:\n                         # Use custom ndarray text formatting--need to handle scalars differently\n",
+  "fail_to_pass": [
+    "pint/testsuite/test_formatting.py::test_register_unit_format",
+    "pint/testsuite/test_issues.py::test_issue2256"
+  ],
+  "pass_to_pass": [
+    "pint/testsuite/benchmarks/test_00_common.py::test_import",
+    "pint/testsuite/benchmarks/test_10_registry.py::test_parse_units[True-ms]",
+    "pint/testsuite/benchmarks/test_20_quantity.py::test_op2[eq-keys6]",
+    "pint/testsuite/benchmarks/test_20_quantity.py::test_op2[truediv-keys32]",
+    "pint/testsuite/test_contexts.py::TestContexts::test_context_with_arg_def",
+    "pint/testsuite/test_formatting.py::test_split_format[unit-both-default]",
+    "pint/testsuite/test_issues.py::test_issue2320",
+    "pint/testsuite/test_log_units.py::test_unit_parsing[decibelmicrowatt]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathDecimal::test_multiplication_with_autoconvert[input_tuple18-expected_output18]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFloat::test_addition[input_tuple2-error]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFloat::test_subtraction[input_tuple1-expected_output1]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFraction::test_addition[input_tuple4-expected_output4]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFraction::test_subtraction[input_tuple26-expected_output26]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeQuantityFraction::test_pickle",
+    "pint/testsuite/test_pint_eval.py::test_preprocessed_eval_tree[1 - 2-(1 - 2)-uncertainty_tokenizer]",
+    "pint/testsuite/test_quantity.py::TestOffsetUnitMath::test_addition[input_tuple32-expected32]",
+    "pint/testsuite/test_quantity.py::TestOffsetUnitMath::test_subtraction[input_tuple14-expected14]",
+    "pint/testsuite/test_quantity.py::TestQuantity::test_quantity_format",
+    "pint/testsuite/test_quantity.py::TestQuantityWithDefaultRegistry::test_upcast_type_rejection_on_creation",
+    "pint/testsuite/test_unit.py::TestRegistryWithDefaultRegistry::test_lazy"
+  ],
+  "min_files_to_judge": 1
+}

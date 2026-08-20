@@ -1,0 +1,36 @@
+{
+  "task_id": "pint-003",
+  "repo": "pint",
+  "module": "pint.util",
+  "symbol": "getattr_maybe_raise",
+  "stratum": "generic",
+  "patch": "--- a/pint/util.py\n+++ b/pint/util.py\n@@ -1139,14 +1139,6 @@\n     ------\n     AttributeError\n     \"\"\"\n-    # Double-underscore attributes are tricky to detect because they are\n-    # automatically prefixed with the class name - which may be a subclass of obj\n-    if (\n-        item.endswith(\"__\")\n-        or len(item.lstrip(\"_\")) == 0\n-        or (item.startswith(\"_\") and not item.lstrip(\"_\")[0].isdigit())\n-    ):\n-        raise AttributeError(f\"{obj!r} object has no attribute {item!r}\")\n \n \n def iterable(y: Any) -> bool:\n",
+  "fail_to_pass": [
+    "pint/testsuite/test_issues.py::TestIssues::test_issue507",
+    "pint/testsuite/test_issues.py::TestIssues::test_issue856",
+    "pint/testsuite/test_issues.py::TestIssues::test_issue856b"
+  ],
+  "pass_to_pass": [
+    "pint/testsuite/benchmarks/test_00_common.py::test_import",
+    "pint/testsuite/benchmarks/test_10_registry.py::test_parse_units[True-ms]",
+    "pint/testsuite/benchmarks/test_20_quantity.py::test_op2[eq-keys6]",
+    "pint/testsuite/benchmarks/test_20_quantity.py::test_op2[truediv-keys32]",
+    "pint/testsuite/test_contexts.py::TestContexts::test_context_with_arg_def",
+    "pint/testsuite/test_formatting.py::test_split_format[unit-both-combine]",
+    "pint/testsuite/test_issues.py::test_issue681_auto_reduce_dimensions",
+    "pint/testsuite/test_log_units.py::test_unit_parsing[decibelmilliwatt]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathDecimal::test_multiplication_with_autoconvert[input_tuple19-expected_output19]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFloat::test_addition[input_tuple20-error]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFloat::test_subtraction[input_tuple10-expected_output10]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFraction::test_addition[input_tuple5-expected_output5]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFraction::test_subtraction[input_tuple27-expected_output27]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeQuantityFraction::test_quantity_comparison",
+    "pint/testsuite/test_pint_eval.py::test_preprocessed_eval_tree[2 * (3 + 4)-(2 * (3 + 4))-plain_tokenizer]",
+    "pint/testsuite/test_quantity.py::TestOffsetUnitMath::test_addition[input_tuple33-expected33]",
+    "pint/testsuite/test_quantity.py::TestOffsetUnitMath::test_subtraction[input_tuple15-expected15]",
+    "pint/testsuite/test_quantity.py::TestQuantity::test_quantity_hash",
+    "pint/testsuite/test_quantity.py::TestTimedelta::test_add_sub",
+    "pint/testsuite/test_unit.py::TestRegistryWithDefaultRegistry::test_load"
+  ],
+  "min_files_to_judge": 1
+}

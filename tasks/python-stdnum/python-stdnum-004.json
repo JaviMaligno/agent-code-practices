@@ -1,0 +1,35 @@
+{
+  "task_id": "python-stdnum-004",
+  "repo": "python-stdnum",
+  "module": "stdnum.is_.kennitala",
+  "symbol": "validate",
+  "stratum": "generic",
+  "patch": "--- a/stdnum/is_/kennitala.py\n+++ b/stdnum/is_/kennitala.py\n@@ -89,7 +89,7 @@\n     # check if birth date or registration data is valid\n     try:\n         if day >= 40:  # organisation\n-            datetime.date(year, month, day - 40)\n+            datetime.date(month, year, day - 40)\n         else:  # individual\n             datetime.date(year, month, day)\n     except ValueError:\n",
+  "fail_to_pass": [
+    "stdnum/is_/kennitala.py::stdnum.is_.kennitala",
+    "tests/test_is_kennitala.doctest::test_is_kennitala.doctest"
+  ],
+  "pass_to_pass": [
+    "stdnum/__init__.py::stdnum",
+    "stdnum/be/ssn.py::stdnum.be.ssn",
+    "stdnum/cn/ric.py::stdnum.cn.ric",
+    "stdnum/dk/cpr.py::stdnum.dk.cpr",
+    "stdnum/es/nif.py::stdnum.es.nif",
+    "stdnum/fr/nir.py::stdnum.fr.nir",
+    "stdnum/id/nik.py::stdnum.id.nik",
+    "stdnum/isni.py::stdnum.isni",
+    "stdnum/lei.py::stdnum.lei",
+    "stdnum/nl/brin.py::stdnum.nl.brin",
+    "stdnum/pl/regon.py::stdnum.pl.regon",
+    "stdnum/sk/ico.py::stdnum.sk.ico",
+    "stdnum/us/ssn.py::stdnum.us.ssn",
+    "tests/test_be_iban.doctest::test_be_iban.doctest",
+    "tests/test_co_nit.doctest::test_co_nit.doctest",
+    "tests/test_ec_ruc.doctest::test_ec_ruc.doctest",
+    "tests/test_fr_siren.doctest::test_fr_siren.doctest",
+    "tests/test_isbn.doctest::test_isbn.doctest",
+    "tests/test_md_idno.doctest::test_md_idno.doctest",
+    "tests/test_ro_onrc.doctest::test_ro_onrc.doctest"
+  ],
+  "min_files_to_judge": 1
+}

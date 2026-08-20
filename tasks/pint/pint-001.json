@@ -1,0 +1,38 @@
+{
+  "task_id": "pint-001",
+  "repo": "pint",
+  "module": "pint.registry_helpers",
+  "symbol": "check",
+  "stratum": "generic",
+  "patch": "--- a/pint/registry_helpers.py\n+++ b/pint/registry_helpers.py\n@@ -358,7 +358,7 @@\n     def decorator(func):\n         sig = signature(func)\n         count_params = len(sig.parameters)\n-        if len(dimensions) != count_params:\n+        if len(dimensions) == count_params:\n             raise TypeError(\n                 \"%s takes %i parameters, but %i dimensions were passed\"\n                 % (func.__name__, count_params, len(dimensions))\n",
+  "fail_to_pass": [
+    "pint/testsuite/test_contexts.py::TestDefinedContexts::test_decorator_composition",
+    "pint/testsuite/test_issues.py::TestIssues::test_issue532",
+    "pint/testsuite/test_issues.py::TestIssues::test_issue655b",
+    "pint/testsuite/test_unit.py::TestRegistry::test_check",
+    "pint/testsuite/test_unit.py::TestRegistryWithDefaultRegistry::test_check"
+  ],
+  "pass_to_pass": [
+    "pint/testsuite/benchmarks/test_00_common.py::test_import",
+    "pint/testsuite/benchmarks/test_10_registry.py::test_parse_units[True-minute]",
+    "pint/testsuite/benchmarks/test_20_quantity.py::test_op2[eq-keys4]",
+    "pint/testsuite/benchmarks/test_20_quantity.py::test_op2[truediv-keys2]",
+    "pint/testsuite/test_compat.py::test_zero_or_nan[False]",
+    "pint/testsuite/test_formatting.py::test_split_format[none-none-separate]",
+    "pint/testsuite/test_issues.py::test_issue2255",
+    "pint/testsuite/test_log_units.py::test_unit_parsing[dBW]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathDecimal::test_multiplication_with_autoconvert[input_tuple11-expected_output11]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFloat::test_addition[input_tuple12-error]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFloat::test_multiplication_with_autoconvert[input_tuple9-expected_output9]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFraction::test_addition[input_tuple27-expected_output27]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFraction::test_subtraction[input_tuple16-expected_output16]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeQuantityFloat::test_quantity_creation",
+    "pint/testsuite/test_pint_eval.py::test_preprocessed_eval_tree[-1-(- 1)-plain_tokenizer]",
+    "pint/testsuite/test_quantity.py::TestOffsetUnitMath::test_addition[input_tuple2-error]",
+    "pint/testsuite/test_quantity.py::TestOffsetUnitMath::test_multiplication_with_autoconvert[input_tuple8-expected8]",
+    "pint/testsuite/test_quantity.py::TestQuantity::test_is_compatible_with_offset_units",
+    "pint/testsuite/test_quantity.py::TestQuantityWithDefaultRegistry::test_round",
+    "pint/testsuite/test_unit.py::TestRegistry::test_redefinition"
+  ],
+  "min_files_to_judge": 1
+}
