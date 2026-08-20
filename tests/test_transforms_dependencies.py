@@ -297,3 +297,27 @@ def test_a_module_without_star_imports_says_so():
     tree = ast.parse("from stdnum.util import clean\n")
 
     assert star_imports(tree) == []
+
+
+def test_a_class_body_that_rebinds_a_module_name_still_needs_it():
+    """Lo que rompió sqlglot en la cuarta vuelta.
+
+    En un cuerpo de clase, `X = X.copy()` NO es una variable local que se lee a
+    sí misma: el cuerpo se ejecuta de arriba abajo sobre un espacio de nombres de
+    verdad, y un nombre que todavía no está ligado ahí se busca en el módulo. El
+    análisis lo daba por ligado en todo el cuerpo, así que `X` no salía como
+    nombre libre, el import no viajaba con la clase y mudarla dejaba
+    `NameError: name 'EXPRESSION_METADATA' is not defined` —así, en
+    `sqlglot/dialects/mysql.py`, y con la clase ya en otro fichero—.
+    """
+    node = first("class Dialecto:\n    METADATOS = METADATOS.copy()\n")
+
+    assert free_names(node) == {"METADATOS"}
+
+
+def test_a_class_attribute_read_after_it_is_bound_is_not_free():
+    """La otra mitad, para que el arreglo no se pase de ancho: leído DESPUÉS de
+    ligarlo, el nombre es del cuerpo de la clase y no hay que importar nada."""
+    node = first("class Dialecto:\n    A = 1\n    B = A + 1\n")
+
+    assert free_names(node) == set()

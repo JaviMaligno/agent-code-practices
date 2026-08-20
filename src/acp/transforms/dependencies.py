@@ -235,12 +235,21 @@ def _visit_class(node: ast.ClassDef, chain: Chain, free: set[str]) -> None:
     for keyword in node.keywords:
         _visit(keyword.value, chain, free)
 
-    ligados, globales = _scope_bindings(node.body)
+    _, globales = _scope_bindings(node.body)
     free.update(globales)
 
+    # El cuerpo de una clase se liga SOBRE LA MARCHA, no de golpe como el de una
+    # función: se ejecuta de arriba abajo sobre un espacio de nombres real, y un
+    # nombre que todavía no está ligado ahí se busca en el módulo. Darlo por
+    # ligado en todo el cuerpo hacía invisible el patrón `X = X.copy()` —muy
+    # común en jerarquías de configuración—: el nombre no salía como libre, el
+    # import no viajaba con la clase y mudarla dejaba un NameError. Medido sobre
+    # `sqlglot/dialects/mysql.py` y su `EXPRESSION_METADATA`.
+    ligados: set[str] = set()
     interior = chain + [(_CLASS, ligados)]
     for statement in node.body:
         _visit(statement, interior, free)
+        ligados |= _scope_bindings([statement])[0]
 
 
 def _with_type_params(node: ast.AST, chain: Chain) -> Chain:
