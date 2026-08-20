@@ -407,3 +407,19 @@ def test_an_unknown_control_is_refused_before_paying_for_a_suite(tmp_path: Path)
 
     with pytest.raises(ValueError, match="oracle"):
         run_oracle("oraculo", tmp_path, task)
+
+
+def test_the_oracle_refuses_to_leave_behind_a_file_that_does_not_parse(tmp_path: Path):
+    """Un arreglo que no compila tira la suite entera, y en la tabla principal
+    eso se lee igual que un agente que rompió el repositorio: el peor error
+    posible aquí, porque nadie lo atribuye al circuito. El oráculo es el único
+    que puede afirmar que el parche de referencia es de verdad la referencia."""
+    path, task = delivered(tmp_path)
+    # El lado correcto del parche, sin los dos puntos: revertirlo deja un
+    # fichero que no es Python.
+    task.patch = task.patch.replace("-    if valor > limite:", "-    if valor > limite")
+
+    with pytest.raises(ValueError, match="no compila"):
+        oracle(tmp_path, task)
+
+    assert "if valor > limite" not in path.read_text(encoding="utf-8")

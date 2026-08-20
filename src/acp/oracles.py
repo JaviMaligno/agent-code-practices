@@ -48,6 +48,7 @@ afirmación, medida con los identificadores que la condición tiene de verdad.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass, field
@@ -116,10 +117,33 @@ def repaired_source(
         # carácter. Si el contexto no coincide exactamente, `apply_patch` grita
         # en vez de buscarle un hueco aproximado, y entonces —y solo entonces—
         # hay que traducir.
-        return location.path, apply_patch(source, task.patch, reverse=True)
+        repaired = apply_patch(source, task.patch, reverse=True)
     except ValueError:
-        pass
-    return location.path, _revert_translated(source, task, location, renames)
+        repaired = _revert_translated(source, task, location, renames)
+    return location.path, _parsed(repaired, task, location)
+
+
+def _parsed(repaired: str, task: Task, location: Location) -> str:
+    """El arreglo, si es Python; si no, un error y no un fichero.
+
+    Es la única afirmación que el oráculo puede hacer y un agente de verdad no:
+    que el parche de referencia es de verdad la referencia. Un arreglo que no
+    compila tira la suite ENTERA —no los dos tests de la tarea— y en la tabla
+    principal eso se lee igual que un agente que rompió el repositorio, que es
+    el peor error posible aquí porque nadie lo atribuye al circuito de medida.
+    Los sitios por donde puede colarse son dos: el diccionario de renombrados,
+    que reescribe por palabra completa y podría tocar dentro de un literal, y la
+    sangría, si algún día B1 o B5 dejan el símbolo dentro de otro cuerpo.
+    """
+    try:
+        ast.parse(repaired)
+    except SyntaxError as error:
+        raise ValueError(
+            f"el arreglo de {task.task_id!r} no compila en {location.path}: "
+            f"{error}. El parche de referencia no describe {task.module}."
+            f"{task.symbol} en esta condición"
+        ) from error
+    return repaired
 
 
 def oracle(repo: Path, task: Task, *, manifest: Path | None = None) -> Path:
