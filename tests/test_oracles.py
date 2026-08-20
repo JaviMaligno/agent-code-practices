@@ -16,7 +16,13 @@ from pathlib import Path
 import pytest
 
 from acp.cli import manifest_path_for, transform_repo
-from acp.oracles import no_op, oracle, repaired_source
+from acp.oracles import (
+    compare_to_delivered,
+    no_op,
+    oracle,
+    repaired_source,
+    run_oracle,
+)
 from acp.tasks.inject import apply_patch, inject
 
 ORIGINAL = '''\
@@ -310,3 +316,94 @@ def test_the_oracle_follows_the_symbol_to_another_file(tmp_path: Path):
     assert "<=" not in arreglado.replace(" ", "")
     assert ">" in arreglado
     compile(arreglado, ruta, "exec")
+
+
+# --- Cómo se leen 0% y 100% -------------------------------------------------
+#
+# Los nodeids de la tarea se declararon sobre el árbol original, y en la
+# condición ni la ruta ni el nombre del módulo siguen siendo esos: B2 aplana y
+# B5 funde. Por eso el veredicto se lee contra la corrida del árbol tal y como
+# se entrega —que es justo lo que produce el no-op— y no contra la lista.
+
+ENTREGADO = {"t_roto": "failed", "t_sano": "passed", "t_saltado": "skipped"}
+
+
+def test_the_no_op_does_not_resolve_a_task_that_discriminates():
+    """El 0% del no-op no es una convención: sale de que el árbol entregado
+    tiene en rojo lo que la tarea rompió y el no-op no lo toca."""
+    run = compare_to_delivered("no_op", ENTREGADO, ENTREGADO)
+
+    assert run.resolved is False
+    assert run.still_failing == ["t_roto"]
+
+
+def test_a_no_op_that_resolves_means_the_task_does_not_discriminate():
+    """Es la avería que este control existe para atrapar (§5.4.6): si el árbol
+    se entrega en verde, la tarea se contaría como resuelta sin tocar nada."""
+    verde = {"t_a": "passed", "t_b": "passed"}
+
+    run = compare_to_delivered("no_op", verde, verde)
+
+    assert run.resolved is True
+
+
+def test_the_oracle_resolves_when_the_reds_go_green():
+    run = compare_to_delivered(
+        "oracle", ENTREGADO, {**ENTREGADO, "t_roto": "passed"}
+    )
+
+    assert run.resolved is True
+    assert run.repaired == ["t_roto"]
+
+
+def test_an_oracle_that_breaks_something_else_does_not_resolve():
+    """Arreglar el fallo rompiendo otra cosa no es arreglarlo, y en la tabla
+    principal se leería igual que un agente que acertó."""
+    run = compare_to_delivered(
+        "oracle", ENTREGADO, {"t_roto": "passed", "t_sano": "failed", "t_saltado": "skipped"}
+    )
+
+    assert run.resolved is False
+    assert run.broken == ["t_sano"]
+
+
+def test_a_test_that_stops_being_collected_counts_as_broken():
+    """Un test que ya no se colecta dejó de demostrar nada. Contarlo como «sigue
+    verde» porque no sale en rojo es la forma silenciosa de romper la suite."""
+    run = compare_to_delivered(
+        "oracle", ENTREGADO, {"t_roto": "passed", "t_saltado": "skipped"}
+    )
+
+    assert run.resolved is False
+    assert run.broken == ["t_sano"]
+
+
+def test_what_was_skipped_is_not_a_failure():
+    """Un test saltado no es un test roto, y exigirle que pase dejaría al
+    oráculo en 0% en cualquier repositorio real."""
+    run = compare_to_delivered("oracle", ENTREGADO, {**ENTREGADO, "t_roto": "passed"})
+
+    assert "t_saltado" not in run.still_failing + run.broken
+
+
+def test_a_test_the_repo_had_in_red_is_not_held_against_the_oracle():
+    """No lo rompió la tarea, así que exigirle al oráculo que lo arregle
+    convertiría un defecto del repositorio en un circuito que miente."""
+    run = compare_to_delivered(
+        "oracle",
+        {**ENTREGADO, "t_ajeno": "failed"},
+        {**ENTREGADO, "t_roto": "passed", "t_ajeno": "failed"},
+        already_failing=["t_ajeno"],
+    )
+
+    assert run.resolved is True
+
+
+def test_an_unknown_control_is_refused_before_paying_for_a_suite(tmp_path: Path):
+    """Levantar el contenedor y descubrir el nombre mal escrito después cuesta
+    una instalación entera, y el resultado se leería como una condición sin
+    datos."""
+    _, task = delivered(tmp_path)
+
+    with pytest.raises(ValueError, match="oracle"):
+        run_oracle("oraculo", tmp_path, task)
