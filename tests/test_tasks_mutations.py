@@ -165,3 +165,56 @@ def test_a_mutation_of_a_later_function_leaves_the_earlier_one_alone():
 
     assert "def clasificar(valor, limite):\n    if valor > limite:" in mutated
     assert "if a <= b:" in mutated
+
+
+def test_a_check_that_does_not_name_none_is_a_check_too():
+    """Escrito literalmente, `x is None` no existe en el sustrato: python-stdnum
+    entero tiene UNA aparición, y es dentro de un doctest. Las comprobaciones
+    que ese código sí tiene —314— son guardas de salida temprana con `if not
+    ...: raise`. Si el catálogo solo supiera quitar la forma con `None`, la
+    tercera forma de §3.3.1 no aplicaría ni una vez y el estrato genérico se
+    quedaría en tres formas sin que nadie lo notara al contarlas."""
+    source = (
+        "def validar(numero):\n"
+        "    if not numero.isdigit():\n"
+        "        raise ValueError(numero)\n"
+        "    return numero\n"
+    )
+
+    mutated = mutate(source, "validar", "drop_none_check")
+
+    assert mutated is not None
+    assert "isdigit" not in mutated
+    assert "return numero" in mutated
+
+
+def test_the_check_that_names_none_goes_first():
+    """Es la forma que nombra el diseño, y además la más limpia de juzgar: la
+    otra puede quitar una guarda que solo evitaba trabajo de más."""
+    source = (
+        "def buscar(clave, tabla):\n"
+        "    if not tabla:\n"
+        "        return None\n"
+        "    if clave is None:\n"
+        "        return None\n"
+        "    return tabla[clave]\n"
+    )
+
+    mutated = mutate(source, "buscar", "drop_none_check")
+
+    assert "if not tabla:" in mutated
+    assert "is None" not in mutated
+
+
+def test_a_check_that_does_not_exit_is_not_a_check():
+    """Un `if` que sigue ejecutando después no es una guarda: quitarlo cambia el
+    flujo entero y el fallo deja de ser reconocible por su forma."""
+    source = (
+        "def total(items):\n"
+        "    suma = 0\n"
+        "    if items:\n"
+        "        suma = len(items)\n"
+        "    return suma\n"
+    )
+
+    assert mutate(source, "total", "drop_none_check") is None

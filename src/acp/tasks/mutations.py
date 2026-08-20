@@ -151,23 +151,35 @@ class _OffByOne(_Scoped):
         return updated_node.with_changes(value=str(value + 1))
 
 
-def _is_none_guard(statement: cst.CSTNode) -> bool:
-    """Un `if x is None: return ...` de una sola rama.
-
-    Se exige que el cuerpo sea una salida —`return` o `raise`— y que no haya
-    `else`: quitar una guarda así deja pasar el nulo al resto de la función, que
-    es el fallo que se quiere inyectar. Quitar un `if` con `else` cambiaría el
-    flujo entero y sería otro bug, mucho más ruidoso.
-    """
-    if not isinstance(statement, cst.If) or statement.orelse is not None:
-        return False
-    test = statement.test
+def _names_none(test: cst.BaseExpression) -> bool:
+    """La condición es una comprobación de nulo escrita como tal."""
     if not isinstance(test, cst.Comparison) or len(test.comparisons) != 1:
         return False
     part = test.comparisons[0]
     if not isinstance(part.operator, (cst.Is, cst.IsNot)):
         return False
-    if not (isinstance(part.comparator, cst.Name) and part.comparator.value == "None"):
+    return isinstance(part.comparator, cst.Name) and part.comparator.value == "None"
+
+
+def _is_guard(statement: cst.CSTNode, *, only_none: bool) -> bool:
+    """Una guarda de salida temprana: `if <cond>: return ...` o `: raise ...`.
+
+    Se exige que el cuerpo sea una salida —`return` o `raise`— y que no haya
+    `else`: quitar una guarda así deja pasar al resto de la función lo que la
+    comprobación filtraba, que es el fallo que se quiere inyectar. Quitar un `if`
+    con `else`, o uno cuyo cuerpo siga ejecutando después, cambiaría el flujo
+    entero y sería otro bug, mucho más ruidoso.
+
+    `only_none` es la forma que nombra §3.3.1 literalmente, y por eso va primero.
+    Pero escrita al pie de la letra esa forma no existe en el sustrato:
+    python-stdnum entero tiene una aparición de `is None`, dentro de un doctest,
+    mientras que guardas de salida temprana tiene 314. La comprobación que falta
+    es la misma clase de fallo se escriba `if x is None` o `if not x.isdigit()`,
+    y sin la segunda forma esta entrada del catálogo no se aplicaría ni una vez.
+    """
+    if not isinstance(statement, cst.If) or statement.orelse is not None:
+        return False
+    if only_none and not _names_none(statement.test):
         return False
     body = statement.body
     lines = body.body if isinstance(body, cst.IndentedBlock) else [body]
@@ -180,7 +192,7 @@ def _is_none_guard(statement: cst.CSTNode) -> bool:
 
 
 class _DropNoneCheck(_Scoped):
-    """Quita una guarda de nulo.
+    """Quita una comprobación que protegía al resto de la función.
 
     Se hace desde el bloque que la contiene y no desde el `if`, por dos razones:
     ahí se ve si la guarda era la única sentencia del cuerpo —quitarla dejaría un
@@ -188,13 +200,17 @@ class _DropNoneCheck(_Scoped):
     toca la indentación de lo que queda.
     """
 
+    def __init__(self, symbol: str, *, only_none: bool) -> None:
+        super().__init__(symbol)
+        self.only_none = only_none
+
     def leave_IndentedBlock(self, original_node, updated_node):  # noqa: ANN001
         if self.applied or not self._inside:
             return updated_node
         if len(updated_node.body) < 2:
             return updated_node
         for index, statement in enumerate(updated_node.body):
-            if _is_none_guard(statement):
+            if _is_guard(statement, only_none=self.only_none):
                 self.applied = True
                 body = [*updated_node.body[:index], *updated_node.body[index + 1 :]]
                 return updated_node.with_changes(body=body)
@@ -263,7 +279,13 @@ def _off_by_one(module: cst.Module, symbol: str) -> cst.Module | None:
 
 
 def _drop_none_check(module: cst.Module, symbol: str) -> cst.Module | None:
-    return _apply(_DropNoneCheck(symbol), module)
+    # Primero la comprobación que nombra `None` y solo si no hay, cualquier otra
+    # guarda de salida temprana: la primera es la forma canónica y la más limpia
+    # de juzgar, la segunda es la que el sustrato tiene de verdad.
+    named = _apply(_DropNoneCheck(symbol, only_none=True), module)
+    if named is not None:
+        return named
+    return _apply(_DropNoneCheck(symbol, only_none=False), module)
 
 
 def _swap_args(module: cst.Module, symbol: str) -> cst.Module | None:
