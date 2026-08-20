@@ -255,6 +255,16 @@ def _read_imports(info: _Module, modules: dict[str, _Module]) -> None:
 # --- quién puede participar ------------------------------------------------
 
 
+@dataclass
+class _Frozen:
+    """Lo que hace intocable a un módulo, calculado una vez por repositorio."""
+
+    package: Path | None
+    computed: frozenset[str]
+    named: frozenset[str]
+    star_targets: frozenset[str]
+
+
 def _why_not(info: _Module, root: Path, frozen: _Frozen) -> str | None:
     """Por qué este módulo no puede fundirse con nadie, o None si puede."""
     if info.is_init:
@@ -285,16 +295,6 @@ def _why_not(info: _Module, root: Path, frozen: _Frozen) -> str | None:
     if info.dynamic:
         return "se manipula a sí mismo en sys.modules o con __getattr__"
     return None
-
-
-@dataclass
-class _Frozen:
-    """Lo que hace intocable a un módulo, calculado una vez por repositorio."""
-
-    package: Path | None
-    computed: frozenset[str]
-    named: frozenset[str]
-    star_targets: frozenset[str]
 
 
 def _frozen(root: Path, modules: dict[str, _Module]) -> _Frozen:
