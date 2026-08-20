@@ -57,11 +57,11 @@ from typing import Callable, Iterable
 
 from acp.cli import manifest_path_for
 from acp.models import SuiteMetrics
+from acp.runners import DEFAULT_IMAGE
 from acp.symbols import Location, build_symbol_map
 from acp.tasks.inject import _hunks, apply_patch
 from acp.tasks.models import Task
 from acp.tasks.validate import MISSING, SuiteSession
-from acp.runners import DEFAULT_IMAGE
 
 # Lo que cuenta como «este test ya no demuestra nada». `missing` entra aquí por
 # la misma razón que en `compare_runs`: un test que dejó de colectarse no es un
