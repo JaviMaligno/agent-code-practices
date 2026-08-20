@@ -1,0 +1,35 @@
+{
+  "task_id": "python-stdnum-d02",
+  "repo": "python-stdnum",
+  "module": "stdnum.iso11649",
+  "symbol": "validate",
+  "stratum": "domain",
+  "patch": "--- a/stdnum/iso11649.py\n+++ b/stdnum/iso11649.py\n@@ -64,7 +64,7 @@\n         raise InvalidLength()\n     if not number.startswith('RF'):\n         raise InvalidFormat()\n-    mod_97_10.validate(number[4:] + number[:4])\n+    mod_97_10.validate(number[2:] + number[:2])\n     return number\n \n \n",
+  "fail_to_pass": [
+    "stdnum/iso11649.py::stdnum.iso11649",
+    "tests/test_iso11649.doctest::test_iso11649.doctest"
+  ],
+  "pass_to_pass": [
+    "stdnum/__init__.py::stdnum",
+    "stdnum/be/ssn.py::stdnum.be.ssn",
+    "stdnum/cn/ric.py::stdnum.cn.ric",
+    "stdnum/dk/cpr.py::stdnum.dk.cpr",
+    "stdnum/es/nif.py::stdnum.es.nif",
+    "stdnum/fr/nir.py::stdnum.fr.nir",
+    "stdnum/id/nik.py::stdnum.id.nik",
+    "stdnum/ismn.py::stdnum.ismn",
+    "stdnum/lei.py::stdnum.lei",
+    "stdnum/nl/brin.py::stdnum.nl.brin",
+    "stdnum/pl/regon.py::stdnum.pl.regon",
+    "stdnum/sk/ico.py::stdnum.sk.ico",
+    "stdnum/us/ssn.py::stdnum.us.ssn",
+    "tests/test_be_iban.doctest::test_be_iban.doctest",
+    "tests/test_co_nit.doctest::test_co_nit.doctest",
+    "tests/test_ec_ruc.doctest::test_ec_ruc.doctest",
+    "tests/test_fr_siren.doctest::test_fr_siren.doctest",
+    "tests/test_isan.doctest::test_isan.doctest",
+    "tests/test_md_idno.doctest::test_md_idno.doctest",
+    "tests/test_ro_onrc.doctest::test_ro_onrc.doctest"
+  ],
+  "min_files_to_judge": 2
+}
