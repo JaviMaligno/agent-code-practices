@@ -378,3 +378,55 @@ def test_a_method_travels_with_the_class_that_declares_it(tmp_path: Path):
 
     assert relocated["pkg.billing.Invoice.render"].path == "pkg/report.py"
     assert relocated["pkg.billing.Invoice.render"].start == 2
+
+
+def test_a_module_that_only_received_keeps_its_own_symbols(tmp_path: Path):
+    """El otro lado del movimiento, que se descubrió sobre pint y python-stdnum.
+
+    `symbol_moves` nombra al que se va, nunca al que se queda, así que el módulo
+    ANFITRIÓN no aparece en el diccionario y se empareja por posición. Pero
+    acaba de recibir definiciones: su forma ya no es la del original, salta la
+    guarda de forma —correcta: emparejar por posición ahí publicaría el rango
+    del vecino— y se cae del manifiesto **entero**, anfitrión y todo.
+
+    Medido sobre los dos repositorios de la matriz de B1, y en verde las dos
+    veces: pint perdía 112 de 902 símbolos (12%) y python-stdnum 117 de 1.237
+    (9,5%), mientras los 75 y 33 símbolos que sí viajaron sobrevivían todos. Es
+    exactamente el fallo de la fase 2 —la métrica de localización sin datos y
+    sin que nada lo diga— visto desde el lado que la fase 3 no miró.
+
+    La respuesta es la misma que para el que viaja: si un módulo perdió o ganó
+    definiciones, sus símbolos se buscan por NOMBRE, que sigue identificándolos
+    de uno en uno cuando la posición ya no.
+    """
+    original = tmp_path / "before"
+    (original / "pkg").mkdir(parents=True)
+    (original / "pkg" / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (original / "pkg" / "b.py").write_text(
+        "def beta():\n    return 2\n\n\ndef gamma():\n    return 3\n", encoding="utf-8"
+    )
+    symbols = build_symbol_map(original)
+
+    after = tmp_path / "after"
+    (after / "pkg").mkdir(parents=True)
+    (after / "pkg" / "a.py").write_text("", encoding="utf-8")
+    (after / "pkg" / "b.py").write_text(
+        "def beta():\n"
+        "    return 2\n"
+        "\n"
+        "\n"
+        "def gamma():\n"
+        "    return 3\n"
+        "\n"
+        "\n"
+        "def alpha():\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+
+    relocated = relocate_symbols(symbols, after, symbol_moves={"pkg.a.alpha": "pkg.b"})
+
+    assert relocated["pkg.a.alpha"].path == "pkg/b.py"
+    # Lo que se perdía: los que ya vivían ahí y no se movieron.
+    assert relocated["pkg.b.beta"].start == 1
+    assert relocated["pkg.b.gamma"].start == 5

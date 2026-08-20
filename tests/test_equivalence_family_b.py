@@ -10,6 +10,8 @@ tenía, `__main__.py` leyendo su propio paquete, un import compartido bajo
 el único sitio donde esas cosas se ven.
 """
 
+import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -20,6 +22,7 @@ import pytest
 from acp.cli import transform_repo
 from acp.equivalence import compare
 from acp.suite import run_suite_in_docker
+from acp.symbols import build_symbol_map
 from acp.transforms import b2_hierarchy, b4_tests, b5_size
 
 pytestmark = pytest.mark.integration
@@ -380,3 +383,45 @@ def test_the_size_curve_saturates_before_its_last_point(tmp_path: Path):
     # día 10.000 moviera algo más que 2.000, ese punto pasaría a ser un árbol sin
     # verificar —no tiene celda— y hay que enterarse aquí.
     assert trees[10000] == trees[2000]
+
+
+def test_b1_publishes_a_complete_and_true_identity_map_of_a_real_repo(tmp_path: Path):
+    """Que la celda de B1 sea equivalente no dice nada de si se puede LEER.
+
+    La suite en verde prueba que el repositorio sigue haciendo lo mismo; el
+    manifiesto es lo otro que la campaña necesita —dónde acabó cada símbolo, para
+    proyectar encima lo que el agente lee (§5.4.2)— y se publica sin que nadie
+    lo mire. Así se perdió la métrica de localización en la fase 2: en verde.
+
+    Aquí se exigen las dos mitades, que fallan de formas distintas:
+
+    - **Completo**: ni un símbolo del original se cae. Sobre este repositorio se
+      caían 117 de 1.237 —los de los módulos que solo RECIBIERON definiciones,
+      que no aparecen en `symbol_moves` y se emparejaban por una posición que ya
+      había cambiado—, y en pint 112 de 902.
+    - **Verdadero**: cada rango publicado señala, en el árbol transformado, una
+      definición que se llama como dice el manifiesto. Un mapa completo y
+      mentiroso es peor que uno corto, porque nadie lo ve venir.
+
+    Va sobre python-stdnum y no sobre un fixture porque el modo de fallo era
+    justo el que un fixture no tiene: módulos que solo reciben, clases con
+    métodos, y símbolos nombrados dentro de textos.
+    """
+    clone = clone_repo(REPOS["python-stdnum"], tmp_path / "repo")
+    original = build_symbol_map(clone)
+
+    manifest = tmp_path / "manifest.json"
+    work = transform_repo(clone, ["B1"], tmp_path / "work", manifest=manifest)
+    published = json.loads(manifest.read_text(encoding="utf-8"))["symbols"]
+
+    assert original, "el repositorio no dio símbolos, el test no mide nada"
+    assert set(published) == set(original), sorted(set(original) - set(published))[:10]
+
+    liars = []
+    for key, location in published.items():
+        line = (work / location["path"]).read_text(encoding="utf-8").splitlines()[
+            location["start"] - 1
+        ]
+        if not re.search(rf"\b(def|class)\s+{re.escape(location['current_name'])}\b", line):
+            liars.append((key, location["path"], location["start"], line.strip()[:60]))
+    assert not liars, liars[:5]

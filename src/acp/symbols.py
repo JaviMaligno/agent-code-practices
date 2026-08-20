@@ -105,9 +105,19 @@ def relocate_symbols(
     symbol_moves = symbol_moves or {}
     renames = renames or {}
     current = _definitions_by_module(root)
+    # Los módulos que RECIBIERON alguna definición. `symbol_moves` solo nombra
+    # al que se va, así que el anfitrión no aparece por ninguna parte y se
+    # emparejaba por posición teniendo ya otra forma: saltaba la guarda y se
+    # caía del manifiesto entero. Medido sobre los dos repos de la matriz de B1:
+    # 112 de 902 símbolos en pint, 117 de 1.237 en python-stdnum, en verde.
+    hosts = set(symbol_moves.values())
     relocated: dict[str, Location] = {}
     for module, entries in _grouped_by_module(symbols).items():
-        if any(_symbol_destination(key, module, symbol_moves) for key, _ in entries):
+        # El nombre que el módulo tiene HOY, que es con el que se anunció el
+        # destino: si además de recibir lo movió B2, `moves` dice dónde está.
+        if moves.get(module, module) in hosts or any(
+            _symbol_destination(key, module, symbol_moves) for key, _ in entries
+        ):
             relocated.update(
                 _by_name(symbols, entries, module, current, moves, symbol_moves, renames)
             )
