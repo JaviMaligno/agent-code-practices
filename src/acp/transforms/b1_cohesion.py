@@ -240,12 +240,18 @@ def _reaches_into_the_import_system(source: str, bindings: dict[str, str]) -> bo
     lo mismo desde dos sitios: el nombre del módulo deja de ser una etiqueta del
     fichero y pasa a ser parte del programa.
 
-    Vive aquí y no en B5 —que es quien lo estrenó, para no fundir un módulo así
-    con nadie— porque a B1 le hace la misma falta y por la misma razón, y el día
-    que una de las dos afine la regla la otra tiene que enterarse. Descubierto
-    con la transformación ya escrita: `stdnum/iso9362.py` acaba en
-    `sys.modules[__name__] = stdnum.bic`, B1 le mudó ahí dos funciones, y el
-    repositorio entero dejó de colectar.
+    Vive aquí y no en B5 —que es quien lo estrenó— porque a las dos les hace
+    falta, y el día que una afine la regla la otra tiene que enterarse. Lo que
+    cada una se juega es distinto y conviene tenerlo junto:
+
+    - **B5**: al fundir el módulo, su nombre desaparece y el `__getattr__` pasa
+      a contestar también por los atributos del vecino, que es un cambio de
+      comportamiento que ningún import arregla.
+    - **B1**: el nombre del módulo no apunta a ESE espacio de nombres, así que
+      una definición mudada ahí no existe para nadie. Descubierto con la
+      transformación ya escrita y solo sobre un repositorio real:
+      `stdnum/iso9362.py` termina en `sys.modules[__name__] = stdnum.bic`, B1 le
+      mudó dentro dos funciones, y la colecta entera murió —420 tests a cero—.
     """
     return "sys.modules" in source or bool({"__getattr__", "__dir__"} & set(bindings))
 
