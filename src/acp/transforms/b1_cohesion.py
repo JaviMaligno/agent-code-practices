@@ -184,6 +184,10 @@ class _ModuleInfo:
     imported_symbols: frozenset[str] = frozenset()
     # Paquetes de terceros que el fichero exige sí o sí para importarse.
     externals: frozenset[str] = frozenset()
+    # Si el módulo se manipula a sí mismo como entrada del sistema de imports.
+    # No puede ni dar ni recibir definiciones: su nombre no apunta a su espacio
+    # de nombres, así que lo que se escriba aquí no existe para nadie.
+    dynamic: bool = False
     is_init: bool = False
     is_test: bool = False
     lines: int = 0
@@ -219,8 +223,26 @@ def _read_modules(root: Path, package: Path) -> dict[str, _ModuleInfo]:
         )
         info.exported, info.opaque_exports = _exported_names(tree)
         info.externals = _external_requirements(tree)
+        info.dynamic = _reaches_into_the_import_system(source, info.bindings)
         modules[name] = info
     return modules
+
+
+def _reaches_into_the_import_system(source: str, bindings: dict[str, str]) -> bool:
+    """Si el módulo se manipula a sí mismo como entrada del sistema de imports.
+
+    `sys.modules[__name__] = algo` y el `__getattr__` de módulo (PEP 562) hacen
+    lo mismo desde dos sitios: el nombre del módulo deja de ser una etiqueta del
+    fichero y pasa a ser parte del programa.
+
+    Vive aquí y no en B5 —que es quien lo estrenó, para no fundir un módulo así
+    con nadie— porque a B1 le hace la misma falta y por la misma razón, y el día
+    que una de las dos afine la regla la otra tiene que enterarse. Descubierto
+    con la transformación ya escrita: `stdnum/iso9362.py` acaba en
+    `sys.modules[__name__] = stdnum.bic`, B1 le mudó ahí dos funciones, y el
+    repositorio entero dejó de colectar.
+    """
+    return "sys.modules" in source or bool({"__getattr__", "__dir__"} & set(bindings))
 
 
 def _type_checking_bindings(tree: ast.Module) -> frozenset[str]:
@@ -564,11 +586,15 @@ def _build(root: Path, seed: int):
     # Quién puede dar y recibir definiciones: ficheros del paquete que no son el
     # `__init__`, agrupados por directorio. Un directorio con un solo módulo no
     # tiene con quién repartir.
+    # `dynamic` cierra las DOS direcciones de una vez, que es lo que hace falta:
+    # fuera de `inside` el módulo no aparece en `siblings` —así que nadie puede
+    # mudarse a él— y sus propias definiciones se cuentan como congeladas.
     inside = {
         name: info
         for name, info in modules.items()
         if not info.is_init
         and not info.is_test
+        and not info.dynamic
         and (package == info.path.parent or package in info.path.parents)
     }
     siblings: dict[Path, list[str]] = {}

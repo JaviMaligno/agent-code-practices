@@ -294,3 +294,74 @@ def test_the_plan_says_how_much_dose_is_lost_and_why(tmp_path: Path):
 
     assert informe.candidates == 4
     assert sum(informe.excluded.values()) + len(informe.symbol_moves) == informe.candidates
+
+
+def test_nothing_moves_into_a_module_that_swaps_itself_in_sys_modules(tmp_path: Path):
+    """Lo que enseñó python-stdnum y ningún fixture había enseñado.
+
+    `stdnum/iso9362.py` es un alias de compatibilidad: avisa del renombrado y
+    termina con `sys.modules[__name__] = stdnum.bic`. El nombre del módulo deja
+    de apuntar a ESE espacio de nombres, así que una definición mudada ahí no
+    existe para nadie: B1 movió `to_isin` de `cusip.py` a `iso9362.py`, reescribió
+    el import a `from stdnum.iso9362 import to_isin`, y la colecta entera murió
+    con `ImportError: cannot import name 'to_isin' from 'stdnum.bic'` —420 tests
+    a cero, la celda ilegible—.
+
+    B5 ya se guardaba de esto (`_reaches_into_the_import_system`); B1 no, porque
+    el fichero que lo hace no tiene nada raro para un análisis estático: define
+    imports y ejecuta una asignación. Un módulo así no puede ni dar ni recibir.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "nuevo.py").write_text(
+        "def alpha():\n    return 1\n\n\ndef beta():\n    return 2\n", encoding="utf-8"
+    )
+    (pkg / "otro.py").write_text(
+        "def gamma():\n    return 3\n\n\ndef delta():\n    return 4\n", encoding="utf-8"
+    )
+    (pkg / "viejo.py").write_text(
+        "import sys\n"
+        "\n"
+        "import pkg.nuevo\n"
+        "\n"
+        "sys.modules[__name__] = pkg.nuevo\n",
+        encoding="utf-8",
+    )
+
+    resultado = b1_cohesion.apply(tmp_path, seed=1)
+
+    assert "pkg.viejo" not in resultado.symbol_moves.values(), resultado.symbol_moves
+
+
+def test_a_module_that_swaps_itself_in_sys_modules_keeps_its_own_definitions(
+    tmp_path: Path,
+):
+    """La otra mitad, por simetría: lo que ese módulo defina tampoco se muda.
+
+    Sacarle una definición y reescribir los imports que la buscaban dejaría a
+    quien la pidiera por el nombre viejo mirando el espacio de nombres del
+    módulo suplantador, que es donde ya no está.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "nuevo.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (pkg / "otro.py").write_text("def gamma():\n    return 3\n", encoding="utf-8")
+    (pkg / "viejo.py").write_text(
+        "import sys\n"
+        "\n"
+        "import pkg.nuevo\n"
+        "\n"
+        "\n"
+        "def epsilon():\n"
+        "    return 5\n"
+        "\n"
+        "\n"
+        "sys.modules[__name__] = pkg.nuevo\n",
+        encoding="utf-8",
+    )
+
+    resultado = b1_cohesion.apply(tmp_path, seed=1)
+
+    assert "pkg.viejo.epsilon" not in resultado.symbol_moves, resultado.symbol_moves

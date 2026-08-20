@@ -119,6 +119,11 @@ from acp.transforms.b1_cohesion import (
     _exported_names,
     _external_requirements,
     _module_scope,
+    # La misma regla para las dos: un módulo que se suplanta en `sys.modules` no
+    # se funde con nadie (B5) ni recibe definiciones de nadie (B1). Estaba
+    # duplicada y B1 se enteró tarde —python-stdnum dejó de colectar—, así que
+    # ahora hay una sola.
+    _reaches_into_the_import_system,
     _resolve_relative,
 )
 from acp.transforms.b2_hierarchy import (
@@ -237,18 +242,6 @@ def _future_features(tree: ast.Module) -> frozenset[str]:
         if isinstance(statement, ast.ImportFrom) and statement.module == "__future__"
         for alias in statement.names
     )
-
-
-def _reaches_into_the_import_system(source: str, bindings: dict[str, str]) -> bool:
-    """Si el módulo se manipula a sí mismo como entrada del sistema de imports.
-
-    `sys.modules[__name__] = algo` y el `__getattr__` de módulo (PEP 562) hacen
-    lo mismo desde dos sitios: convierten el nombre del módulo en parte del
-    programa. Al fundirlo, ese nombre desaparece y `__getattr__` pasa a
-    contestar por los atributos del otro módulo también, que es un cambio de
-    comportamiento que ningún import arregla.
-    """
-    return "sys.modules" in source or bool({"__getattr__", "__dir__"} & set(bindings))
 
 
 def _read_imports(info: _Module, modules: dict[str, _Module]) -> None:
