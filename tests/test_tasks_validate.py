@@ -8,6 +8,7 @@ por test, y compararlo antes/después.
 
 from __future__ import annotations
 
+import inspect
 import subprocess
 import sys
 
@@ -197,3 +198,82 @@ def test_validating_against_a_session_of_another_tree_is_loud(tmp_path):
 
     with pytest.raises(ValueError, match="otro árbol"):
         validate_task(tmp_path / "b", tarea, session=sesion)
+
+
+def test_the_declared_pass_to_pass_is_actually_checked():
+    """El campo se guardaba, se serializaba y no se leía nunca. El resolve rate
+    (§7) exige que estos tests SIGAN pasando tras la edición del agente: si la
+    lista no se verifica al fabricar la tarea, puede nombrar tests que ya
+    estaban rotos o que no existen, y eso no se descubre hasta la campaña."""
+    report = compare_runs(
+        before={"t_a": "passed", "t_b": "failed"},
+        after={"t_a": "failed", "t_b": "failed"},
+        fail_to_pass=["t_a"],
+        pass_to_pass=["t_b"],
+    )
+
+    assert report.pass_to_pass_ok is False
+    assert report.valid is False
+
+
+def test_a_pass_to_pass_that_does_not_exist_invalidates_the_task():
+    report = compare_runs(
+        before={"t_a": "passed"},
+        after={"t_a": "failed"},
+        fail_to_pass=["t_a"],
+        pass_to_pass=["t_inventado"],
+    )
+
+    assert report.valid is False
+
+
+def test_a_task_that_breaks_far_more_than_one_thing_is_rejected_even_if_declared():
+    """§3.3 pide que la tarea rompa un conjunto CONCRETO de tests. Medido en
+    Docker: la misma mutación es inválida declarando 1 test y válida declarando
+    los 22 que rompe. Una tarea que tumba media suite no mide si el agente
+    arregló el fallo, mide si sobrevivió al desastre."""
+    rotos = {f"t_{index}": "passed" for index in range(30)}
+    despues = {nodeid: "failed" for nodeid in rotos}
+
+    report = compare_runs(
+        before=rotos, after=despues, fail_to_pass=list(rotos), pass_to_pass=[]
+    )
+
+    assert report.valid is False
+
+
+def test_a_handful_of_broken_tests_is_still_a_task():
+    """El techo no puede ser tan bajo que deje fuera una función que varios
+    tests ejercitan a la vez, que es lo normal en un repo con doctests."""
+    before = {f"t_{index}": "passed" for index in range(10)}
+    after = {**before, "t_0": "failed", "t_1": "failed", "t_2": "failed"}
+
+    report = compare_runs(
+        before=before, after=after, fail_to_pass=["t_0", "t_1", "t_2"], pass_to_pass=["t_5"]
+    )
+
+    assert report.valid is True
+
+
+def test_validating_a_task_checks_the_list_it_declared(monkeypatch):
+    """De nada sirve que `compare_runs` sepa comprobar `pass_to_pass` si quien
+    valida una tarea real no se lo pasa: el campo seguiría siendo decorativo."""
+    from acp.tasks import validate as modulo
+
+    recibido: dict = {}
+
+    def espia(before, after, fail_to_pass, pass_to_pass=None):
+        recibido["pass_to_pass"] = pass_to_pass
+        return modulo.ValidationReport(
+            valid=True, fail_to_pass_ok=True, pass_to_pass_ok=True, unexpected_failures=[]
+        )
+
+    monkeypatch.setattr(modulo, "compare_runs", espia)
+
+    firma = inspect.signature(modulo._validate_in)
+    assert "task" in firma.parameters, "cambió la firma: revisa este test"
+
+    fuente = inspect.getsource(modulo._validate_in)
+    assert "task.pass_to_pass" in fuente, (
+        "el validador no le pasa a compare_runs la lista declarada en la tarea"
+    )

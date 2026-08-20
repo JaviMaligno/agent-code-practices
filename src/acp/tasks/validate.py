@@ -118,8 +118,19 @@ class ValidationReport:
     observed_failures: list[str] = field(default_factory=list)
 
 
+# Cuántos tests puede romper una tarea antes de dejar de medir lo que dice medir.
+# §3.3 pide un conjunto CONCRETO de tests: una función suele estar cubierta por
+# unos pocos, y algo que tumba veintitantos ya no distingue "el agente arregló el
+# fallo" de "el agente sobrevivió al desastre". Medido: la misma mutación sobre
+# `mod_97_10.checksum` rompe 22 tests, y declararlos todos la volvía válida.
+MAX_BROKEN_TESTS = 8
+
+
 def compare_runs(
-    before: dict[str, str], after: dict[str, str], fail_to_pass: list[str]
+    before: dict[str, str],
+    after: dict[str, str],
+    fail_to_pass: list[str],
+    pass_to_pass: list[str] | None = None,
 ) -> ValidationReport:
     """Compara las dos corridas y dice si la tarea discrimina.
 
@@ -144,10 +155,25 @@ def compare_runs(
     fail_to_pass_ok = bool(fail_to_pass) and all(
         nodeid in set(observed) for nodeid in fail_to_pass
     )
+
+    # La lista declarada se comprueba de verdad, no se deduce de que no haya
+    # sorpresas: el resolve rate (§7) exige que estos tests SIGAN pasando tras
+    # la edición del agente, así que una lista que nombre tests ya rotos o
+    # inexistentes convierte esa exigencia en un trámite vacío.
+    declared_pass = list(pass_to_pass or [])
+    pass_to_pass_ok = not unexpected and all(
+        before.get(nodeid) == "passed" and after.get(nodeid) == "passed"
+        for nodeid in declared_pass
+    )
+
+    # El techo se mide sobre lo OBSERVADO, no sobre lo declarado: declarar más
+    # no puede convertir en válida una tarea que rompe media suite.
+    within_budget = len(observed) <= MAX_BROKEN_TESTS
+
     return ValidationReport(
-        valid=fail_to_pass_ok and not unexpected,
+        valid=fail_to_pass_ok and not unexpected and pass_to_pass_ok and within_budget,
         fail_to_pass_ok=fail_to_pass_ok,
-        pass_to_pass_ok=not unexpected,
+        pass_to_pass_ok=pass_to_pass_ok,
         unexpected_failures=unexpected,
         observed_failures=observed,
     )
@@ -317,4 +343,4 @@ def _validate_in(session: SuiteSession, repo: Path, task: Task) -> ValidationRep
         # El contenedor vuelve al árbol original aunque la corrida falle: la
         # referencia y las tareas siguientes miden sobre él.
         session.write(relativa, original)
-    return compare_runs(antes, despues, task.fail_to_pass)
+    return compare_runs(antes, despues, task.fail_to_pass, task.pass_to_pass)
