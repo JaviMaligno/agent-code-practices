@@ -72,3 +72,47 @@ def test_unbuildable_repo_reports_a_preparation_failure(tmp_path: Path):
     assert result.install_ok is False
     assert result.install_error != ""
     assert result.ran is False
+
+
+# Un test que hace lo que hace pint con `cache_folder=":auto:"`: escribir en la
+# caché del usuario y encontrársela en la corrida siguiente. El nombre es
+# reconocible a propósito —si esto se rompe otra vez, el fichero aparece en el
+# HOME de verdad de quien lo corra y hay que poder saber de dónde salió—.
+CACHE_WRITER = """\
+from pathlib import Path
+
+
+def test_nothing_from_the_previous_run_is_here():
+    testigo = Path.home() / ".acp-testigo-de-la-corrida"
+    assert not testigo.exists(), f"lo dejó la corrida anterior: {testigo}"
+    testigo.write_text("1", encoding="utf-8")
+"""
+
+
+def test_two_runs_in_a_row_do_not_share_the_users_cache(tmp_path: Path):
+    """§5.4.4: cada ejecución arranca sin estado compartido con la anterior.
+
+    Este ejecutor aísla dependencias, no el sistema, así que sin un HOME propio
+    las dos condiciones de un par comparten la caché del usuario. Medido sobre
+    pint: la base deja sus pickles en `~/Library/Caches/pint`, B1 y B5 cambian
+    el `__module__` de las clases y la segunda corrida muere con
+    `AttributeError: Can't get attribute 'OffsetConverter'` —un rojo que no
+    tiene nada que ver con la práctica que la celda quita—. Con la caché limpia,
+    B1 vuelve a dar los 2.289 de la base.
+
+    El entorno se conserva entre las dos corridas a propósito: es como corre la
+    campaña (`keep_env`), y es justo donde reutilizar lo instalado no puede
+    significar heredar lo que la condición anterior escribió.
+    """
+    from acp.runners import VenvRunner
+
+    build_repo(tmp_path)
+    (tmp_path / "tests" / "test_cache.py").write_text(CACHE_WRITER, encoding="utf-8")
+    env_dir = tmp_path / ".env"
+
+    primera = run_suite_in_venv(tmp_path, env_dir=env_dir, timeout=900, keep_env=True)
+    segunda = run_suite_in_venv(tmp_path, env_dir=env_dir, timeout=900)
+
+    assert primera.passed == 2 and primera.failed == 0
+    assert segunda.passed == 2 and segunda.failed == 0
+    assert not VenvRunner(tmp_path, env_dir).home.exists()

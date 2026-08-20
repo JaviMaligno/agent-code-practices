@@ -504,8 +504,20 @@ def prepare_environment(
     Devuelve las métricas con la parte de preparación rellena. `collect_ok` dice
     si la suite llegó a colectarse: es la comprobación funcional que sustituye a
     mirar códigos de salida de pip, que mienten.
+
+    Es también donde empieza la ejecución, así que es donde se vacía el HOME de
+    la corrida: §5.4.4 pide arrancar sin estado compartido con la anterior, y el
+    entorno sí se puede conservar entre corridas (`keep_env`, que es como corre
+    la campaña) pero la caché no. Es la diferencia entre reutilizar lo instalado
+    y heredar lo que la condición de antes dejó escrito.
     """
     repo, env_dir = resolve_locations(repo, env_dir)
+    runner = VenvRunner(repo, env_dir)
+    shutil.rmtree(runner.home, ignore_errors=True)
+    # Sin `exist_ok`: si el borrado no pudo con él, la corrida arrancaría con lo
+    # que dejó la anterior y la celda mediría eso. Un error aquí es ruidoso y se
+    # ve; heredar la caché en silencio es lo que se está arreglando.
+    runner.home.mkdir(parents=True)
     metrics = SuiteMetrics(attempted=True)
     started = time.monotonic()
 
@@ -517,7 +529,7 @@ def prepare_environment(
         return metrics
 
     return install_and_collect(
-        repo, VenvRunner(repo, env_dir), timeout, metrics, started, install_repo=install_repo
+        repo, runner, timeout, metrics, started, install_repo=install_repo
     )
 
 
@@ -630,12 +642,11 @@ def install_and_collect(
         # usar una de esas dependencias: el de holidays importa polib, que
         # viene en su grupo de tests.
         metrics.prepare_command = prepare
-        code, output, timed_out = _run(
-            runner.wrap(["sh", "-lc", prepare]) if isinstance(runner, DockerRunner)
-            else ["sh", "-lc", prepare],
-            repo,
-            timeout,
-        )
+        # Envuelto también fuera del contenedor: el script del repo es lo
+        # primero que corre y lo que escriba en la caché del usuario lo leería
+        # la condición siguiente. Mientras `wrap` no hacía nada en el ejecutor
+        # de venv, distinguir los dos casos daba igual.
+        code, output, timed_out = _run(runner.wrap(["sh", "-lc", prepare]), repo, timeout)
         metrics.prepare_ok = code == 0 and not timed_out
         if not metrics.prepare_ok:
             metrics.install_error = f"prepare: {output[-800:]}"
@@ -698,16 +709,22 @@ def run_suite_in_venv(
     descarta para no acumular gigas (§2 del spec).
     """
     repo, env_dir = resolve_locations(repo, env_dir)
+    runner = VenvRunner(repo, env_dir)
     try:
         metrics = prepare_environment(
             repo, env_dir, timeout=timeout, install_repo=install_repo
         )
         return run_prepared_suite(
-            repo, VenvRunner(repo, env_dir), timeout, metrics, install_repo=install_repo
+            repo, runner, timeout, metrics, install_repo=install_repo
         )
     finally:
         if not keep_env and env_dir.exists():
             shutil.rmtree(env_dir, ignore_errors=True)
+        # El HOME de la corrida se borra SIEMPRE, aunque el entorno se conserve:
+        # conservarlo es reutilizar lo instalado, y conservar la caché es
+        # exactamente el estado compartido que §5.4.4 prohíbe. Lo que quede
+        # dentro no le sirve a nadie más que a la corrida que lo escribió.
+        shutil.rmtree(runner.home, ignore_errors=True)
 
 
 def run_suite_in_docker(

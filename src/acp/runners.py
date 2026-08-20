@@ -31,9 +31,42 @@ def _venv_python(env_dir: Path) -> str:
     return str(env_dir / "bin" / "python")
 
 
+# Todo lo que un programa resuelve contando desde el HOME del usuario. Se fijan
+# también las variables XDG y no solo HOME porque en Linux ganan a HOME: una
+# `XDG_CACHE_HOME` heredada del anfitrión devolvería la caché compartida aunque
+# HOME fuera falso.
+_HOME_DERIVED = {
+    "XDG_CACHE_HOME": ".cache",
+    "XDG_DATA_HOME": ".local/share",
+    "XDG_STATE_HOME": ".local/state",
+    "XDG_CONFIG_HOME": ".config",
+}
+
+
 @dataclass
 class VenvRunner:
-    """Ejecuta en la propia máquina, con el intérprete de un entorno virtual."""
+    """Ejecuta en la propia máquina, con el intérprete de un entorno virtual.
+
+    Y con un HOME propio, que es la otra mitad del aislamiento. §5.4.4 pide que
+    cada ejecución arranque sin estado compartido con la anterior, y aquí el
+    aislamiento es solo de dependencias: lo que una condición deje en la caché
+    del usuario lo lee la siguiente. Medido sobre pint, que guarda su caché de
+    unidades ahí con `cache_folder=":auto:"` —la condición base deja los
+    pickles, B1 y B5 cambian el `__module__` de las clases y el tramo siguiente
+    muere con `AttributeError: Can't get attribute 'OffsetConverter'`, un fallo
+    que no tiene que ver con lo que la celda mide—. Fue el único rojo de la
+    suite entera de pint bajo B1 (`1 failed, 2288 passed`); con la caché limpia
+    vuelve a 2.289, idéntico a la base.
+
+    El contenedor no lo necesita —se crea y se destruye en cada corrida—, así
+    que esto vive solo en el ejecutor que el spec conserva como alternativa
+    (§2, §5.6) y no en los dos.
+
+    El precio, declarado: la caché de descargas de pip también vive bajo el HOME
+    del usuario, así que un entorno recién creado vuelve a bajar lo que instala.
+    Es el mismo precio que el contenedor ya paga en cada corrida, y en la
+    campaña —un entorno por repositorio, `keep_env`— solo se paga una vez.
+    """
 
     repo: Path
     env_dir: Path
@@ -47,8 +80,35 @@ class VenvRunner:
         """Dónde vive el repo desde el punto de vista del intérprete que lo usa."""
         return str(self.repo)
 
+    @property
+    def home(self) -> Path:
+        """El HOME de esta corrida: hermano del entorno y atado al repo.
+
+        Hermano y con nombre derivado, y no un temporal anónimo, por lo mismo
+        que el entorno (`resolve_locations`): dos clones hermanos no pueden
+        compartirlo, quien depure una celda puede mirar lo que quedó dentro, y
+        no se acumula un directorio por corrida en el temporal del sistema. Lo
+        que garantiza que esté vacío es que quien prepara el entorno lo borra
+        antes de empezar; el nombre solo tiene que ser suyo.
+        """
+        return self.env_dir.with_name(f".acp-home-{self.repo.name}")
+
+    def environment(self) -> dict[str, str]:
+        return {"HOME": str(self.home)} | {
+            name: str(self.home / tail) for name, tail in _HOME_DERIVED.items()
+        }
+
     def wrap(self, command: list[str]) -> list[str]:
-        return command
+        """El mismo comando, con el entorno de la corrida por delante.
+
+        Se pone en el comando y no en el `env=` de `subprocess` para que el
+        aislamiento viaje con el ejecutor —que es lo que distingue a los dos— y
+        no dependa de que cada uno de los once sitios que lanzan algo se acuerde
+        de pasarlo. `env` está donde ya está `sh`, que este ejecutor usa desde
+        que el repo se alcanza por ruta en vez de instalado.
+        """
+        assignments = [f"{name}={value}" for name, value in self.environment().items()]
+        return ["env", *assignments, *command]
 
 
 @dataclass

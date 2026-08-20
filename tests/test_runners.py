@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 from acp.runners import DEFAULT_IMAGE, DockerRunner, VenvRunner
@@ -70,10 +72,17 @@ def test_the_default_image_carries_git():
     assert "slim" not in DEFAULT_IMAGE
 
 
-def test_a_virtualenv_runner_runs_commands_as_they_come():
+def test_a_virtualenv_runner_runs_the_command_it_is_given():
+    """El comando sale entero y sin tocar: lo único que se le pone delante es el
+    entorno de la corrida, que es lo que impide que dos condiciones compartan la
+    caché del usuario."""
     runner = VenvRunner(repo=Path("/clones/pint"), env_dir=Path("/clones/pint/.acp-venv"))
 
-    assert runner.wrap(["python", "-m", "pytest", "-q"]) == ["python", "-m", "pytest", "-q"]
+    wrapped = runner.wrap(["python", "-m", "pytest", "-q"])
+
+    assert wrapped[-4:] == ["python", "-m", "pytest", "-q"]
+    assert wrapped[0] == "env"
+    assert f"HOME={runner.home}" in wrapped
 
 
 def test_a_virtualenv_runner_points_python_at_its_own_environment():
@@ -94,3 +103,67 @@ def test_a_docker_runner_uses_the_interpreter_of_the_image():
     runner = DockerRunner(repo=Path("/clones/pint"))
 
     assert runner.python == "python"
+
+
+def _seen_home(runner: VenvRunner, marker: Path) -> str:
+    """Lo que ve un proceso lanzado por este ejecutor: su HOME y si el testigo
+    de la corrida anterior sigue ahí."""
+    code = (
+        "import pathlib, sys;"
+        "home = pathlib.Path.home();"
+        f"print(home, (home / {str(marker)!r}).exists())"
+    )
+    salida = subprocess.run(
+        runner.wrap([sys.executable, "-c", code]),
+        capture_output=True, text=True, check=False,
+    )
+    assert salida.returncode == 0, salida.stderr
+    return salida.stdout.strip()
+
+
+def test_what_one_run_leaves_in_its_home_the_next_one_does_not_find(tmp_path: Path):
+    """§5.4.4: cada ejecución arranca sin estado compartido con la anterior, y
+    el ejecutor sin contenedor corre en la máquina de verdad.
+
+    Medido sobre pint, que guarda su caché de unidades en la del usuario con
+    `cache_folder=":auto:"`: la condición base deja ahí los pickles, B1 cambia
+    el `__module__` de 25 definiciones y la corrida siguiente muere con
+    `AttributeError: Can't get attribute 'OffsetConverter'` —un fallo que no
+    tiene nada que ver con lo que la celda mide—. Con la caché limpia, la misma
+    corrida vuelve a dar 2.289 passed, idéntico a la base.
+    """
+    primera = VenvRunner(tmp_path / "base", tmp_path / ".acp-venv-base")
+    primera.home.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        primera.wrap([
+            sys.executable, "-c",
+            "import pathlib; (pathlib.Path.home() / 'unidades.pickle').write_text('1')",
+        ]),
+        capture_output=True, text=True, check=True,
+    )
+
+    segunda = VenvRunner(tmp_path / "B1", tmp_path / ".acp-venv-B1")
+    segunda.home.mkdir(parents=True, exist_ok=True)
+
+    assert _seen_home(segunda, Path("unidades.pickle")).endswith("False")
+
+
+def test_the_hosts_home_is_not_where_the_suite_runs(tmp_path: Path):
+    """La caché `:auto:` de pint vive bajo el HOME del anfitrión, así que dejar
+    que el hijo lo herede es compartir un directorio entre todas las condiciones
+    de la campaña."""
+    runner = VenvRunner(tmp_path / "repo", tmp_path / ".acp-venv-repo")
+    runner.home.mkdir(parents=True, exist_ok=True)
+
+    visto = _seen_home(runner, Path("nada")).split(" ")[0]
+
+    assert visto != str(Path.home())
+
+
+def test_the_container_does_not_need_a_home_of_its_own():
+    """El contenedor se crea y se destruye en cada corrida, así que su
+    aislamiento ya es de sistema: meterle un HOME falso sería fontanería que no
+    aísla nada y una diferencia más entre los dos ejecutores."""
+    runner = DockerRunner(repo=Path("/clones/pint"), container="acp-pint")
+
+    assert runner.wrap(["python"])[:3] == ["docker", "exec", "--workdir"]
