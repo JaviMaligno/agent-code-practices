@@ -46,10 +46,15 @@ de módulo fuera de la suite y de los `__init__`):
 
 | repo | candidatas | movidas | por qué se pierde el resto |
 |---|---|---|---|
-| python-stdnum | 1.006 | 36 (3,6%) | 890 se nombran como atributo o dentro de un texto |
+| python-stdnum | 993 | 33 (3,3%) | 883 se nombran como atributo o dentro de un texto |
 | pint | 275 | 76 (28%) | 311 en módulos congelados, 98 cerrarían un ciclo |
-| sqlglot | 871 | 272 (31%) | 1.260 en módulos congelados, 474 cerrarían un ciclo |
+| sqlglot | 839 | 238 (28%) | 1.292 en módulos congelados, 485 cerrarían un ciclo |
 | holidays | 1.118 | 714 (64%) | 428 en módulos congelados, 392 cerrarían un ciclo |
+
+La tabla bajó en python-stdnum (36→33) y en sqlglot (272→238) al congelar los
+módulos que se suplantan en `sys.modules`: es dosis pagada a cambio de que el
+repositorio arranque, y las dos celdas de la matriz la verifican con su suite
+entera.
 
 python-stdnum es el caso extremo y merece leerse: sus módulos son un protocolo
 de pato —`validate`, `is_valid`, `compact`, `format` en cada uno— al que se
