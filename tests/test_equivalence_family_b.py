@@ -85,11 +85,13 @@ class Cell:
 # —`install_repo=True`, al revés que B2— porque B1 no toca el árbol de ficheros:
 # reparte definiciones entre los ficheros que ya existen, el `pyproject` sigue
 # describiendo lo que hay, y una copia instalada es el modo más parecido a lo
-# que verá el agente. Medido: B1 solo escribe dentro del paquete raíz —59 rutas
+# que verá el agente. Medido: B1 solo escribe dentro del paquete raíz —51 rutas
 # en python-stdnum, 50 en pint—, ni `pyproject.toml` ni `setup.py` cambian.
-# La celda de python-stdnum mide poco y hay que saberlo al leerla: 36 de 1.006
-# definiciones (3,6%), porque el resto se nombra por atributo o dentro de un
-# texto; la de pint mueve 76 de 275 (28%).
+# La celda de python-stdnum mide poco y hay que saberlo al leerla: 33 de 993
+# definiciones (3,3%), porque el resto se nombra por atributo o dentro de un
+# texto; la de pint mueve 76 de 275 (28%). Las dos producen el mismo árbol byte
+# a byte al repetirlas, que es lo que exige §5.4.4 y aquí está comprobado sobre
+# el repositorio real y no solo sobre un fixture.
 #
 # B5 solo puede ir sobre pint de los dos repos que pide el plan, y esto no es
 # una elección: en python-stdnum su dosis es CERO, con la misma causa que deja a
