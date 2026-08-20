@@ -82,10 +82,14 @@ Cuatro cosas que hay que saber antes de gastar una celda aquí:
   techo y pasa a ser la compatibilidad entre hermanos. El cuarto punto de §6.3
   puede no existir en estos repositorios, y eso hay que decirlo antes de
   interpretar una curva plana como «el tamaño no importa».
-- **Verificado en repo real, no solo en fixtures**: pint (2.024 tests, 0 fallos
-  antes y después, 20 módulos absorbidos) y sqlglot. Las dos veces que sqlglot
-  salió roto fue por lo mismo —el ciclo que ya estaba—, y ninguno de los
-  dieciocho fixtures lo enseñaba.
+- **Verificado en repo real, no solo en fixtures**, con la suite entera antes y
+  después: pint 2.024 pasan / 0 fallan en las dos, con 20 módulos absorbidos;
+  sqlglot 1.231 / 0 en las dos, con 55. Hizo falta: sqlglot salió sin poder
+  importarse dos veces seguidas, las dos por el ciclo que el repositorio ya
+  tenía, y ninguno de los dieciocho fixtures que había entonces lo enseñaba.
+  Sale más barato buscarlo con un `import` y media docena de llamadas que con
+  dos corridas de suite: las dos veces el fallo era un ImportError en la
+  primera línea.
 - **Lo que se queda fuera y no se puede arreglar sin ejecutar el programa**: un
   decorador que registra por `__module__`, y el `__name__` de un módulo
   absorbido —que cambia—. Contra lo primero no hay guarda posible; contra lo
