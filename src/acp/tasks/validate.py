@@ -37,7 +37,16 @@ reconociendo la forma que xdist usa (veredicto delante) y sin confundir el
 from __future__ import annotations
 
 import re
+import tempfile
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from acp.models import SuiteMetrics
+from acp.runners import CONTAINER_WORKDIR, DEFAULT_IMAGE, DockerRunner
+from acp.suite import _pytest_command, _run, install_and_collect, resolve_locations
+from acp.tasks.inject import apply_patch, module_path
+from acp.tasks.models import Task
 
 # El vocabulario de veredictos de pytest. `error` se guarda distinto de `failed`
 # —no es lo mismo que falle una aserción que que el test no llegara a correr—
@@ -142,3 +151,162 @@ def compare_runs(
         unexpected_failures=unexpected,
         observed_failures=observed,
     )
+
+
+# Los argumentos con los que se pide el resultado por test.
+#
+# `--verbosity=1` y no `-v`: la verbosidad de pytest es un contador, así que un
+# repo con `addopts = -q` cancelaría el `-v` de la línea de órdenes y la corrida
+# volvería a imprimir puntos. No daría un error —daría un diccionario vacío, que
+# se lee como "esta tarea no rompe nada"—. `--verbosity` FIJA el valor, y como
+# los addopts se procesan antes que la línea de órdenes, gana este.
+#
+# `--tb=no` porque el traceback no se usa para nada y sí cuesta: una mutación en
+# un módulo del que cuelga medio repo imprime cientos de trazas, y esa salida se
+# lee entera en memoria. La máquina donde corre esto tiene 6 GB para Docker.
+PER_TEST_ARGS = ["--verbosity=1", "--tb=no"]
+
+
+@dataclass
+class SuiteSession:
+    """Un contenedor vivo donde correr la suite del mismo árbol varias veces.
+
+    `run_suite_in_docker` levanta un contenedor, instala y lo destruye en cada
+    llamada. Validar una tarea son DOS corridas de la misma suite —antes y
+    después del parche— y validar las 24 son 25: pagar la instalación cada vez
+    multiplicaría por dos el coste del pre-flight y, peor, mediría el antes y el
+    después en dos entornos distintos, que es justo lo que hace falta descartar
+    para poder atribuir la diferencia al parche.
+
+    El árbol del anfitrión no se toca nunca: el parche entra y sale por
+    `docker cp` (§4.2). Así el clon queda igual después de validar que antes, y
+    una tarea no puede heredar el fallo de la anterior.
+    """
+
+    repo: Path
+    image: str = DEFAULT_IMAGE
+    timeout: int = 1800
+    install_repo: bool = True
+    prepare: str | None = None
+
+    def __post_init__(self) -> None:
+        self.repo, _ = resolve_locations(self.repo, None)
+        self._runner = DockerRunner(repo=self.repo, image=self.image)
+        self._baseline: dict[str, str] | None = None
+        self.metrics = SuiteMetrics(attempted=True)
+
+    def __enter__(self) -> "SuiteSession":
+        started = time.monotonic()
+        # Un contenedor huérfano de una corrida anterior bloquearía el nombre.
+        _run(self._runner.stop_command(), self.repo, self.timeout)
+        code, output, timed_out = _run(self._runner.start_command(), self.repo, self.timeout)
+        if code != 0 or timed_out:
+            raise RuntimeError(f"docker run: {output[-800:]}")
+        try:
+            code, output, timed_out = _run(self._runner.copy_command(), self.repo, self.timeout)
+            if code != 0 or timed_out:
+                raise RuntimeError(f"docker cp: {output[-800:]}")
+            _run(self._runner.trust_command(), self.repo, self.timeout)
+            self.metrics = install_and_collect(
+                self.repo, self._runner, self.timeout, self.metrics, started,
+                self.prepare, install_repo=self.install_repo,
+            )
+            # Sin colecta no hay medida, y una tarea "sin tests rotos" sobre un
+            # entorno que no llegó a levantarse se leería como una tarea que no
+            # discrimina. Es fontanería, y §5.6 pide que suene como fontanería.
+            if not self.metrics.collect_ok:
+                raise RuntimeError(f"la suite no se colectó: {self.metrics.install_error}")
+        except BaseException:
+            self.close()
+            raise
+        return self
+
+    def __exit__(self, *_excepcion: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        _run(self._runner.stop_command(), self.repo, self.timeout)
+
+    def outcomes(self) -> dict[str, str]:
+        """El veredicto de cada test de una corrida completa de la suite."""
+        comando = self._runner.wrap(
+            _pytest_command(self._runner, PER_TEST_ARGS, self.install_repo)
+        )
+        _, output, timed_out = _run(comando, self.repo, self.timeout)
+        if timed_out:
+            raise TimeoutError(f"la suite de {self.repo.name} pasó de {self.timeout}s")
+        leidos = parse_verbose_outcomes(output)
+        if not leidos:
+            # Ni un solo veredicto legible es un fallo del circuito de medida, no
+            # un resultado: se cuenta como "nada roto" y la tarea se descarta o
+            # se acepta por la razón equivocada.
+            raise RuntimeError(f"la corrida no dio ni un veredicto: {output[-800:]}")
+        return leidos
+
+    def baseline(self) -> dict[str, str]:
+        """La corrida del árbol original, medida una vez y reutilizada.
+
+        Es la misma para todas las tareas del mismo repo: el "antes" es una
+        propiedad del árbol, no de la tarea. Reutilizarla es lo que hace que
+        validar N tareas cueste N+1 corridas y no 2N.
+        """
+        if self._baseline is None:
+            self._baseline = self.outcomes()
+        return self._baseline
+
+    def write(self, relative: str, content: str) -> None:
+        """Deja un fichero dentro del contenedor, sin tocar el árbol de fuera."""
+        with tempfile.TemporaryDirectory() as temporal:
+            destino = Path(temporal) / Path(relative).name
+            destino.write_text(content, encoding="utf-8")
+            code, output, _ = _run(
+                ["docker", "cp", str(destino),
+                 f"{self._runner.container}:{CONTAINER_WORKDIR}/{relative}"],
+                self.repo, self.timeout,
+            )
+            if code != 0:
+                raise RuntimeError(f"docker cp {relative}: {output[-400:]}")
+
+
+def validate_task(
+    repo: Path,
+    task: Task,
+    timeout: int = 1800,
+    *,
+    session: SuiteSession | None = None,
+    image: str = DEFAULT_IMAGE,
+    install_repo: bool = True,
+    prepare: str | None = None,
+) -> ValidationReport:
+    """Corre la suite con y sin el parche y dice si la tarea discrimina.
+
+    `repo` se pasa en su estado ORIGINAL: el parche lo aplica esta función, y
+    solo dentro del contenedor. `session` permite validar varias tareas del
+    mismo repo pagando una sola instalación y una sola corrida de referencia.
+    """
+    if session is not None:
+        return _validate_in(session, session.repo, task)
+    with SuiteSession(
+        repo, image=image, timeout=timeout, install_repo=install_repo, prepare=prepare
+    ) as abierta:
+        return _validate_in(abierta, abierta.repo, task)
+
+
+def _validate_in(session: SuiteSession, repo: Path, task: Task) -> ValidationReport:
+    ruta = module_path(repo, task.module)
+    relativa = ruta.relative_to(repo).as_posix()
+    original = ruta.read_text(encoding="utf-8")
+    # Aplicar el parche de la tarea, y no volver a mutar, es lo que comprueba que
+    # el parche guardado en el JSON es de verdad el parche de referencia: si no
+    # encajara en el fuente, esto suena aquí y no en mitad de la campaña.
+    mutado = apply_patch(original, task.patch)
+
+    antes = session.baseline()
+    session.write(relativa, mutado)
+    try:
+        despues = session.outcomes()
+    finally:
+        # El contenedor vuelve al árbol original aunque la corrida falle: la
+        # referencia y las tareas siguientes miden sobre él.
+        session.write(relativa, original)
+    return compare_runs(antes, despues, task.fail_to_pass)

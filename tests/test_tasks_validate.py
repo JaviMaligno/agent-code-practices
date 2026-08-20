@@ -8,9 +8,12 @@ por test, y compararlo antes/después.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
-from acp.tasks.validate import compare_runs, parse_verbose_outcomes
+from acp.tasks.validate import PER_TEST_ARGS, compare_runs, parse_verbose_outcomes
 
 
 def test_a_task_is_valid_when_it_breaks_exactly_what_it_should():
@@ -152,3 +155,23 @@ def test_a_line_that_is_not_a_result_is_not_read_as_one():
     ruido = "platform darwin -- Python 3.12.8\nrootdir: /repo\nplugins: cov-7.1.0\n"
 
     assert parse_verbose_outcomes(ruido) == {}
+
+
+def test_a_repo_that_asks_for_quiet_cannot_silence_the_per_test_result(tmp_path):
+    """La verbosidad de pytest es un CONTADOR: `-q` en los addopts del repo y
+    `-v` en la línea de órdenes se cancelan y la corrida vuelve a imprimir
+    puntos. Medido: con `addopts = -q`, `-v` da `test_x.py .` y ni un nodeid.
+
+    No daría un error: daría un diccionario vacío, y la tarea se leería como
+    "no rompe nada" en un repo elegido por tener sus addopts así. Por eso el
+    lector pide `--verbosity=1`, que FIJA el valor en vez de sumarlo.
+    """
+    (tmp_path / "pytest.ini").write_text("[pytest]\naddopts = -q\n", encoding="utf-8")
+    (tmp_path / "test_x.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+
+    corrida = subprocess.run(
+        [sys.executable, "-m", "pytest", *PER_TEST_ARGS],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+
+    assert parse_verbose_outcomes(corrida.stdout) == {"test_x.py::test_a": "passed"}
