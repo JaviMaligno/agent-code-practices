@@ -80,15 +80,26 @@ def profile_repo(
 # Y delante de B2 por una segunda razón, esta experimental: B1 reparte dentro de
 # cada directorio, así que si B2 aplanara antes, la dosis de B1 dependería de si
 # B2 está en la celda y ninguna de las dos sería atribuible (§4.2).
-CANONICAL_ORDER = ("B1", "A1", "A2", "A4", "A3", "B2", "B3", "B4")
+# B5 va justo detrás de B1 y por las dos mismas razones: sus claves son nombres
+# de símbolo, que solo son las del mapa de identidad antes de que A2 renombre; y
+# delante de B2, porque B2 aplana el paquete en un solo directorio y B5 funde
+# dentro de cada uno, así que después de B2 la dosis de B5 dependería de si B2
+# está en la celda y ninguna de las dos sería atribuible (§4.2). Detrás de B1 y
+# no delante porque B1 necesita ficheros hermanos entre los que repartir: fundir
+# primero le quitaría destinos y su dosis dependería del techo de líneas de B5.
+CANONICAL_ORDER = ("B1", "B5", "A1", "A2", "A4", "A3", "B2", "B3", "B4")
 
 
 def _application_order(transform_ids: list[str]) -> list[str]:
     """El orden en que se aplican, que no tiene por qué ser el que se pidió."""
     rank = {name: index for index, name in enumerate(CANONICAL_ORDER)}
-    # `sorted` es estable: lo que aún no tenga sitio asignado —la familia B— se
-    # queda al final en el orden en que llegó.
-    return sorted(transform_ids, key=lambda name: rank.get(name, len(rank)))
+    # El punto de una curva ocupa el sitio de su transformación: `B5-10000` es
+    # B5 con otro techo, y dejarlo caer al final por no encontrar su nombre lo
+    # pondría detrás de A2, que es justo donde sus claves de símbolo dejan de
+    # ser las del mapa de identidad y todo lo que mueve se cae del manifiesto.
+    # `sorted` es estable: lo que aún no tenga sitio asignado se queda al final
+    # en el orden en que llegó.
+    return sorted(transform_ids, key=lambda name: rank.get(name.split("-")[0], len(rank)))
 
 
 def manifest_path_for(destination: Path, manifest: Path | None = None) -> Path:
