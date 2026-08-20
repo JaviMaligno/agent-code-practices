@@ -86,6 +86,7 @@ from acp.transforms.base import (
     TransformResult,
     iter_transformable_files,
 )
+from acp.transforms.modulegraph import components
 from acp.transforms.doctests import DOCTEST_PROMPT, doctest_files, rewrite_examples
 from acp.transforms.dependencies import (
     annotation_names,
@@ -932,48 +933,12 @@ class _Graph:
         )
 
     def _components(self) -> dict[str, int]:
-        """Componentes fuertemente conexas, por Kosaraju."""
-        forward: dict[str, set[str]] = {}
-        backward: dict[str, set[str]] = {}
-        nodes: set[str] = set()
-        for origin, target in self.edges:
-            forward.setdefault(origin, set()).add(target)
-            backward.setdefault(target, set()).add(origin)
-            nodes.update((origin, target))
+        """Componentes fuertemente conexas de las aristas de ahora mismo.
 
-        order: list[str] = []
-        seen: set[str] = set()
-        for start in sorted(nodes):
-            if start in seen:
-                continue
-            # Iterativo y no recursivo: un repo grande desborda la pila.
-            stack = [(start, iter(sorted(forward.get(start, ()))))]
-            seen.add(start)
-            while stack:
-                node, pending = stack[-1]
-                following = next(pending, None)
-                if following is None:
-                    order.append(node)
-                    stack.pop()
-                elif following not in seen:
-                    seen.add(following)
-                    stack.append((following, iter(sorted(forward.get(following, ())))))
-
-        component: dict[str, int] = {}
-        label = 0
-        for start in reversed(order):
-            if start in component:
-                continue
-            stack = [start]
-            component[start] = label
-            while stack:
-                node = stack.pop()
-                for previous in sorted(backward.get(node, ())):
-                    if previous not in component:
-                        component[previous] = label
-                        stack.append(previous)
-            label += 1
-        return component
+        El algoritmo vive en `modulegraph` porque B5 se hace la misma pregunta
+        antes de fundir dos módulos en uno, y dos copias podrían discrepar.
+        """
+        return components(self.edges)
 
     def resolve(self, need: _Need) -> str:
         return self.home.get(need.key, need.owner)
