@@ -102,10 +102,11 @@ celda de B5 (§4.2), así que se comprueba en vez de suponerse—: el número de
 ficheros no cambia (110, 368, 253 y 659, idénticos), el total de líneas sube
 entre un 0,07% y un 0,47% —los imports que hay que añadir en el destino— y la
 cola se queda quieta: el máximo por fichero se mueve menos del 2% (2.373→2.373
-en pint, 10.475→10.469 en sqlglot) y el p90 tampoco (1.217→1.202, 522→530).
+en pint, 10.475→10.465 en sqlglot) y el p90 tampoco (663→663 en pint,
+1.217→1.209 en sqlglot, 522→534 en holidays).
 
 Con una excepción que hay que declarar: **la mediana sube**, entre un 1% y un
-16% (pint 147,5→170,5; sqlglot 182→204; holidays 186→193; python-stdnum 84→85).
+16% (pint 147,5→170,5; sqlglot 182→196; holidays 186→190; python-stdnum 84→85).
 No es un defecto sino la consecuencia directa de repartir procurando que cada
 fichero reciba un número parecido de líneas: el módulo pequeño de un directorio
 crece hacia sus hermanos. B1 no es del todo ortogonal al eje de tamaño en el
