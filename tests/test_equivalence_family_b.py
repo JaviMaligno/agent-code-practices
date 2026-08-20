@@ -93,6 +93,15 @@ class Cell:
 # a byte al repetirlas, que es lo que exige §5.4.4 y aquí está comprobado sobre
 # el repositorio real y no solo sobre un fixture.
 #
+# Y NO hay celda de B1 sobre sqlglot ni sobre holidays porque hoy B1 los rompe,
+# no porque salgan caras: el árbol transformado se importa y luego la primera
+# llamada pública muere —`NameError: name '_build_to_timestamp' is not defined`
+# en sqlglot, `ImportError: cannot import name '_normalize_tuple' from partially
+# initialized module` en holidays—. Está escrito con detalle en el docstring de
+# `b1_cohesion`. Añadir esas dos celdas es lo primero que hay que hacer DESPUÉS
+# de arreglarlo, y no antes: una celda roja por la transformación no se
+# distingue en el resultado de un agente que fracasa (§5.6).
+#
 # B5 solo puede ir sobre pint de los dos repos que pide el plan, y esto no es
 # una elección: en python-stdnum su dosis es CERO, con la misma causa que deja a
 # B2 a cero ahí —ver
