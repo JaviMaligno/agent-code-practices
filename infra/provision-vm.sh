@@ -53,7 +53,7 @@ crear)
     --machine-type "$TIPO" \
     --image-family debian-12 --image-project debian-cloud \
     --boot-disk-size "$DISCO" --boot-disk-type pd-balanced \
-    --scopes cloud-platform \
+    --scopes cloud-platform --tags "$NOMBRE" \
     --metadata-from-file startup-script=<(cat <<'ARRANQUE'
 #!/bin/bash
 set -eux
@@ -65,7 +65,18 @@ systemctl enable --now docker
 for u in $(ls /home); do usermod -aG docker "$u" || true; done
 ARRANQUE
 )
-  echo "VM creada. El script de arranque tarda un par de minutos en instalar Docker."
+  # La red `default` de este proyecto no deja entrar por el 22: la regla que lo
+  # permite desde cualquier sitio exige el tag `https-server` —y ponerlo abriría
+  # también 443 y 4000 al mundo— y la de ssh solo admite una lista de IPs fijas.
+  # Así que una regla propia, acotada a esta IP y a esta VM, que se borra con ella
+  # en vez de tocar reglas compartidas del proyecto.
+  MI_IP=$(curl -s https://api.ipify.org)
+  gcloud compute firewall-rules create "$NOMBRE-ssh" \
+    --project "$PROYECTO" --network default --direction INGRESS \
+    --action allow --rules tcp:22 \
+    --source-ranges "$MI_IP/32" --target-tags "$NOMBRE" \
+    --description "SSH a la VM de la campana. Se borra con la VM." || true
+  echo "VM creada ($MI_IP autorizada al 22). El arranque tarda un par de minutos en instalar Docker."
   ;;
 
 preparar)
@@ -128,8 +139,13 @@ estado)
   ssh_vm "
     cd agent-code-practices
     echo \"celdas: \$(cat out/campana-T*.jsonl 2>/dev/null | wc -l)\"
-    ps -o etime=,args= -C python3 2>/dev/null | grep -c 'acp.campaign' | xargs -I{} echo 'procesos: {}'
-    tail -n2 logs/T*.log 2>/dev/null
+    # ps -C python3 no vale (las comillas invertidas aqui dentro las ejecuta el
+    # shell remoto): el proceso es .venv/bin/python, y no encontrarlo hacia
+    # leer una campana viva como si no corriera. El patron va partido para
+    # que este grep no se cuente a si mismo.
+    echo \"procesos: \$(ps -eo args | grep -c 'acp[.]campaig''n')\"
+    docker ps --format '{{.Names}}' 2>/dev/null | grep '^acp-' | sed 's/^/  /'
+    grep -hE '^\\[T[0-3]\\]' logs/T*.log 2>/dev/null | tail -n4
   "
   ;;
 
@@ -142,6 +158,9 @@ traer)
 
 destruir)
   gcloud compute instances delete "$NOMBRE" --project "$PROYECTO" --zone "$ZONA" --quiet
+  # La regla no sirve para nada sin la VM, y dejarla es dejar un agujero abierto
+  # en la red compartida del proyecto.
+  gcloud compute firewall-rules delete "$NOMBRE-ssh" --project "$PROYECTO" --quiet || true
   ;;
 
 *)
