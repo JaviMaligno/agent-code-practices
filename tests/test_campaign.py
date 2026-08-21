@@ -19,6 +19,7 @@ from acp.campaign import (
     already_measured,
     cell_oracle,
     cell_tree,
+    cell_tree_name,
     clean_tree_name,
     installs_the_repo,
     measure_cell,
@@ -519,3 +520,23 @@ def test_the_breakdown_conditions_are_launchable_like_any_other():
     assert ALL_CONDITIONS["T0"] == CONDITIONS["T0"]
     assert ALL_CONDITIONS["KO-A2"] == BREAKDOWN["KO-A2"]
     assert len(ALL_CONDITIONS) == 20
+
+
+def test_two_tiers_of_the_same_repo_do_not_fight_over_the_same_container(tmp_path: Path):
+    """El diseño pide dos tiers en las celdas de titular (§6.1), y correrlos a la
+    vez es lo que hace que quepan. Pero el árbol se llamaba igual en los dos
+    —`<repo>-T0-clean`— así que pedirían el mismo contenedor y uno mataría el del
+    otro. Misma clase de fallo que entre repositorios, un nivel más abajo."""
+    bajo = clean_tree_name(tmp_path / "pint", "T0", label="mini")
+    alto = clean_tree_name(tmp_path / "pint", "T0", label="full")
+
+    assert bajo != alto
+    assert "mini" in bajo and "full" in alto
+
+
+def test_without_a_label_the_names_stay_as_the_cells_already_measured_have_them(tmp_path: Path):
+    """Las celdas ya medidas se hicieron sin etiqueta. Cambiar el nombre por
+    defecto obligaría a reconstruir árboles que ya existen, y en una reanudación
+    eso es tiempo tirado."""
+    assert clean_tree_name(tmp_path / "pint", "T0") == "pint-T0-clean"
+    assert cell_tree_name(tmp_path / "pint", "T0", "t-001") == "pint-T0-t-001"

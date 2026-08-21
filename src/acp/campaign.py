@@ -32,7 +32,7 @@ from acp.tasks.models import Task
 from acp.transforms.base import copy_tree
 
 
-def clean_tree_name(source: Path, condition: str) -> str:
+def clean_tree_name(source: Path, condition: str, label: str = "") -> str:
     """Cómo se llama el árbol sano de una condición, con el repo en el nombre.
 
     El nombre importa porque de él sale el del contenedor. Sin el repo delante,
@@ -41,13 +41,21 @@ def clean_tree_name(source: Path, condition: str) -> str:
     contenedor de la otra a mitad de celda, que se lee como un agente que rompió
     algo.
     """
-    return f"{Path(source).name}-{condition}-clean"
+    # La etiqueta distingue corridas del mismo repo y condición que conviven en
+    # la misma máquina: dos tiers de modelo (§6.1), o la dotación pobre (§6.4).
+    # Vacía por defecto para no renombrar los árboles de las celdas ya medidas,
+    # que en una reanudación habría que reconstruir por nada.
+    marca = f"-{label}" if label else ""
+    return f"{Path(source).name}-{condition}{marca}-clean"
 
 
-def cell_tree_name(source: Path, condition: str, task_id: str, run: int = 0) -> str:
+def cell_tree_name(
+    source: Path, condition: str, task_id: str, run: int = 0, label: str = ""
+) -> str:
     """Y el del árbol con el fallo, por la misma razón."""
+    marca = f"-{label}" if label else ""
     sufijo = f"-r{run}" if run else ""
-    return f"{Path(source).name}-{condition}-{task_id}{sufijo}"
+    return f"{Path(source).name}-{condition}{marca}-{task_id}{sufijo}"
 
 
 def _clear(destination: Path, source: Path) -> None:
@@ -278,6 +286,7 @@ def measure_cell(
     tests_from: Path | None = None,
     clean: dict[str, str] | None = None,
     run: int = 0,
+    label: str = "",
 ) -> dict:
     """Mide una celda: monta los dos árboles, deriva el oráculo y deja actuar.
 
@@ -293,14 +302,15 @@ def measure_cell(
     # cinco transformaciones y cinco suites de más por condición.
     if clean is None:
         clean_tree = cell_tree(
-            source, None, transform_ids, workdir / clean_tree_name(source, condition)
+            source, None, transform_ids,
+            workdir / clean_tree_name(source, condition, label),
         )
         with open_session(clean_tree, tests_from=tests_from) as session:
             clean = session.outcomes()
 
     faulty_tree = cell_tree(
         source, task, transform_ids,
-        workdir / cell_tree_name(source, condition, task.task_id, run),
+        workdir / cell_tree_name(source, condition, task.task_id, run, label),
     )
     with open_session(faulty_tree, tests_from=tests_from) as session:
         faulty = session.outcomes()
@@ -390,6 +400,7 @@ def run_all(
     max_turns: int = 40,
     grep: bool = True,
     runs: int = 1,
+    label: str = "",
 ) -> list[dict]:
     """La campaña con las piezas de verdad: contenedor, suite y modelo.
 
@@ -438,7 +449,8 @@ def run_all(
             return solve(session, prompt, model, grep=grep, max_turns=max_turns)
 
         clean_tree = cell_tree(
-            source, None, transform_ids, workdir / clean_tree_name(source, condition)
+            source, None, transform_ids,
+            workdir / clean_tree_name(source, condition, label),
         )
         with open_session(clean_tree, tests_from=restore) as session:
             clean = session.outcomes()
@@ -455,6 +467,7 @@ def run_all(
                 tests_from=restore,
                 clean=clean,
                 run=run,
+                label=label,
             )
             record["model"] = model
             record["install_repo"] = install_repo
@@ -539,6 +552,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-turns", type=int, default=40)
     parser.add_argument("--poor", action="store_true", help="dotación sin búsqueda")
     parser.add_argument(
+        "--label", default="",
+        help="distingue corridas que conviven: tier de modelo, dotación…",
+    )
+    parser.add_argument(
         "--runs", type=int, default=1,
         help="pasadas por celda; el diseño pide 3 en las celdas de titular",
     )
@@ -557,6 +574,7 @@ def main(argv: list[str] | None = None) -> int:
         max_turns=args.max_turns,
         grep=not args.poor,
         runs=args.runs,
+        label=args.label,
     )
     medibles = [r for r in records if r["measurable"]]
     print(
