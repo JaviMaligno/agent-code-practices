@@ -214,6 +214,10 @@ class SuiteSession:
     timeout: int = 1800
     install_repo: bool = True
     prepare: str | None = None
+    # Con B4 la suite vive fuera del árbol (§4.2): se le devuelve al contenedor
+    # para poder validar. Sin esto, los tests que la validación necesita no
+    # existen y TODA la celda se lee como "el agente rompió otra cosa".
+    tests_from: Path | None = None
 
     def __post_init__(self) -> None:
         self.repo, _ = resolve_locations(self.repo, None)
@@ -233,6 +237,13 @@ class SuiteSession:
             if code != 0 or timed_out:
                 raise RuntimeError(f"docker cp: {output[-800:]}")
             _run(self._runner.trust_command(), self.repo, self.timeout)
+            if self.tests_from is not None and Path(self.tests_from).is_dir():
+                origen = Path(self.tests_from).expanduser().resolve()
+                _run(
+                    ["docker", "cp", f"{origen}/.",
+                     f"{self._runner.container}:{CONTAINER_WORKDIR}"],
+                    self.repo, self.timeout,
+                )
             self.metrics = install_and_collect(
                 self.repo, self._runner, self.timeout, self.metrics, started,
                 self.prepare, install_repo=self.install_repo,
