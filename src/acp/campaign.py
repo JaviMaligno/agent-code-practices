@@ -406,15 +406,30 @@ def run_all(
 
 
 
-def summarise(log: Path) -> dict[str, dict]:
+def _lines(logs: Path | list[Path]) -> list[str]:
+    """Las líneas de uno o varios registros, en el orden en que se dieron."""
+    paths = [logs] if isinstance(logs, (str, Path)) else list(logs)
+    salida: list[str] = []
+    for path in paths:
+        path = Path(path)
+        if path.is_file():
+            salida.extend(path.read_text(encoding="utf-8").splitlines())
+    return salida
+
+
+def summarise(logs: Path | list[Path]) -> dict[str, dict]:
     """El 2×2 tal como se publica: tasa sobre las celdas que miden algo.
+
+    Acepta varios registros porque cada condición corre en su propio proceso y
+    escribe el suyo: dos procesos sobre el mismo jsonl se pisan, y la
+    reanudación lo lee para saber qué celdas faltan.
 
     Las no medibles se cuentan aparte y nunca entran en el denominador. Meter
     ahí una celda que falló por fontanería la presenta como un agente que
     fracasó, y ese es el error que hundió T2 entera en la primera tanda.
     """
     resumen: dict[str, dict] = {}
-    for line in Path(log).read_text(encoding="utf-8").splitlines():
+    for line in _lines(logs):
         if not line.strip():
             continue
         record = json.loads(line)

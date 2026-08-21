@@ -384,3 +384,24 @@ def test_a_cell_can_be_built_again_over_the_tree_a_dead_run_left_behind(tmp_path
 
     assert rate_of(tree) == "4"
     assert not (tree / "resto-de-la-corrida-muerta.txt").exists()
+
+
+def test_the_summary_reads_the_campaign_split_across_one_log_per_condition(tmp_path: Path):
+    """Cada condición corre en su propio proceso y escribe su propio log: dos
+    procesos sobre el mismo jsonl se pisan, y la reanudación lo lee para saber
+    qué falta. El resumen que va al artículo tiene que juntarlos."""
+    (tmp_path / "campana-T0.jsonl").write_text(
+        '{"condition":"T0","task_id":"a","stratum":"generic","measurable":true,"solved":true}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "campana-T1.jsonl").write_text(
+        '{"condition":"T1","task_id":"a","stratum":"generic","measurable":true,"solved":false,'
+        '"failure_mode":"editó mal"}\n',
+        encoding="utf-8",
+    )
+
+    resumen = summarise(sorted(tmp_path.glob("campana-T*.jsonl")))
+
+    assert resumen["T0"]["rate"] == 1.0
+    assert resumen["T1"]["rate"] == 0.0
+    assert resumen["T1"]["failure_modes"] == {"editó mal": 1}
