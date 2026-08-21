@@ -17,8 +17,10 @@ from acp.campaign import (
     already_measured,
     cell_oracle,
     cell_tree,
+    installs_the_repo,
     measure_cell,
     run_campaign,
+    suite_to_restore,
     task_prompt,
 )
 from acp.tasks.models import Task
@@ -272,3 +274,54 @@ def test_the_prompt_names_the_failing_tests_and_not_the_file_to_open(tmp_path: P
     assert "tests/test_algo.py::test_rate" in prompt
     assert "pkg/core.py" not in prompt
     assert "rate" not in prompt.replace("test_rate", "")
+
+
+def test_the_clean_tree_of_a_condition_is_measured_once_and_reused(tmp_path: Path):
+    """Las seis tareas de una condición comparten el mismo árbol sano: es la
+    misma degradación sin fallo. Medirlo por celda son cinco transformaciones y
+    cinco suites de más por condición, cerca de una hora en la campaña entera —y
+    en una máquina que ya se cayó dos veces, una hora de exposición gratis."""
+    source = build(tmp_path / "repo")
+    task = inject(source, "pkg.core", "rate", "invert_condition")
+    abiertas: list[str] = []
+
+    def open_session(tree, tests_from=None):
+        abiertas.append(Path(tree).name)
+        return FakeSession({"pkg/core.py::pkg.core": "passed"})
+
+    measure_cell(
+        source,
+        "T0",
+        [],
+        task,
+        workdir=tmp_path / "work",
+        open_session=open_session,
+        ask_agent=lambda session, prompt: None,
+        clean={"pkg/core.py::pkg.core": "passed"},
+    )
+
+    assert not any(name.endswith("-clean") for name in abiertas)
+
+
+def test_a_condition_that_moves_code_must_not_install_the_repo():
+    """B1, B2 y B5 dejan el árbol sin correspondencia con lo que declara su
+    `pyproject` (§5.6): instalarlo ahí mide el paquete de PyPI en vez del árbol
+    transformado, y la celda entera se lee como un resultado. La decisión se
+    deriva de la condición y no de un flag que se pueda olvidar."""
+    assert installs_the_repo(CONDITIONS["T0"]) is True
+    assert installs_the_repo(CONDITIONS["T1"]) is True
+    assert installs_the_repo(CONDITIONS["T2"]) is False
+    assert installs_the_repo(CONDITIONS["T3"]) is False
+    assert installs_the_repo(["B5"]) is False
+
+
+def test_a_condition_that_hides_the_suite_needs_it_given_back_to_validate(tmp_path: Path):
+    """B4 saca la suite del árbol, que es lo que la condición mide. Pero validar
+    sin ella cuenta las seis tareas como «rompió otra cosa», que es exactamente
+    lo que pasó en la primera tanda."""
+    tests = tmp_path / "tests-originales"
+
+    assert suite_to_restore(CONDITIONS["T0"], tests) is None
+    assert suite_to_restore(CONDITIONS["T1"], tests) is None
+    assert suite_to_restore(CONDITIONS["T2"], tests) == tests
+    assert suite_to_restore(CONDITIONS["T3"], tests) == tests

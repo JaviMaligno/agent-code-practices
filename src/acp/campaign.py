@@ -199,6 +199,7 @@ def measure_cell(
     open_session,
     ask_agent,
     tests_from: Path | None = None,
+    clean: dict[str, str] | None = None,
 ) -> dict:
     """Mide una celda: monta los dos árboles, deriva el oráculo y deja actuar.
 
@@ -209,9 +210,15 @@ def measure_cell(
     gastar un token.
     """
     workdir = Path(workdir)
-    clean_tree = cell_tree(source, None, transform_ids, workdir / f"{condition}-clean")
-    with open_session(clean_tree, tests_from=tests_from) as session:
-        clean = session.outcomes()
+    # Las seis tareas de una condición comparten el mismo árbol sano, así que
+    # quien recorre la condición lo mide una vez y lo pasa aquí. Sin esto son
+    # cinco transformaciones y cinco suites de más por condición.
+    if clean is None:
+        clean_tree = cell_tree(
+            source, None, transform_ids, workdir / f"{condition}-clean"
+        )
+        with open_session(clean_tree, tests_from=tests_from) as session:
+            clean = session.outcomes()
 
     faulty_tree = cell_tree(
         source, task, transform_ids, workdir / f"{condition}-{task.task_id}"
@@ -257,3 +264,157 @@ def measure_cell(
     else:
         record["failure_mode"] = "lo arregló a medias"
     return record
+
+
+# Las que dejan el árbol sin correspondencia con lo que declara su `pyproject`:
+# mueven definiciones entre ficheros (B1), renombran los ficheros (B2) o los
+# concatenan (B5). Instalar el repo ahí mide el paquete que pip baje de PyPI.
+MOVE_CODE = {"B1", "B2", "B5"}
+
+
+def installs_the_repo(transform_ids: list[str]) -> bool:
+    """Si esta condición admite instalar el repo bajo prueba (§5.6)."""
+    return not (set(transform_ids) & MOVE_CODE)
+
+
+def suite_to_restore(transform_ids: list[str], tests: Path) -> Path | None:
+    """La suite que hay que devolverle al contenedor para poder validar.
+
+    B4 la esconde del agente, que es lo que la condición mide; pero el oráculo
+    la necesita. Se le devuelve al contenedor sin que aparezca en el árbol que
+    el agente explora.
+    """
+    return tests if "B4" in set(transform_ids) else None
+
+
+def load_tasks(directory: Path) -> list[Task]:
+    """Las tareas de un repositorio, en orden estable por su identificador."""
+    tasks = [
+        Task.from_json(json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted(Path(directory).glob("*.json"))
+    ]
+    return sorted(tasks, key=lambda task: task.task_id)
+
+
+def run_all(
+    source: Path,
+    tasks: list[Task],
+    log: Path,
+    *,
+    model: str,
+    image: str = "python:3.12",
+    workdir: Path,
+    tests: Path | None = None,
+    conditions: list[str] | None = None,
+    timeout: int = 1800,
+    max_turns: int = 40,
+    grep: bool = True,
+) -> list[dict]:
+    """La campaña con las piezas de verdad: contenedor, suite y modelo.
+
+    El árbol sano de cada condición se mide una vez y se reparte entre sus
+    tareas. Lo que decide si el repo se instala y si hay que devolver la suite lo
+    dice la condición, no un flag de la línea de comandos.
+    """
+    from acp.agent.loop import solve
+    from acp.tasks.validate import SuiteSession
+
+    source = Path(source)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    tests = Path(tests) if tests else source / "tests"
+    records: list[dict] = []
+    done = already_measured(Path(log))
+
+    for condition in conditions or list(CONDITIONS):
+        transform_ids = CONDITIONS[condition]
+        pending = [t for t in tasks if (condition, t.task_id) not in done]
+        if not pending:
+            continue
+
+        install_repo = installs_the_repo(transform_ids)
+        restore = suite_to_restore(transform_ids, tests)
+
+        def open_session(tree, tests_from=None):
+            return SuiteSession(
+                repo=tree,
+                image=image,
+                timeout=timeout,
+                install_repo=install_repo,
+                tests_from=tests_from,
+            )
+
+        def ask_agent(session, prompt):
+            return solve(session, prompt, model, grep=grep, max_turns=max_turns)
+
+        clean_tree = cell_tree(
+            source, None, transform_ids, workdir / f"{condition}-clean"
+        )
+        with open_session(clean_tree, tests_from=restore) as session:
+            clean = session.outcomes()
+
+        for task in pending:
+            record = measure_cell(
+                source,
+                condition,
+                transform_ids,
+                task,
+                workdir=workdir,
+                open_session=open_session,
+                ask_agent=ask_agent,
+                tests_from=restore,
+                clean=clean,
+            )
+            record["model"] = model
+            record["install_repo"] = install_repo
+            with Path(log).open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            records.append(record)
+            print(
+                f"[{condition}] {task.task_id}: "
+                f"{'resuelto' if record['solved'] else record.get('failure_mode')}"
+                f" (medible={record['measurable']})",
+                flush=True,
+            )
+    return records
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="acp-campaign")
+    parser.add_argument("source", type=Path, help="clon del repositorio bajo prueba")
+    parser.add_argument("--tasks", type=Path, required=True)
+    parser.add_argument("--log", type=Path, required=True)
+    parser.add_argument("--workdir", type=Path, required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--image", default="python:3.12")
+    parser.add_argument("--tests", type=Path, default=None)
+    parser.add_argument("--conditions", default=None, help="p.ej. T0,T2")
+    parser.add_argument("--max-turns", type=int, default=40)
+    parser.add_argument("--poor", action="store_true", help="dotación sin búsqueda")
+    args = parser.parse_args(argv)
+
+    conditions = args.conditions.split(",") if args.conditions else None
+    records = run_all(
+        args.source,
+        load_tasks(args.tasks),
+        args.log,
+        model=args.model,
+        image=args.image,
+        workdir=args.workdir,
+        tests=args.tests,
+        conditions=conditions,
+        max_turns=args.max_turns,
+        grep=not args.poor,
+    )
+    medibles = [r for r in records if r["measurable"]]
+    print(
+        f"\n{len(records)} celdas nuevas, {len(medibles)} medibles, "
+        f"{sum(1 for r in medibles if r['solved'])} resueltas"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
