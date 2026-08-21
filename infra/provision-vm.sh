@@ -10,11 +10,16 @@
 # La VM va en GCP y no en Azure porque ahí hay `roles/editor`; en la suscripción
 # de Azure los permisos son `*/read` y no se puede crear nada.
 #
-# El modelo NO cambia. La pasarela de la empresa enruta `gpt-5.4-mini-kyc-tst` a
-# `azure/gpt-5.4-mini-kyc`, y desde la VM se llama a ese mismo despliegue por el
-# endpoint público de Azure (`ACP_MODEL_BACKEND=azure`). Mismo modelo, misma
-# versión; lo único distinto es el transporte, y por eso no se mezcla con una
-# campaña ya empezada por la pasarela.
+# El modelo NO cambia, y está verificado sirviendo la petición. La pasarela
+# enruta `gpt-5.4-mini-kyc-tst` a `azure/gpt-5.4-mini-kyc`, cuyo modelo es
+# gpt-5.4-mini versión 2026-03-17; desde la VM se llama al despliegue
+# `gpt-5.4-mini`, que responde identificándose como `gpt-5.4-mini-2026-03-17`.
+# Misma familia y misma versión.
+#
+# Lo que sí cambia, y hay que declararlo al publicar: el transporte (con sus
+# reintentos y timeouts) y la cuota del despliegue —100 frente a 20—, que afecta
+# a la cola y por tanto al reloj, no al resultado. Por eso el transporte se elige
+# al arrancar una campaña y no se mezcla dentro de una.
 #
 # Uso:
 #   ./infra/provision-vm.sh crear
@@ -81,8 +86,10 @@ preparar)
   ;;
 
 credenciales)
-  ENDPOINT="${2:?falta el endpoint de Azure, p.ej. https://recurso.openai.azure.com}"
-  FICHERO_KEY="${3:?falta la ruta local del fichero con la api-key}"
+  # australiaeast es el recurso donde vive el despliegue; el endpoint regional
+  # más la api-key determinan a qué recurso se habla.
+  ENDPOINT="${2:-https://australiaeast.api.cognitive.microsoft.com}"
+  FICHERO_KEY="${3:-$HOME/.acp-azure-key}"
   # La clave viaja por scp y aterriza en 600. No se pasa como argumento de un
   # comando remoto: eso la deja visible en `ps` de la VM.
   gcloud compute scp "$FICHERO_KEY" "$NOMBRE:.acp-azure-key" \
@@ -90,7 +97,7 @@ credenciales)
   ssh_vm "chmod 600 ~/.acp-azure-key && echo 'export ACP_MODEL_BACKEND=azure' > ~/.acp-env && echo 'export AZURE_OPENAI_ENDPOINT=$ENDPOINT' >> ~/.acp-env && chmod 600 ~/.acp-env"
   ssh_vm "cd agent-code-practices && . ~/.acp-env && .venv/bin/python -c \"
 from acp.model.client import ask
-print('el modelo responde:', repr(ask('di solo: ok', model='gpt-5.4-mini-kyc', max_tokens=200)))
+print('el modelo responde:', repr(ask('di solo: ok', model='gpt-5.4-mini', max_tokens=200)))
 \""
   ;;
 
@@ -108,7 +115,7 @@ lanzar)
         --tasks tasks/python-stdnum \
         --log out/campana-$C.jsonl \
         --workdir work-$C \
-        --model gpt-5.4-mini-kyc \
+        --model gpt-5.4-mini \
         --conditions $C \
         --runs $PASADAS \
         > logs/$C.log 2>&1 < /dev/null &
