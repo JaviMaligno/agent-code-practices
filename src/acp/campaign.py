@@ -258,7 +258,30 @@ def run_campaign(
             for run in range(runs):
                 if (condition, task.task_id, run) in done:
                     continue
-                record = measure(condition, ALL_CONDITIONS[condition], task, run=run)
+                try:
+                    record = measure(condition, ALL_CONDITIONS[condition], task, run=run)
+                except MemoryError:
+                    # Esto no es una celda rota, es la máquina: seguir intentando
+                    # celdas gasta tiempo y no mide nada. Se propaga para que la
+                    # campaña pare y se reanude cuando haya memoria.
+                    raise
+                except Exception as fallo:
+                    # Que la suite no arranque es fontanería, igual que un fallo
+                    # que no rompe ningún test: la celda no mide al agente. Se
+                    # apunta con su motivo y se sigue. Medido sobre pint bajo T3,
+                    # donde un fichero dejó de colectar y se llevó por delante el
+                    # proceso entero con ocho celdas hechas y cuatro pendientes.
+                    record = {
+                        "condition": condition,
+                        "task_id": task.task_id,
+                        "run": run,
+                        "stratum": task.stratum,
+                        "applied": list(ALL_CONDITIONS[condition]),
+                        "measurable": False,
+                        "why": f"la celda no se pudo medir: {fallo}"[:400],
+                        "fail_to_pass": [],
+                        "solved": False,
+                    }
                 # Antes de seguir, no después del bucle: lo que no está en
                 # disco no sobrevive a que la máquina se caiga en la siguiente.
                 with log.open("a", encoding="utf-8") as handle:
@@ -488,18 +511,31 @@ def run_all(
             clean = session.outcomes()
 
         for task, run in pendientes:
-            record = measure_cell(
-                source,
-                condition,
-                transform_ids,
-                task,
-                workdir=workdir,
-                open_session=open_session,
-                ask_agent=ask_agent,
-                clean=clean,
-                run=run,
-                label=label,
-            )
+            try:
+                record = measure_cell(
+                    source,
+                    condition,
+                    transform_ids,
+                    task,
+                    workdir=workdir,
+                    open_session=open_session,
+                    ask_agent=ask_agent,
+                    clean=clean,
+                    run=run,
+                    label=label,
+                )
+            except MemoryError:
+                raise
+            except Exception as fallo:
+                # Misma regla que en `run_campaign`: que la suite no arranque es
+                # fontanería, no un agente que falla. Se apunta y se sigue, en
+                # vez de tirar el proceso con las celdas que quedaban.
+                record = {
+                    "condition": condition, "task_id": task.task_id, "run": run,
+                    "stratum": task.stratum, "applied": list(transform_ids),
+                    "measurable": False, "solved": False, "fail_to_pass": [],
+                    "why": f"la celda no se pudo medir: {fallo}"[:400],
+                }
             record["model"] = model
             record["install_repo"] = install_repo
             with Path(log).open("a", encoding="utf-8") as handle:

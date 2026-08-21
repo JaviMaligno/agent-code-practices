@@ -8,6 +8,7 @@ mide la transformación en vez de la tarea.
 """
 
 import json
+import pytest
 import subprocess
 import sys
 from pathlib import Path
@@ -583,3 +584,79 @@ def test_the_curve_does_not_leak_into_the_headline_grid():
     assert not any(c.startswith("C-") for c in CONDITIONS)
     assert not any(c.startswith("C-") for c in BREAKDOWN)
     assert not any("B5" in ids for ids in CONDITIONS.values())
+
+
+def test_a_cell_whose_suite_will_not_run_is_recorded_and_the_campaign_goes_on(tmp_path: Path):
+    """Medido sobre pint bajo T3: un fichero de test deja de colectar y la
+    sesión de suite lanza. Eso mató el proceso entero con ocho celdas hechas y
+    cuatro por hacer — y en el desglose, que son dieciséis condiciones por tier,
+    se habría llevado un bloque completo.
+
+    Que la suite no arranque es fontanería, igual que un fallo que no rompe
+    nada: la celda no mide al agente, se apunta como no medible con su motivo, y
+    la campaña sigue con la siguiente.
+    """
+    log = tmp_path / "campana.jsonl"
+    medidas: list[str] = []
+
+    def measure(condition, transform_ids, task, run=0):
+        medidas.append(task.task_id)
+        if task.task_id == "dos":
+            raise RuntimeError("la corrida no dio ni un veredicto: 1 error during collection")
+        return {"condition": condition, "task_id": task.task_id, "run": run,
+                "measurable": True, "solved": True}
+
+    run_campaign(
+        tmp_path / "repo",
+        [fake_task("uno"), fake_task("dos"), fake_task("tres")],
+        log,
+        measure=measure,
+        conditions=["T0"],
+    )
+
+    assert medidas == ["uno", "dos", "tres"], "la campaña tiene que llegar a la tercera"
+    escritas = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
+    caida = [r for r in escritas if r["task_id"] == "dos"][0]
+    assert caida["measurable"] is False
+    assert "veredicto" in caida["why"]
+
+
+def test_the_broken_cell_is_not_counted_as_a_failed_agent(tmp_path: Path):
+    """Y no entra en el denominador: la tasa se calcula sobre celdas medibles,
+    así que una suite rota no puede parecer un agente peor."""
+    log = tmp_path / "campana.jsonl"
+
+    def measure(condition, transform_ids, task, run=0):
+        raise RuntimeError("la corrida no dio ni un veredicto")
+
+    run_campaign(tmp_path / "repo", [fake_task("uno")], log,
+                 measure=measure, conditions=["T0"])
+
+    resumen = summarise(log)
+    assert resumen["T0"]["measurable"] == 0
+    assert resumen["T0"]["unmeasurable"] == 1
+
+
+def test_running_out_of_memory_stops_the_campaign_instead_of_being_logged(tmp_path: Path):
+    """La tolerancia a celdas rotas no puede tragarse el fallo que sí obliga a
+    parar. Una suite que no arranca es fontanería de esa celda; quedarse sin
+    memoria es la máquina, y seguir intentando celdas gasta horas sin medir
+    nada. Pasó dos veces con el portátil, y el checkpoint existe justo para que
+    parar sea barato."""
+    log = tmp_path / "campana.jsonl"
+
+    def measure(condition, transform_ids, task, run=0):
+        if task.task_id == "dos":
+            raise MemoryError("la máquina se quedó sin memoria")
+        return {"condition": condition, "task_id": task.task_id, "run": run,
+                "measurable": True, "solved": True}
+
+    with pytest.raises(MemoryError):
+        run_campaign(
+            tmp_path / "repo",
+            [fake_task("uno"), fake_task("dos"), fake_task("tres")],
+            log, measure=measure, conditions=["T0"],
+        )
+
+    escritas = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
+    assert [r["task_id"] for r in escritas] == ["uno"], "lo medido antes se conserva"
