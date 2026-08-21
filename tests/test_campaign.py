@@ -15,6 +15,7 @@ from pathlib import Path
 from acp.campaign import (
     ALL_CONDITIONS,
     BREAKDOWN,
+    CURVE,
     CONDITIONS,
     already_measured,
     cell_oracle,
@@ -509,7 +510,8 @@ def test_the_breakdown_conditions_are_launchable_like_any_other():
     mide distinto sin que se note."""
     assert ALL_CONDITIONS["T0"] == CONDITIONS["T0"]
     assert ALL_CONDITIONS["KO-A2"] == BREAKDOWN["KO-A2"]
-    assert len(ALL_CONDITIONS) == 20
+    # 4 del 2×2 + 16 del desglose + 3 de la curva de tamaño.
+    assert len(ALL_CONDITIONS) == 23
 
 
 def test_two_tiers_of_the_same_repo_do_not_fight_over_the_same_container(tmp_path: Path):
@@ -558,3 +560,26 @@ def test_no_suite_to_restore_when_b4_moved_nothing(tmp_path: Path):
     arbol.mkdir(parents=True)
 
     assert suite_to_restore(["B4"], arbol) is None
+
+
+def test_the_size_curve_is_launchable_as_conditions_like_any_other():
+    """§6.3 pide tres puntos nuevos sobre B5 (~500, ~2.000 y ~10.000 líneas por
+    fichero) con el original como cuarto. Es la única parte del diseño que busca
+    un umbral en vez de una diferencia, y por eso necesita más de dos puntos.
+
+    Van por el mismo camino que el 2×2 y el desglose: una curva que se corriera
+    con un script aparte mediría distinto sin que se note.
+    """
+    assert ALL_CONDITIONS["C-500"] == ["B5-500"]
+    assert ALL_CONDITIONS["C-2000"] == ["B5-2000"]
+    assert ALL_CONDITIONS["C-10000"] == ["B5-10000"]
+    # El cuarto punto es T0: el árbol sin tocar, que ya se mide en el 2×2.
+    assert ALL_CONDITIONS["T0"] == []
+
+
+def test_the_curve_does_not_leak_into_the_headline_grid():
+    """El tamaño se mide como curva, no como celda del 2×2 ni como práctica que
+    se quita o se devuelve: mezclarlo cambiaría lo que las tablas significan."""
+    assert not any(c.startswith("C-") for c in CONDITIONS)
+    assert not any(c.startswith("C-") for c in BREAKDOWN)
+    assert not any("B5" in ids for ids in CONDITIONS.values())

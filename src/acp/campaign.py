@@ -217,9 +217,21 @@ BREAKDOWN: dict[str, list[str]] = {
     **{f"AB-{p}": [x for x in CONDITIONS["T3"] if x != p] for p in PRACTICES},
 }
 
+# La curva de tamaño (§6.3): tres puntos nuevos más el original, que es T0. Es la
+# única parte del diseño que busca un **umbral** en vez de una diferencia, y por
+# eso necesita más de dos puntos. Va aparte del 2×2 y del desglose porque el
+# tamaño no es una práctica que se quite o se devuelva: mezclarla cambiaría lo
+# que significan las otras tablas.
+CURVE: dict[str, list[str]] = {
+    "C-500": ["B5-500"],
+    "C-2000": ["B5-2000"],
+    "C-10000": ["B5-10000"],
+}
+
 # Todo lo que se puede pedir por la línea de comandos, por el mismo camino: un
-# desglose que corriera por un script aparte mediría distinto sin que se note.
-ALL_CONDITIONS: dict[str, list[str]] = {**CONDITIONS, **BREAKDOWN}
+# desglose o una curva que corrieran por un script aparte medirían distinto sin
+# que se note.
+ALL_CONDITIONS: dict[str, list[str]] = {**CONDITIONS, **BREAKDOWN, **CURVE}
 
 
 def run_campaign(
