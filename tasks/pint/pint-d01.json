@@ -1,0 +1,38 @@
+{
+  "task_id": "pint-d01",
+  "repo": "pint",
+  "module": "pint.facets.nonmultiplicative.objects",
+  "symbol": "_ok_for_muldiv",
+  "stratum": "domain",
+  "patch": "--- a/pint/facets/nonmultiplicative/objects.py\n+++ b/pint/facets/nonmultiplicative/objects.py\n@@ -67,7 +67,7 @@\n                 and not self._REGISTRY.autoconvert_offset_to_baseunit\n             ):\n                 is_ok = False\n-            if next(iter(self._units.values())) != 1:\n+            if next(iter(self._units.values())) < 0:\n                 is_ok = False\n         return is_ok\n \n",
+  "fail_to_pass": [
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathDecimal::test_division_with_scalar[input_tuple6-expected_output6]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFloat::test_division_with_scalar[input_tuple6-expected_output6]",
+    "pint/testsuite/test_non_int.py::TestNonIntTypeOffsetUnitMathFraction::test_division_with_scalar[input_tuple6-expected_output6]",
+    "pint/testsuite/test_quantity.py::TestOffsetUnitMath::test_division_with_scalar[input_tuple7-expected7]"
+  ],
+  "pass_to_pass": [
+    "pint/testsuite/benchmarks/test_00_common.py::test_import",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[1 + 2 + 5-plain_tokenizer]",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[1 + 2 + 5-uncertainty_tokenizer]",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[1-plain_tokenizer]",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[1-uncertainty_tokenizer]",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[10 m-plain_tokenizer]",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[10 m-uncertainty_tokenizer]",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[10 metros * (5 segundos)-plain_tokenizer]",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[10 metros * (5 segundos)-uncertainty_tokenizer]",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[10 metros + 5 segundos-plain_tokenizer]",
+    "pint/testsuite/benchmarks/test_01_eval.py::test_pint_eval[10 metros + 5 segundos-uncertainty_tokenizer]",
+    "pint/testsuite/benchmarks/test_05_registry_creation.py::test_create_default_registry",
+    "pint/testsuite/benchmarks/test_05_registry_creation.py::test_create_default_registry_use_cache",
+    "pint/testsuite/benchmarks/test_05_registry_creation.py::test_create_empty_registry",
+    "pint/testsuite/benchmarks/test_05_registry_creation.py::test_create_tiny_registry",
+    "pint/testsuite/benchmarks/test_10_registry.py::test_base_units[False-angstrom/minute]",
+    "pint/testsuite/benchmarks/test_10_registry.py::test_base_units[False-angstrom]",
+    "pint/testsuite/benchmarks/test_10_registry.py::test_base_units[False-kilometer/second]",
+    "pint/testsuite/benchmarks/test_10_registry.py::test_base_units[False-meter]",
+    "pint/testsuite/benchmarks/test_10_registry.py::test_base_units[True-angstrom/minute]"
+  ],
+  "min_files_to_judge": 2,
+  "commit": "6fc0533"
+}
