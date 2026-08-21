@@ -21,6 +21,7 @@ no entiende la función, y su veredicto sobre esa tarea no vale para clasificarl
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from acp.model import ask
@@ -79,4 +80,44 @@ def judge_in_isolation(
         positives_mutated=en_mutada,
         positives_original=en_original,
         inconclusive=inconclusive,
+    )
+
+
+@dataclass
+class CrossModelVerdict:
+    """Si el fallo se ve en aislamiento, preguntado a todos los modelos.
+
+    El veredicto por modelo se conserva y no solo la conclusión: la conclusión
+    sola esconde la discrepancia, que es justo lo que hay que poder auditar.
+    """
+
+    detected: bool
+    detected_by: list[str]
+    per_model: dict[str, IsolationVerdict]
+
+
+def judge_across_models(
+    original: str, mutated: str, models: Sequence[str], *, votes: int = 3
+) -> CrossModelVerdict:
+    """El estrato de una tarea, definido contra todos los modelos de la campaña.
+
+    Preguntar a uno solo hacía que el estrato dependiera de a quién se preguntó.
+    Medido sobre el convertidor logarítmico de pint: `gpt-5.4-mini` señala la
+    mutación 2 de 3 veces y la original ninguna —detección real— mientras
+    `gpt-5.4` no ve nada en ninguna de las dos. La misma función era de dominio
+    o genérica según el modelo del filtro, y eso no es una propiedad de la tarea.
+
+    Basta que **un** modelo la vea para que no entre en dominio: si algún agente
+    del experimento reconoce el fallo leyendo la función suelta, para ese agente
+    no es un fallo de dominio y su celda mediría otra cosa. La regla es
+    deliberadamente conservadora, porque el estrato de dominio es la mitad del
+    diseño más fácil de contaminar y la más costosa de rehacer.
+    """
+    por_modelo = {
+        modelo: judge_in_isolation(original, mutated, modelo, votes=votes)
+        for modelo in models
+    }
+    vieron = [modelo for modelo, v in por_modelo.items() if v.detected]
+    return CrossModelVerdict(
+        detected=bool(vieron), detected_by=vieron, per_model=por_modelo
     )
