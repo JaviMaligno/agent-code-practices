@@ -367,3 +367,20 @@ def test_the_summary_keeps_the_strata_apart(tmp_path: Path):
 
     assert resumen["T1"]["by_stratum"]["generic"] == (2, 2)
     assert resumen["T1"]["by_stratum"]["domain"] == (0, 1)
+
+
+def test_a_cell_can_be_built_again_over_the_tree_a_dead_run_left_behind(tmp_path: Path):
+    """Reanudar es el caso normal en esta campaña, no la excepción: la máquina ya
+    se cayó dos veces. El árbol que dejó la corrida muerta está a medias —puede
+    tener media transformación aplicada— así que se rehace, no se reutiliza:
+    medir sobre un árbol a medio transformar es peor que perder los minutos.
+    """
+    source = build(tmp_path / "repo")
+    destination = tmp_path / "cell"
+    cell_tree(source, None, ["A4"], destination)
+    (destination / "resto-de-la-corrida-muerta.txt").write_text("x", encoding="utf-8")
+
+    tree = cell_tree(source, None, ["A4"], destination)
+
+    assert rate_of(tree) == "4"
+    assert not (tree / "resto-de-la-corrida-muerta.txt").exists()

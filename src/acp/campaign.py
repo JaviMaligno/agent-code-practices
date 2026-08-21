@@ -21,6 +21,7 @@ preserven de verdad no se supone, se comprueba (`tests/test_campaign.py`).
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,30 @@ from acp.cli import transform_repo
 from acp.tasks.inject import apply_patch, module_path
 from acp.tasks.models import Task
 from acp.transforms.base import copy_tree
+
+
+def _clear(destination: Path, source: Path) -> None:
+    """Deja el sitio libre para rehacer el árbol de una celda.
+
+    Reanudar es el caso normal aquí y la corrida muerta deja su árbol a medias
+    —puede tener media transformación aplicada—, así que se rehace en vez de
+    reutilizarse: medir sobre un árbol a medio transformar es peor que perder
+    los minutos de volver a construirlo.
+
+    La guarda no es paranoia de manual: el destino sale de un `--workdir` de la
+    línea de comandos, y un borrado que alcanzase al clon de referencia se
+    llevaría el árbol contra el que se verifica toda la equivalencia.
+    """
+    destination = Path(destination)
+    if not destination.exists():
+        return
+    source = Path(source).resolve()
+    resolved = destination.resolve()
+    if resolved == source or resolved in source.parents:
+        raise ValueError(
+            f"el destino {resolved} contiene el clon de referencia; no se borra"
+        )
+    shutil.rmtree(resolved)
 
 
 def cell_tree(
@@ -44,6 +69,7 @@ def cell_tree(
     campaña necesita para saber qué tests pasaban antes de romper nada.
     """
     source = Path(source)
+    _clear(destination, source)
     if task is None:
         return transform_repo(source, list(transform_ids), destination, manifest)
 
