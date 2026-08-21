@@ -29,6 +29,7 @@ from pathlib import Path
 from acp.cli import transform_repo
 from acp.tasks.inject import apply_patch, module_path
 from acp.tasks.models import Task
+from acp.transforms.b4_tests import kept_suite_path
 from acp.transforms.base import copy_tree
 
 
@@ -305,14 +306,22 @@ def measure_cell(
             source, None, transform_ids,
             workdir / clean_tree_name(source, condition, label),
         )
-        with open_session(clean_tree, tests_from=tests_from) as session:
+        with open_session(
+            clean_tree,
+            tests_from=tests_from or suite_to_restore(transform_ids, clean_tree),
+        ) as session:
             clean = session.outcomes()
 
     faulty_tree = cell_tree(
         source, task, transform_ids,
         workdir / cell_tree_name(source, condition, task.task_id, run, label),
     )
-    with open_session(faulty_tree, tests_from=tests_from) as session:
+    # Cada árbol tiene la suya: B4 la deja hermana del árbol que esconde, así
+    # que la del árbol con el fallo no es la del árbol sano.
+    with open_session(
+        faulty_tree,
+        tests_from=tests_from or suite_to_restore(transform_ids, faulty_tree),
+    ) as session:
         faulty = session.outcomes()
         oracle = cell_oracle(clean, faulty)
         record = {
@@ -367,14 +376,25 @@ def installs_the_repo(transform_ids: list[str]) -> bool:
     return not (set(transform_ids) & MOVE_CODE)
 
 
-def suite_to_restore(transform_ids: list[str], tests: Path) -> Path | None:
+def suite_to_restore(transform_ids: list[str], tree: Path) -> Path | None:
     """La suite que hay que devolverle al contenedor para poder validar.
 
     B4 la esconde del agente, que es lo que la condición mide; pero el oráculo
     la necesita. Se le devuelve al contenedor sin que aparezca en el árbol que
     el agente explora.
+
+    Se le pregunta a B4 dónde la dejó en vez de suponer la ruta. La campaña
+    buscaba `<repo>/tests`, que es donde la tiene python-stdnum; la de pint vive
+    en `pint/testsuite`, así que bajo B4 las celdas de pint salían con «no tests
+    collected» y la condición entera quedaba ilegible por una ruta supuesta.
+    Adivinar funciona en un repositorio; preguntar, en todos.
     """
-    return tests if "B4" in set(transform_ids) else None
+    if "B4" not in set(transform_ids):
+        return None
+    guardada = kept_suite_path(Path(tree))
+    # Si B4 no encontró suite que mover no hay nada que devolver, y apuntar a un
+    # directorio inexistente es justo lo que producía el fallo silencioso.
+    return guardada if guardada.is_dir() else None
 
 
 def load_tasks(directory: Path) -> list[Task]:
@@ -414,7 +434,6 @@ def run_all(
     source = Path(source)
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    tests = Path(tests) if tests else source / "tests"
     records: list[dict] = []
     done = already_measured(Path(log))
 
@@ -434,7 +453,6 @@ def run_all(
             continue
 
         install_repo = installs_the_repo(transform_ids)
-        restore = suite_to_restore(transform_ids, tests)
 
         def open_session(tree, tests_from=None):
             return SuiteSession(
@@ -452,7 +470,9 @@ def run_all(
             source, None, transform_ids,
             workdir / clean_tree_name(source, condition, label),
         )
-        with open_session(clean_tree, tests_from=restore) as session:
+        with open_session(
+            clean_tree, tests_from=suite_to_restore(transform_ids, clean_tree)
+        ) as session:
             clean = session.outcomes()
 
         for task, run in pendientes:
@@ -464,7 +484,6 @@ def run_all(
                 workdir=workdir,
                 open_session=open_session,
                 ask_agent=ask_agent,
-                tests_from=restore,
                 clean=clean,
                 run=run,
                 label=label,

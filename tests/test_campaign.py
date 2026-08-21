@@ -320,16 +320,6 @@ def test_a_condition_that_moves_code_must_not_install_the_repo():
     assert installs_the_repo(["B5"]) is False
 
 
-def test_a_condition_that_hides_the_suite_needs_it_given_back_to_validate(tmp_path: Path):
-    """B4 saca la suite del árbol, que es lo que la condición mide. Pero validar
-    sin ella cuenta las seis tareas como «rompió otra cosa», que es exactamente
-    lo que pasó en la primera tanda."""
-    tests = tmp_path / "tests-originales"
-
-    assert suite_to_restore(CONDITIONS["T0"], tests) is None
-    assert suite_to_restore(CONDITIONS["T1"], tests) is None
-    assert suite_to_restore(CONDITIONS["T2"], tests) == tests
-    assert suite_to_restore(CONDITIONS["T3"], tests) == tests
 
 
 def test_the_summary_counts_resolve_rate_over_measurable_cells_only(tmp_path: Path):
@@ -540,3 +530,31 @@ def test_without_a_label_the_names_stay_as_the_cells_already_measured_have_them(
     eso es tiempo tirado."""
     assert clean_tree_name(tmp_path / "pint", "T0") == "pint-T0-clean"
     assert cell_tree_name(tmp_path / "pint", "T0", "t-001") == "pint-T0-t-001"
+
+
+def test_the_suite_to_restore_is_the_one_b4_actually_moved(tmp_path: Path):
+    """Medido sobre pint. La campaña buscaba la suite en `<repo>/tests`, que es
+    donde la tiene python-stdnum; la de pint vive en `pint/testsuite`. Así que
+    bajo B4 se la escondía al agente —correcto— y no se la devolvía al
+    contenedor, y las celdas salían con «no tests collected»: la condición
+    entera ilegible por una ruta supuesta.
+
+    B4 ya sabe dónde la dejó: hermana del árbol, con sufijo `.acp-tests`.
+    Preguntárselo funciona en cualquier repo; adivinar la ruta, en uno.
+    """
+    arbol = tmp_path / "work" / "pint-T2-clean"
+    arbol.mkdir(parents=True)
+    guardada = tmp_path / "work" / "pint-T2-clean.acp-tests"
+    (guardada / "pint" / "testsuite").mkdir(parents=True)
+
+    assert suite_to_restore(["B1", "B2", "B3", "B4"], arbol) == guardada
+    assert suite_to_restore(["A1", "A2"], arbol) is None
+
+
+def test_no_suite_to_restore_when_b4_moved_nothing(tmp_path: Path):
+    """Si B4 no encontró suite que mover, no hay nada que devolver, y apuntar a
+    un directorio inexistente es lo que producía el fallo silencioso."""
+    arbol = tmp_path / "work" / "repo-T2-clean"
+    arbol.mkdir(parents=True)
+
+    assert suite_to_restore(["B4"], arbol) is None
