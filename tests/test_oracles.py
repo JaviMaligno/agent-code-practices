@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from acp.cli import manifest_path_for, transform_repo
+from acp.tasks.validate import logical_cases, within_budget
 from acp.oracles import (
     compare_to_delivered,
     no_op,
@@ -423,3 +424,42 @@ def test_the_oracle_refuses_to_leave_behind_a_file_that_does_not_parse(tmp_path:
         oracle(tmp_path, task)
 
     assert "if valor > limite" not in path.read_text(encoding="utf-8")
+
+
+def test_the_budget_counts_logical_cases_not_parametrised_node_ids():
+    """El techo existe para distinguir «arregló el fallo» de «sobrevivió al
+    desastre», y contando nodeids mide otra cosa: la granularidad de la suite.
+
+    Medido sobre pint. Una mutación en el convertidor logarítmico rompe 25
+    nodeids, pero son unas pocas funciones repetidas con distintos parámetros
+    —`test_db_conversion[-10.0-0.1]`, `[0.0-1.0]`, `[10.0-10.0]`…— o sea unos
+    pocos casos lógicos, no veinticinco fallos distintos. Con el techo sobre
+    nodeids, ninguna suite parametrizada puede aportar tareas, y eso excluye
+    repositorios por su estilo de test y no por su código.
+
+    Se cuenta la función de test, quitando el `[parámetros]`. Las tareas ya
+    validadas tienen relación 1:1 entre nodeid y función, así que ninguna cambia
+    de estado por esto.
+    """
+    parametrizados = [
+        "t/test_log.py::test_db[-10.0-0.1]",
+        "t/test_log.py::test_db[0.0-1.0]",
+        "t/test_log.py::test_db[10.0-10.0]",
+        "t/test_log.py::test_db[30.0-1000.0]",
+        "t/test_log.py::test_db[60.0-1e6]",
+        "t/test_log.py::test_dbm[-10.0-0.1]",
+        "t/test_log.py::test_dbm[0.0-1.0]",
+        "t/test_conv.py::TestConv::test_log_converter",
+    ]
+
+    assert logical_cases(parametrizados) == 3
+    assert within_budget(parametrizados) is True
+
+
+def test_a_fault_that_breaks_many_distinct_tests_is_still_rejected():
+    """Lo que el techo tiene que seguir atrapando: un fallo que tumba media
+    suite, con tests que son de verdad distintos."""
+    distintos = [f"t/test_{i}.py::test_algo" for i in range(12)]
+
+    assert logical_cases(distintos) == 12
+    assert within_budget(distintos) is False

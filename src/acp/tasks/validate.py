@@ -37,6 +37,7 @@ reconociendo la forma que xdist usa (veredicto delante) y sin confundir el
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -125,6 +126,32 @@ class ValidationReport:
 # `mod_97_10.checksum` rompe 22 tests, y declararlos todos la volvía válida.
 MAX_BROKEN_TESTS = 8
 
+# El techo se cuenta sobre CASOS LÓGICOS y no sobre nodeids, porque contando
+# nodeids mide la granularidad de la suite y no lo localizado del fallo. Medido
+# sobre pint: una mutación en el convertidor logarítmico rompe 25 nodeids que son
+# unas pocas funciones repetidas con distintos parámetros
+# —`test_db_conversion[-10.0-0.1]`, `[0.0-1.0]`, `[10.0-10.0]`…—, o sea unos
+# pocos casos lógicos. Con el techo sobre nodeids, ninguna suite parametrizada
+# puede aportar tareas, y eso excluiría repositorios por su estilo de test en vez
+# de por su código.
+#
+# Declarado: este refinamiento se hizo DESPUÉS de que dos candidatas de dominio
+# para pint incumplieran el techo contando nodeids. No cambia el estado de
+# ninguna tarea ya validada —en todas ellas la relación nodeid/función es 1:1—,
+# y esa comprobación es lo que lo distingue de mover la portería.
+_PARAMETROS = re.compile(r"\[.*\]$")
+
+
+def logical_cases(node_ids: Iterable[str]) -> int:
+    """Cuántos casos distintos rompe algo, sin contar dos veces una función
+    parametrizada."""
+    return len({_PARAMETROS.sub("", name) for name in node_ids})
+
+
+def within_budget(node_ids: Iterable[str]) -> bool:
+    """Si el fallo es lo bastante localizado para que la celda mida al agente."""
+    return logical_cases(node_ids) <= MAX_BROKEN_TESTS
+
 
 def compare_runs(
     before: dict[str, str],
@@ -168,10 +195,10 @@ def compare_runs(
 
     # El techo se mide sobre lo OBSERVADO, no sobre lo declarado: declarar más
     # no puede convertir en válida una tarea que rompe media suite.
-    within_budget = len(observed) <= MAX_BROKEN_TESTS
+    budget_ok = within_budget(observed)
 
     return ValidationReport(
-        valid=fail_to_pass_ok and not unexpected and pass_to_pass_ok and within_budget,
+        valid=fail_to_pass_ok and not unexpected and pass_to_pass_ok and budget_ok,
         fail_to_pass_ok=fail_to_pass_ok,
         pass_to_pass_ok=pass_to_pass_ok,
         unexpected_failures=unexpected,
