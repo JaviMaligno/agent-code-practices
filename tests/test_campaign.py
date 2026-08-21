@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 from acp.campaign import (
+    ALL_CONDITIONS,
+    BREAKDOWN,
     CONDITIONS,
     already_measured,
     cell_oracle,
@@ -476,3 +478,44 @@ def test_two_repos_running_at_once_do_not_fight_over_the_same_container(tmp_path
 
     assert arbol_uno.name != arbol_otro.name
     assert "repo-uno" in arbol_uno.name and "repo-otro" in arbol_otro.name
+
+
+def test_a_knock_out_removes_one_practice_from_intact_code():
+    """§6.2: el knock-out contesta «qué pierdo si dejo de hacer esto», así que
+    quitar la práctica A1 es aplicar **solo** la degradación A1 sobre el código
+    por lo demás intacto. La palabra engaña: quitar una práctica es añadir una
+    degradación."""
+    assert BREAKDOWN["KO-A1"] == ["A1"]
+    assert BREAKDOWN["KO-B3"] == ["B3"]
+
+
+def test_an_add_back_returns_one_practice_to_fully_degraded_code():
+    """Y el add-back contesta «qué recupero si solo hago esto»: partir de T3 y
+    devolver una sola práctica es T3 menos esa degradación."""
+    assert BREAKDOWN["AB-A1"] == ["A2", "A3", "A4", "B1", "B2", "B3", "B4"]
+    assert BREAKDOWN["AB-B4"] == ["A1", "A2", "A3", "A4", "B1", "B2", "B3"]
+
+
+def test_the_breakdown_covers_the_eight_practices_in_both_directions():
+    """Dieciséis celdas, y las dos direcciones sobre las mismas ocho. B5 no
+    entra: el tamaño se mide como curva de dosis (§6.3), no como práctica que se
+    quita o se devuelve."""
+    assert len(BREAKDOWN) == 16
+    practicas = {"A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4"}
+    assert {n.split("-", 1)[1] for n in BREAKDOWN} == practicas
+    assert "B5" not in {t for ids in BREAKDOWN.values() for t in ids}
+
+
+def test_each_add_back_is_exactly_t3_minus_one():
+    """La comprobación que impide que un despiste deje una celda midiendo otra
+    cosa: cada add-back tiene que ser T3 sin exactamente una."""
+    for practica in ("A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4"):
+        assert set(BREAKDOWN[f"AB-{practica}"]) == set(CONDITIONS["T3"]) - {practica}
+
+
+def test_the_breakdown_conditions_are_launchable_like_any_other():
+    """Se corren con el mismo camino que T0-T3 o serían un script aparte que
+    mide distinto sin que se note."""
+    assert ALL_CONDITIONS["T0"] == CONDITIONS["T0"]
+    assert ALL_CONDITIONS["KO-A2"] == BREAKDOWN["KO-A2"]
+    assert len(ALL_CONDITIONS) == 20

@@ -188,6 +188,31 @@ CONDITIONS: dict[str, list[str]] = {
 }
 
 
+# Las ocho prácticas que se quitan y se devuelven de una en una (§6.2). B5 no
+# está: el tamaño se mide como curva de dosis (§6.3), no como práctica.
+PRACTICES = ("A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4")
+
+# El desglose, y la trampa que tiene el nombre. «Knock-out de A1» es quitar la
+# **práctica** A1, que es aplicar la **degradación** A1 sobre código por lo demás
+# intacto: contesta «qué pierdo si dejo de hacer esto». «Add-back de A1» es
+# devolver la práctica partiendo de todo degradado, o sea T3 menos A1: contesta
+# «qué recupero si solo hago esto».
+#
+# Las dos direcciones no coinciden, y ahí está lo interesante: una práctica cuyo
+# knock-out no duele pero cuyo add-back salva es una práctica que solo importa
+# cuando todo lo demás ya está mal, y ese es un consejo distinto del que se da
+# hoy. Por eso se descarta la escalera acumulativa, que confunde el orden de
+# aplicación con el efecto.
+BREAKDOWN: dict[str, list[str]] = {
+    **{f"KO-{p}": [p] for p in PRACTICES},
+    **{f"AB-{p}": [x for x in CONDITIONS["T3"] if x != p] for p in PRACTICES},
+}
+
+# Todo lo que se puede pedir por la línea de comandos, por el mismo camino: un
+# desglose que corriera por un script aparte mediría distinto sin que se note.
+ALL_CONDITIONS: dict[str, list[str]] = {**CONDITIONS, **BREAKDOWN}
+
+
 def run_campaign(
     source: Path,
     tasks: list[Task],
@@ -212,7 +237,7 @@ def run_campaign(
             for run in range(runs):
                 if (condition, task.task_id, run) in done:
                     continue
-                record = measure(condition, CONDITIONS[condition], task, run=run)
+                record = measure(condition, ALL_CONDITIONS[condition], task, run=run)
                 # Antes de seguir, no después del bucle: lo que no está en
                 # disco no sobrevive a que la máquina se caiga en la siguiente.
                 with log.open("a", encoding="utf-8") as handle:
@@ -383,7 +408,11 @@ def run_all(
     done = already_measured(Path(log))
 
     for condition in conditions or list(CONDITIONS):
-        transform_ids = CONDITIONS[condition]
+        if condition not in ALL_CONDITIONS:
+            raise ValueError(
+                f"condición {condition!r} no está en {sorted(ALL_CONDITIONS)}"
+            )
+        transform_ids = ALL_CONDITIONS[condition]
         pendientes = [
             (task, run)
             for task in tasks
@@ -503,7 +532,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--image", default="python:3.12")
     parser.add_argument("--tests", type=Path, default=None)
-    parser.add_argument("--conditions", default=None, help="p.ej. T0,T2")
+    parser.add_argument(
+        "--conditions", default=None,
+        help="p.ej. T0,T2 o KO-A1,AB-A1; sin esto, el 2×2",
+    )
     parser.add_argument("--max-turns", type=int, default=40)
     parser.add_argument("--poor", action="store_true", help="dotación sin búsqueda")
     parser.add_argument(
