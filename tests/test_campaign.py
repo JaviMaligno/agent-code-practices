@@ -17,6 +17,7 @@ from acp.campaign import (
     already_measured,
     cell_oracle,
     cell_tree,
+    clean_tree_name,
     installs_the_repo,
     measure_cell,
     run_campaign,
@@ -458,3 +459,20 @@ def test_the_campaign_repeats_every_cell_the_requested_number_of_times(tmp_path:
     )
 
     assert pedidas == [("T0", "uno", 0), ("T0", "uno", 1), ("T0", "uno", 2)]
+
+
+def test_two_repos_running_at_once_do_not_fight_over_the_same_container(tmp_path: Path):
+    """El nombre del contenedor se deriva del directorio del árbol, y el árbol se
+    llamaba `T0-clean` en todos los repos. Con dos campañas en la misma máquina
+    —lo normal en una VM con CPU de sobra— las dos pedirían `acp-T0-clean` y una
+    mataría el contenedor de la otra a mitad de celda, que se lee como un agente
+    que rompió algo.
+    """
+    uno = build(tmp_path / "repo-uno")
+    otro = build(tmp_path / "repo-otro")
+
+    arbol_uno = cell_tree(uno, None, [], tmp_path / "w1" / clean_tree_name(uno, "T0"))
+    arbol_otro = cell_tree(otro, None, [], tmp_path / "w2" / clean_tree_name(otro, "T0"))
+
+    assert arbol_uno.name != arbol_otro.name
+    assert "repo-uno" in arbol_uno.name and "repo-otro" in arbol_otro.name

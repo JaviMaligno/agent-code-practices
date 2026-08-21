@@ -32,6 +32,24 @@ from acp.tasks.models import Task
 from acp.transforms.base import copy_tree
 
 
+def clean_tree_name(source: Path, condition: str) -> str:
+    """Cómo se llama el árbol sano de una condición, con el repo en el nombre.
+
+    El nombre importa porque de él sale el del contenedor. Sin el repo delante,
+    dos campañas sobre repositorios distintos en la misma máquina —lo normal en
+    una VM con CPU de sobra— pedirían el mismo `acp-T0-clean` y una mataría el
+    contenedor de la otra a mitad de celda, que se lee como un agente que rompió
+    algo.
+    """
+    return f"{Path(source).name}-{condition}-clean"
+
+
+def cell_tree_name(source: Path, condition: str, task_id: str, run: int = 0) -> str:
+    """Y el del árbol con el fallo, por la misma razón."""
+    sufijo = f"-r{run}" if run else ""
+    return f"{Path(source).name}-{condition}-{task_id}{sufijo}"
+
+
 def _clear(destination: Path, source: Path) -> None:
     """Deja el sitio libre para rehacer el árbol de una celda.
 
@@ -250,13 +268,15 @@ def measure_cell(
     # cinco transformaciones y cinco suites de más por condición.
     if clean is None:
         clean_tree = cell_tree(
-            source, None, transform_ids, workdir / f"{condition}-clean"
+            source, None, transform_ids, workdir / clean_tree_name(source, condition)
         )
         with open_session(clean_tree, tests_from=tests_from) as session:
             clean = session.outcomes()
 
-    sufijo = f"{condition}-{task.task_id}" + (f"-r{run}" if run else "")
-    faulty_tree = cell_tree(source, task, transform_ids, workdir / sufijo)
+    faulty_tree = cell_tree(
+        source, task, transform_ids,
+        workdir / cell_tree_name(source, condition, task.task_id, run),
+    )
     with open_session(faulty_tree, tests_from=tests_from) as session:
         faulty = session.outcomes()
         oracle = cell_oracle(clean, faulty)
@@ -389,7 +409,7 @@ def run_all(
             return solve(session, prompt, model, grep=grep, max_turns=max_turns)
 
         clean_tree = cell_tree(
-            source, None, transform_ids, workdir / f"{condition}-clean"
+            source, None, transform_ids, workdir / clean_tree_name(source, condition)
         )
         with open_session(clean_tree, tests_from=restore) as session:
             clean = session.outcomes()

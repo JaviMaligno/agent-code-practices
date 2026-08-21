@@ -24,7 +24,8 @@
 # Uso:
 #   ./infra/provision-vm.sh crear
 #   ./infra/provision-vm.sh credenciales <endpoint-azure> <fichero-con-la-key>
-#   ./infra/provision-vm.sh lanzar T0,T1,T2,T3
+#   ./infra/provision-vm.sh lanzar T0,T1,T2,T3 3 python-stdnum
+#   ./infra/provision-vm.sh lanzar T0,T1,T2,T3 3 pint
 #   ./infra/provision-vm.sh traer      # baja los registros
 #   ./infra/provision-vm.sh destruir
 #
@@ -115,22 +116,32 @@ print('el modelo responde:', repr(ask('di solo: ok', model='gpt-5.4-mini', max_t
 lanzar)
   CONDICIONES="${2:-T0,T1,T2,T3}"
   PASADAS="${3:-3}"
+  # El repo bajo prueba es un parámetro porque la VM aguanta varios a la vez:
+  # medido, 8 vCPU con load 3,9 y 26 GB libres corriendo cuatro condiciones.
+  BAJO_PRUEBA="${4:-python-stdnum}"
   # Una condición por proceso, con su registro y su directorio de trabajo: dos
   # procesos sobre el mismo jsonl se entrelazan, y la reanudación lo lee para
   # saber qué falta. `setsid` para que sobreviva al cierre de la sesión ssh.
   for C in ${CONDICIONES//,/ }; do
     ssh_vm "
       cd agent-code-practices && . ~/.acp-env
-      mkdir -p out work-$C logs
-      setsid nohup .venv/bin/python -m acp.campaign candidates/python-stdnum \
-        --tasks tasks/python-stdnum \
-        --log out/campana-$C.jsonl \
-        --workdir work-$C \
+      [ -d candidates/$BAJO_PRUEBA ] || git clone --quiet \$(.venv/bin/python -c \"
+import json,sys
+urls={'python-stdnum':'https://github.com/arthurdejong/python-stdnum.git',
+      'pint':'https://github.com/hgrecco/pint.git',
+      'sqlglot':'https://github.com/tobymao/sqlglot.git',
+      'holidays':'https://github.com/vacanza/holidays.git'}
+print(urls['$BAJO_PRUEBA'])\") candidates/$BAJO_PRUEBA
+      mkdir -p out work-$BAJO_PRUEBA-$C logs
+      setsid nohup .venv/bin/python -m acp.campaign candidates/$BAJO_PRUEBA \
+        --tasks tasks/$BAJO_PRUEBA \
+        --log out/campana-$BAJO_PRUEBA-$C.jsonl \
+        --workdir work-$BAJO_PRUEBA-$C \
         --model gpt-5.4-mini \
         --conditions $C \
         --runs $PASADAS \
-        > logs/$C.log 2>&1 < /dev/null &
-      echo '$C lanzada'
+        > logs/$BAJO_PRUEBA-$C.log 2>&1 < /dev/null &
+      echo '$BAJO_PRUEBA $C lanzada'
     "
   done
   ;;
@@ -138,7 +149,9 @@ lanzar)
 estado)
   ssh_vm "
     cd agent-code-practices
-    echo \"celdas: \$(cat out/campana-T*.jsonl 2>/dev/null | wc -l)\"
+    for f in out/campana-*.jsonl; do
+      [ -f \"\$f\" ] && echo \"  \$(basename \$f): \$(wc -l < \$f) celdas\"
+    done
     # ps -C python3 no vale (las comillas invertidas aqui dentro las ejecuta el
     # shell remoto): el proceso es .venv/bin/python, y no encontrarlo hacia
     # leer una campana viva como si no corriera. El patron va partido para
