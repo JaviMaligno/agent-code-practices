@@ -26,6 +26,7 @@
 #   ./infra/provision-vm.sh credenciales <endpoint-azure> <fichero-con-la-key>
 #   ./infra/provision-vm.sh lanzar T0,T1,T2,T3 3 python-stdnum
 #   ./infra/provision-vm.sh lanzar T0,T1,T2,T3 3 pint
+#   ./infra/provision-vm.sh lanzar T0,T1,T2,T3 3 python-stdnum gpt-5.4 alto
 #   ./infra/provision-vm.sh traer      # baja los registros
 #   ./infra/provision-vm.sh destruir
 #
@@ -119,6 +120,15 @@ lanzar)
   # El repo bajo prueba es un parámetro porque la VM aguanta varios a la vez:
   # medido, 8 vCPU con load 3,9 y 26 GB libres corriendo cuatro condiciones.
   BAJO_PRUEBA="${4:-python-stdnum}"
+  # El par de tiers lo fija §484 del spec: gpt-5.4-mini bajo y gpt-5.4 alto, el
+  # mismo par que el artículo previo para que las cifras se puedan comparar.
+  MODELO="${5:-gpt-5.4-mini}"
+  # La etiqueta separa lo que convive en la máquina. Sin ella, dos tiers del
+  # mismo repo y condición nombrarían igual su árbol, pedirían el mismo
+  # contenedor y uno mataría el del otro a mitad de celda.
+  ETIQUETA="${6:-}"
+  SUF=""
+  [ -n "$ETIQUETA" ] && SUF="-$ETIQUETA"
   # Una condición por proceso, con su registro y su directorio de trabajo: dos
   # procesos sobre el mismo jsonl se entrelazan, y la reanudación lo lee para
   # saber qué falta. `setsid` para que sobreviva al cierre de la sesión ssh.
@@ -132,16 +142,17 @@ urls={'python-stdnum':'https://github.com/arthurdejong/python-stdnum.git',
       'sqlglot':'https://github.com/tobymao/sqlglot.git',
       'holidays':'https://github.com/vacanza/holidays.git'}
 print(urls['$BAJO_PRUEBA'])\") candidates/$BAJO_PRUEBA
-      mkdir -p out work-$BAJO_PRUEBA-$C logs
+      mkdir -p out work-$BAJO_PRUEBA-$C$SUF logs
       setsid nohup .venv/bin/python -m acp.campaign candidates/$BAJO_PRUEBA \
         --tasks tasks/$BAJO_PRUEBA \
-        --log out/campana-$BAJO_PRUEBA-$C.jsonl \
-        --workdir work-$BAJO_PRUEBA-$C \
-        --model gpt-5.4-mini \
+        --log out/campana-$BAJO_PRUEBA-$C$SUF.jsonl \
+        --workdir work-$BAJO_PRUEBA-$C$SUF \
+        --model $MODELO \
+        --label '$ETIQUETA' \
         --conditions $C \
         --runs $PASADAS \
-        > logs/$BAJO_PRUEBA-$C.log 2>&1 < /dev/null &
-      echo '$BAJO_PRUEBA $C lanzada'
+        > logs/$BAJO_PRUEBA-$C$SUF.log 2>&1 < /dev/null &
+      echo '$BAJO_PRUEBA $C $MODELO lanzada'
     "
   done
   ;;
