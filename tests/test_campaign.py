@@ -21,6 +21,7 @@ from acp.campaign import (
     measure_cell,
     run_campaign,
     suite_to_restore,
+    summarise,
     task_prompt,
 )
 from acp.tasks.models import Task
@@ -325,3 +326,44 @@ def test_a_condition_that_hides_the_suite_needs_it_given_back_to_validate(tmp_pa
     assert suite_to_restore(CONDITIONS["T1"], tests) is None
     assert suite_to_restore(CONDITIONS["T2"], tests) == tests
     assert suite_to_restore(CONDITIONS["T3"], tests) == tests
+
+
+def test_the_summary_counts_resolve_rate_over_measurable_cells_only(tmp_path: Path):
+    """La tasa se calcula sobre las celdas que miden algo. Meter en el
+    denominador una celda que salió no medible por fontanería la cuenta como un
+    agente que fracasó, que es el error que hundió T2 en la primera tanda."""
+    log = tmp_path / "campana.jsonl"
+    log.write_text(
+        "\n".join([
+            '{"condition":"T0","task_id":"a","stratum":"generic","measurable":true,"solved":true}',
+            '{"condition":"T0","task_id":"b","stratum":"domain","measurable":true,"solved":false}',
+            '{"condition":"T0","task_id":"c","stratum":"generic","measurable":false,"solved":false}',
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    resumen = summarise(log)
+
+    assert resumen["T0"]["measurable"] == 2
+    assert resumen["T0"]["solved"] == 1
+    assert resumen["T0"]["unmeasurable"] == 1
+    assert resumen["T0"]["rate"] == 0.5
+
+
+def test_the_summary_keeps_the_strata_apart(tmp_path: Path):
+    """Genéricas y de dominio responden a cosas distintas (§3.3.1) y mezclarlas
+    en una sola tasa esconde justo la mitad del diseño."""
+    log = tmp_path / "campana.jsonl"
+    log.write_text(
+        "\n".join([
+            '{"condition":"T1","task_id":"a","stratum":"generic","measurable":true,"solved":true}',
+            '{"condition":"T1","task_id":"b","stratum":"generic","measurable":true,"solved":true}',
+            '{"condition":"T1","task_id":"c","stratum":"domain","measurable":true,"solved":false}',
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    resumen = summarise(log)
+
+    assert resumen["T1"]["by_stratum"]["generic"] == (2, 2)
+    assert resumen["T1"]["by_stratum"]["domain"] == (0, 1)

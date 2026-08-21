@@ -379,6 +379,41 @@ def run_all(
     return records
 
 
+
+def summarise(log: Path) -> dict[str, dict]:
+    """El 2×2 tal como se publica: tasa sobre las celdas que miden algo.
+
+    Las no medibles se cuentan aparte y nunca entran en el denominador. Meter
+    ahí una celda que falló por fontanería la presenta como un agente que
+    fracasó, y ese es el error que hundió T2 entera en la primera tanda.
+    """
+    resumen: dict[str, dict] = {}
+    for line in Path(log).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        entrada = resumen.setdefault(
+            record["condition"],
+            {"measurable": 0, "solved": 0, "unmeasurable": 0, "rate": 0.0,
+             "by_stratum": {}, "failure_modes": {}},
+        )
+        if not record.get("measurable"):
+            entrada["unmeasurable"] += 1
+            continue
+        entrada["measurable"] += 1
+        resuelto = bool(record.get("solved"))
+        entrada["solved"] += int(resuelto)
+        estrato = record.get("stratum", "generic")
+        hechas, total = entrada["by_stratum"].get(estrato, (0, 0))
+        entrada["by_stratum"][estrato] = (hechas + int(resuelto), total + 1)
+        if not resuelto:
+            modo = record.get("failure_mode", "sin clasificar")
+            entrada["failure_modes"][modo] = entrada["failure_modes"].get(modo, 0) + 1
+    for entrada in resumen.values():
+        if entrada["measurable"]:
+            entrada["rate"] = entrada["solved"] / entrada["measurable"]
+    return resumen
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
