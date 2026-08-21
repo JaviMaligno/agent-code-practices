@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from acp.report import comparison_table, render_profile
 from acp.suite import run_suite_in_docker, run_suite_in_venv
 from acp.symbols import build_symbol_map, relocate_symbols
 from acp.transforms import TRANSFORMS, b5_size
-from acp.transforms.base import copy_tree
+from acp.transforms.base import copy_tree, unparseable_files
 
 # Los dos se conservan a propósito (§2 del spec): con contenedor el aislamiento
 # es de sistema, y sin él es solo de dependencias, pero está verificado y sirve
@@ -243,6 +244,20 @@ def transform_repo(
     # hay forma de pedir un punto que no existe.
     if not allow_duplicate_point:
         _reject_a_curve_point_this_repo_does_not_have(source, transform_ids)
+
+    # Antes de tocar nada: un árbol a medio renombrar no es semánticamente
+    # equivalente, y es lo que sale cuando un fichero no parsea y se salta en
+    # silencio. Mejor no producirlo que producirlo y medirlo (ver
+    # `unparseable_files`).
+    ilegibles = unparseable_files(source)
+    if ilegibles:
+        relativas = ", ".join(str(p.relative_to(source)) for p in ilegibles[:5])
+        raise ValueError(
+            f"este intérprete (Python {sys.version_info.major}."
+            f"{sys.version_info.minor}) no puede leer {len(ilegibles)} fichero(s) "
+            f"del repo: {relativas}. Transformar saltándolos deja el árbol a "
+            f"medio renombrar, que ya no es equivalente."
+        )
 
     symbols = build_symbol_map(source)
     root = copy_tree(source, destination)

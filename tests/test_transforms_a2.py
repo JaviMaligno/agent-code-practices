@@ -772,3 +772,129 @@ def test_a_symbol_reached_through_a_module_object_is_left_alone(tmp_path: Path):
     assert "validate" not in result.renames
     assert "def validate(number):" in country.read_text(encoding="utf-8")
     assert "mod.validate(number)" in registry.read_text(encoding="utf-8")
+
+
+def test_a_class_used_through_its_module_keeps_working(tmp_path: Path):
+    """Medido sobre pint, que no arranca tras A2: renombraba la definición de
+    `ForwardRelation` pero dejaba intacto el `definitions.ForwardRelation` del
+    módulo que la usa, y el paquete muere al importarse con AttributeError.
+
+    python-stdnum no lo expuso porque escribe `from x import y`; pint hace
+    `from . import x` y luego `x.Atributo`. Una transformación que rompe el repo
+    se lee exactamente igual que un agente que fracasa, así que esto no puede
+    quedarse en una nota: es la equivalencia lo que falla.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "definitions.py").write_text(
+        "class ForwardRelation:\n    pass\n", encoding="utf-8"
+    )
+    (pkg / "context.py").write_text(
+        "from . import definitions\n"
+        "\n"
+        "\n"
+        "class Contexto(definitions.ForwardRelation):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    a2_names.apply(tmp_path)
+
+    ejecucion = subprocess.run(
+        [sys.executable, "-c", "import pkg.context; print('vive')"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert ejecucion.returncode == 0, ejecucion.stderr[-600:]
+    assert "vive" in ejecucion.stdout
+
+
+def test_a_subclass_that_shadows_the_name_of_its_base_keeps_working(tmp_path: Path):
+    """El caso real que deja pint sin arrancar. `facets/context/definitions.py`
+    define `ForwardRelation`, y `delegates/txt_defparser/context.py` define OTRA
+    clase con el mismo nombre que hereda de la primera a través del módulo:
+
+        from ...facets.context import definitions
+        class ForwardRelation(PintParsedStatement, definitions.ForwardRelation)
+
+    Con el nombre repetido y un import relativo de tres niveles, el renombrado
+    tocaba la definición de la base y dejaba la referencia apuntando a un
+    atributo que ya no existe: `AttributeError` al importar el paquete.
+    """
+    raiz = tmp_path / "pkg"
+    (raiz / "facets" / "context").mkdir(parents=True)
+    (raiz / "delegates" / "txt").mkdir(parents=True)
+    for p in (raiz, raiz / "facets", raiz / "facets" / "context",
+              raiz / "delegates", raiz / "delegates" / "txt"):
+        (p / "__init__.py").write_text("", encoding="utf-8")
+
+    (raiz / "facets" / "context" / "definitions.py").write_text(
+        "class Relation:\n    pass\n"
+        "\n"
+        "\n"
+        "class ForwardRelation(Relation):\n    pass\n",
+        encoding="utf-8",
+    )
+    (raiz / "delegates" / "txt" / "context.py").write_text(
+        "from ...facets.context import definitions\n"
+        "\n"
+        "\n"
+        "class ForwardRelation(definitions.ForwardRelation):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    a2_names.apply(tmp_path)
+
+    ejecucion = subprocess.run(
+        [sys.executable, "-c", "import pkg.delegates.txt.context; print('vive')"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert ejecucion.returncode == 0, ejecucion.stderr[-700:]
+    assert "vive" in ejecucion.stdout
+
+
+def test_the_right_definitions_module_is_resolved_when_several_share_the_name(tmp_path: Path):
+    """Lo que de verdad deja pint sin arrancar. Tiene SEIS módulos llamados
+    `definitions` en paquetes distintos, así que resolver `definitions.X` por el
+    nombre corto del módulo no basta: hay que saber cuál de los seis importó
+    este fichero.
+
+        AttributeError: module 'pint.facets.context.definitions'
+                        has no attribute 'ForwardRelation'
+
+    El renombrado tocaba la definición y dejaba la referencia colgando. Con un
+    solo `definitions` en el árbol el fallo no aparece, que es la razón de que
+    los dos tests anteriores pasaran mientras el repositorio real moría.
+    """
+    raiz = tmp_path / "pkg"
+    for sub in ("facets/context", "facets/group", "delegates/txt"):
+        (raiz / sub).mkdir(parents=True)
+    for p in (raiz, raiz / "facets", raiz / "facets" / "context",
+              raiz / "facets" / "group", raiz / "delegates", raiz / "delegates" / "txt"):
+        (p / "__init__.py").write_text("", encoding="utf-8")
+
+    (raiz / "facets" / "context" / "definitions.py").write_text(
+        "class ForwardRelation:\n    pass\n", encoding="utf-8"
+    )
+    # El homónimo que rompe la resolución por nombre corto.
+    (raiz / "facets" / "group" / "definitions.py").write_text(
+        "class GroupDefinition:\n    pass\n", encoding="utf-8"
+    )
+    (raiz / "delegates" / "txt" / "context.py").write_text(
+        "from ...facets.context import definitions\n"
+        "\n"
+        "\n"
+        "class ForwardRelation(definitions.ForwardRelation):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    a2_names.apply(tmp_path)
+
+    ejecucion = subprocess.run(
+        [sys.executable, "-c", "import pkg.delegates.txt.context; print('vive')"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert ejecucion.returncode == 0, ejecucion.stderr[-700:]
+    assert "vive" in ejecucion.stdout

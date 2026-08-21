@@ -139,3 +139,32 @@ def iter_transformable_files(root: Path, pattern: str = "*.py") -> list[Path]:
 # la configuración nombra, B4 porque se lleva el directorio entero. Vive aquí, y
 # no en una de las dos, para que no puedan discrepar sobre dónde mirar.
 PYTEST_CONFIG_FILES = ("setup.cfg", "pytest.ini", "tox.ini", "pyproject.toml")
+
+
+def unparseable_files(root: Path) -> list[Path]:
+    """Los ficheros .py que este intérprete no puede leer.
+
+    Existe por un fallo de reproducibilidad medido sobre pint.
+    `pint/delegates/txt_defparser/context.py` usa genéricos de PEP 695
+    (`def f[T: A | B](...)`), sintaxis de Python 3.12. Con el 3.11 de la VM ese
+    fichero no parsea, así que A2 lo saltaba **en silencio**: renombraba
+    `ForwardRelation` donde se define y dejaba colgando la referencia
+    `definitions.ForwardRelation` del fichero que no pudo leer. El paquete moría
+    al importarse y la celda se leía como un agente que rompe cosas.
+
+    El mismo árbol transformado desde 3.12 sale bien, o sea que el resultado
+    dependía de la versión del intérprete. Quince sitios hacen
+    `except ParserSyntaxError: continue`, que es correcto para lo que no es
+    Python y desastroso para lo que sí lo es en otra versión.
+    """
+    import ast
+
+    rotos: list[Path] = []
+    for path in iter_transformable_files(root):
+        try:
+            ast.parse(path.read_text(encoding="utf-8-sig"))
+        except SyntaxError:
+            rotos.append(path)
+        except OSError:
+            continue
+    return rotos

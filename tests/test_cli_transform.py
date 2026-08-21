@@ -1,4 +1,6 @@
 import json
+
+import pytest
 from pathlib import Path
 
 from acp.cli import main, manifest_path_for, transform_repo
@@ -507,3 +509,42 @@ def test_the_command_line_has_no_way_to_ask_for_a_point_that_does_not_exist(
         assert "B5-500" in str(error), error
     else:
         raise AssertionError("debería haber rechazado un punto que no existe")
+
+
+def test_a_file_the_interpreter_cannot_parse_aborts_instead_of_half_renaming(tmp_path: Path):
+    """Medido sobre pint, y es un fallo de reproducibilidad, no una rareza.
+
+    `pint/delegates/txt_defparser/context.py` usa genéricos de PEP 695
+    (`def f[T: A | B](...)`), que son sintaxis de Python 3.12. Con el intérprete
+    3.11 de la VM ese fichero no parsea, así que A2 lo **saltaba en silencio**:
+    renombraba `ForwardRelation` donde se define y dejaba intacta la referencia
+    `definitions.ForwardRelation` del fichero que no pudo leer. El paquete moría
+    al importarse con AttributeError, y la celda entera se leía como un agente
+    que rompe cosas.
+
+    El mismo árbol, transformado desde 3.12, sale correcto. Es decir: el
+    resultado del experimento dependía de la versión del intérprete que lo
+    corre. Un árbol a medio renombrar no es semánticamente equivalente, así que
+    la única salida honesta es no producirlo.
+    """
+    pkg = tmp_path / "repo" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "core.py").write_text("def rate(v):\n    return v\n", encoding="utf-8")
+    # Sintaxis que ningún intérprete acepta, para no depender de la versión que
+    # corra este test: lo que se comprueba es la reacción, no la sintaxis.
+    (pkg / "raro.py").write_text("def f(:\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as fallo:
+        transform_repo(tmp_path / "repo", ["A2"], tmp_path / "work")
+
+    assert "raro.py" in str(fallo.value)
+
+
+def test_a_tree_the_interpreter_can_read_whole_is_transformed(tmp_path: Path):
+    """El control: la comprobación no puede impedir el caso normal."""
+    source = build(tmp_path / "repo")
+
+    destino = transform_repo(source, ["A2"], tmp_path / "work")
+
+    assert (destino / "pkg" / "core.py").exists()
