@@ -39,3 +39,40 @@ def test_a_domain_task_must_say_how_many_files_it_takes_to_judge():
     detecte leyendo la función."""
     with pytest.raises(ValueError):
         Task.from_json({**RAW, "min_files_to_judge": 1})
+
+
+def test_a_task_records_the_commit_it_was_generated_against():
+    """Una tarea es un parche contra un árbol concreto, y sus `fail_to_pass` son
+    nodeids de la suite de ese árbol. Sin el commit no se puede regenerar ni
+    comprobar: al borrar el clon, el árbol contra el que se hizo se pierde y la
+    tarea queda sin referencia. §5.4.4 pide versiones fijas mientras se corre.
+    """
+    task = Task(
+        task_id="demo-001",
+        repo="demo",
+        module="pkg.core",
+        symbol="rate",
+        stratum="generic",
+        patch="--- a/pkg/core.py\n+++ b/pkg/core.py\n",
+        fail_to_pass=["t::uno"],
+        commit="006192e",
+    )
+
+    assert task.commit == "006192e"
+    assert task.to_json()["commit"] == "006192e"
+
+
+def test_a_task_written_before_commits_were_recorded_still_loads():
+    """Las tareas ya validadas se escribieron sin el campo. Rechazarlas ahora
+    invalidaría las celdas que la campaña ya midió con ellas."""
+    task = Task.from_json({
+        "task_id": "demo-001",
+        "repo": "demo",
+        "module": "pkg.core",
+        "symbol": "rate",
+        "stratum": "generic",
+        "patch": "--- a/pkg/core.py\n+++ b/pkg/core.py\n",
+        "fail_to_pass": ["t::uno"],
+    })
+
+    assert task.commit is None

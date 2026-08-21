@@ -32,5 +32,6 @@
     "pint/testsuite/test_quantity.py::TestTimedelta::test_add_sub",
     "pint/testsuite/test_unit.py::TestRegistryWithDefaultRegistry::test_load"
   ],
-  "min_files_to_judge": 1
+  "min_files_to_judge": 1,
+  "commit": "6fc0533"
 }

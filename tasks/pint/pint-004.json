@@ -31,5 +31,6 @@
     "pint/testsuite/test_quantity.py::TestQuantityWithDefaultRegistry::test_upcast_type_rejection_on_creation",
     "pint/testsuite/test_unit.py::TestRegistryWithDefaultRegistry::test_lazy"
   ],
-  "min_files_to_judge": 1
+  "min_files_to_judge": 1,
+  "commit": "6fc0533"
 }

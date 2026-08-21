@@ -31,5 +31,6 @@
     "tests/test_mac.doctest::test_mac.doctest",
     "tests/test_ro_onrc.doctest::test_ro_onrc.doctest"
   ],
-  "min_files_to_judge": 1
+  "min_files_to_judge": 1,
+  "commit": "006192e59be8ed6e08fd680256868a6c31eb2ba9"
 }

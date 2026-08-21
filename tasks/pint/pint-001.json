@@ -34,5 +34,6 @@
     "pint/testsuite/test_quantity.py::TestQuantityWithDefaultRegistry::test_round",
     "pint/testsuite/test_unit.py::TestRegistry::test_redefinition"
   ],
-  "min_files_to_judge": 1
+  "min_files_to_judge": 1,
+  "commit": "6fc0533"
 }

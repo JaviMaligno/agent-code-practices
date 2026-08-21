@@ -30,5 +30,6 @@
     "tests/test_ma_ice.doctest::test_ma_ice.doctest",
     "tests/test_py_ruc.doctest::test_py_ruc.doctest"
   ],
-  "min_files_to_judge": 1
+  "min_files_to_judge": 1,
+  "commit": "006192e59be8ed6e08fd680256868a6c31eb2ba9"
 }

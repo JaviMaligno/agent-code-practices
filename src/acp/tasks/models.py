@@ -33,6 +33,13 @@ class Task:
     # (§3.3.1). Un fallo genérico se reconoce por su forma, donde está, así que
     # 1 es su valor natural y por eso es el defecto.
     min_files_to_judge: int = 1
+    # El árbol contra el que se generó. Un parche es un diff contra un árbol
+    # concreto y los `fail_to_pass` son nodeids de la suite de ese árbol: sin
+    # esto, al borrar el clon la tarea se queda sin referencia y no se puede ni
+    # regenerar ni comprobar (§5.4.4 pide versiones fijas mientras se corre).
+    # Opcional porque las tareas ya validadas se escribieron sin él, y
+    # rechazarlas ahora invalidaría las celdas que ya se midieron con ellas.
+    commit: str | None = None
 
     def __post_init__(self) -> None:
         if self.stratum not in STRATA:
@@ -64,10 +71,11 @@ class Task:
             fail_to_pass=list(raw["fail_to_pass"]),
             pass_to_pass=list(raw.get("pass_to_pass", [])),
             min_files_to_judge=raw.get("min_files_to_judge", 1),
+            commit=raw.get("commit"),
         )
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        salida: dict[str, Any] = {
             "task_id": self.task_id,
             "repo": self.repo,
             "module": self.module,
@@ -78,3 +86,8 @@ class Task:
             "pass_to_pass": list(self.pass_to_pass),
             "min_files_to_judge": self.min_files_to_judge,
         }
+        # Ausente sigue ausente: escribir `"commit": null` en las tareas que se
+        # generaron sin él las cambiaría sin añadir información.
+        if self.commit:
+            salida["commit"] = self.commit
+        return salida
