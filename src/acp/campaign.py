@@ -130,8 +130,14 @@ def cell_oracle(clean: dict[str, str], faulty: dict[str, str]) -> CellOracle:
     )
 
 
-def already_measured(log: Path) -> set[tuple[str, str]]:
+def already_measured(log: Path) -> set[tuple[str, str, int]]:
     """Las celdas que el registro ya da por medidas, para no repetirlas.
+
+    La clave lleva el número de pasada: la varianza medida es el problema
+    central —la misma tarea, condición y modelo dio fallo, acierto y acierto en
+    tres pasadas— así que una celda repetida no puede leerse como la misma celda
+    ya hecha. Los registros escritos antes de que existieran las repeticiones
+    cuentan como la pasada 0.
 
     Una celda que salió **no medible** no cuenta: eso fue fontanería, y darla
     por hecha congelaría el hueco justo donde el diseño avisa del riesgo. Al
@@ -140,14 +146,14 @@ def already_measured(log: Path) -> set[tuple[str, str]]:
     log = Path(log)
     if not log.is_file():
         return set()
-    medidas: set[tuple[str, str]] = set()
+    medidas: set[tuple[str, str, int]] = set()
     for line in log.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
         if record.get("measurable") is False:
             continue
-        medidas.add((record["condition"], record["task_id"]))
+        medidas.add((record["condition"], record["task_id"], record.get("run", 0)))
     return medidas
 
 
@@ -171,6 +177,7 @@ def run_campaign(
     *,
     measure,
     conditions: list[str] | None = None,
+    runs: int = 1,
 ) -> list[dict]:
     """Recorre las celdas que faltan y apunta cada una en cuanto termina.
 
@@ -184,14 +191,15 @@ def run_campaign(
     records: list[dict] = []
     for condition in conditions or list(CONDITIONS):
         for task in tasks:
-            if (condition, task.task_id) in done:
-                continue
-            record = measure(condition, CONDITIONS[condition], task)
-            # Antes de seguir, no después del bucle: lo que no está en disco no
-            # sobrevive a que la máquina se caiga en la celda siguiente.
-            with log.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-            records.append(record)
+            for run in range(runs):
+                if (condition, task.task_id, run) in done:
+                    continue
+                record = measure(condition, CONDITIONS[condition], task, run=run)
+                # Antes de seguir, no después del bucle: lo que no está en
+                # disco no sobrevive a que la máquina se caiga en la siguiente.
+                with log.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                records.append(record)
     return records
 
 
@@ -226,6 +234,7 @@ def measure_cell(
     ask_agent,
     tests_from: Path | None = None,
     clean: dict[str, str] | None = None,
+    run: int = 0,
 ) -> dict:
     """Mide una celda: monta los dos árboles, deriva el oráculo y deja actuar.
 
@@ -246,15 +255,15 @@ def measure_cell(
         with open_session(clean_tree, tests_from=tests_from) as session:
             clean = session.outcomes()
 
-    faulty_tree = cell_tree(
-        source, task, transform_ids, workdir / f"{condition}-{task.task_id}"
-    )
+    sufijo = f"{condition}-{task.task_id}" + (f"-r{run}" if run else "")
+    faulty_tree = cell_tree(source, task, transform_ids, workdir / sufijo)
     with open_session(faulty_tree, tests_from=tests_from) as session:
         faulty = session.outcomes()
         oracle = cell_oracle(clean, faulty)
         record = {
             "condition": condition,
             "task_id": task.task_id,
+            "run": run,
             "stratum": task.stratum,
             "applied": list(transform_ids),
             "measurable": oracle.measurable,
@@ -335,6 +344,7 @@ def run_all(
     timeout: int = 1800,
     max_turns: int = 40,
     grep: bool = True,
+    runs: int = 1,
 ) -> list[dict]:
     """La campaña con las piezas de verdad: contenedor, suite y modelo.
 
@@ -354,8 +364,13 @@ def run_all(
 
     for condition in conditions or list(CONDITIONS):
         transform_ids = CONDITIONS[condition]
-        pending = [t for t in tasks if (condition, t.task_id) not in done]
-        if not pending:
+        pendientes = [
+            (task, run)
+            for task in tasks
+            for run in range(runs)
+            if (condition, task.task_id, run) not in done
+        ]
+        if not pendientes:
             continue
 
         install_repo = installs_the_repo(transform_ids)
@@ -379,7 +394,7 @@ def run_all(
         with open_session(clean_tree, tests_from=restore) as session:
             clean = session.outcomes()
 
-        for task in pending:
+        for task, run in pendientes:
             record = measure_cell(
                 source,
                 condition,
@@ -390,6 +405,7 @@ def run_all(
                 ask_agent=ask_agent,
                 tests_from=restore,
                 clean=clean,
+                run=run,
             )
             record["model"] = model
             record["install_repo"] = install_repo
@@ -397,7 +413,8 @@ def run_all(
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             records.append(record)
             print(
-                f"[{condition}] {task.task_id}: "
+                f"[{condition}] {task.task_id}"
+                f"{f' r{run}' if runs > 1 else ''}: "
                 f"{'resuelto' if record['solved'] else record.get('failure_mode')}"
                 f" (medible={record['measurable']})",
                 flush=True,
@@ -469,6 +486,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--conditions", default=None, help="p.ej. T0,T2")
     parser.add_argument("--max-turns", type=int, default=40)
     parser.add_argument("--poor", action="store_true", help="dotación sin búsqueda")
+    parser.add_argument(
+        "--runs", type=int, default=1,
+        help="pasadas por celda; el diseño pide 3 en las celdas de titular",
+    )
     args = parser.parse_args(argv)
 
     conditions = args.conditions.split(",") if args.conditions else None
@@ -483,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         conditions=conditions,
         max_turns=args.max_turns,
         grep=not args.poor,
+        runs=args.runs,
     )
     medibles = [r for r in records if r["measurable"]]
     print(

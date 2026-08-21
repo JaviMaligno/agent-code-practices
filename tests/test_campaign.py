@@ -131,7 +131,7 @@ def test_a_campaign_resumes_instead_of_repeating_what_it_already_measured(tmp_pa
 
     hecho = already_measured(log)
 
-    assert hecho == {("T0", "uno"), ("T0", "dos")}
+    assert hecho == {("T0", "uno", 0), ("T0", "dos", 0)}
 
 
 def test_a_missing_log_means_nothing_has_been_measured_yet(tmp_path: Path):
@@ -149,7 +149,7 @@ def test_an_unmeasurable_cell_does_not_count_as_measured(tmp_path: Path):
         encoding="utf-8",
     )
 
-    assert already_measured(log) == {("T1", "dos")}
+    assert already_measured(log) == {("T1", "dos", 0)}
 
 
 def fake_task(task_id: str) -> Task:
@@ -171,7 +171,7 @@ def test_the_campaign_checkpoints_each_cell_as_soon_as_it_finishes(tmp_path: Pat
     log = tmp_path / "campana.jsonl"
     medidas: list[str] = []
 
-    def measure(condition, transform_ids, task):
+    def measure(condition, transform_ids, task, run=0):
         medidas.append(f"{condition}/{task.task_id}")
         if len(medidas) == 3:
             raise MemoryError("la máquina se quedó sin memoria")
@@ -197,7 +197,7 @@ def test_the_campaign_skips_the_cells_the_log_already_has(tmp_path: Path):
     log.write_text('{"condition": "T0", "task_id": "uno", "solved": true}\n', encoding="utf-8")
     pedidas: list[str] = []
 
-    def measure(condition, transform_ids, task):
+    def measure(condition, transform_ids, task, run=0):
         pedidas.append(task.task_id)
         return {"condition": condition, "task_id": task.task_id, "solved": False}
 
@@ -405,3 +405,56 @@ def test_the_summary_reads_the_campaign_split_across_one_log_per_condition(tmp_p
     assert resumen["T0"]["rate"] == 1.0
     assert resumen["T1"]["rate"] == 0.0
     assert resumen["T1"]["failure_modes"] == {"editó mal": 1}
+
+
+def test_a_cell_can_be_measured_more_than_once_and_the_runs_do_not_collide(tmp_path: Path):
+    """La varianza medida es el problema central: la misma tarea, condición y
+    modelo dio fallo (27 turnos), acierto (17) y acierto (40) en tres pasadas.
+    Con una sola pasada por celda no hay conclusión que sostener, así que la
+    campaña tiene que poder repetir una celda sin que la repetición se lea como
+    la misma celda ya hecha."""
+    log = tmp_path / "campana.jsonl"
+    log.write_text(
+        '{"condition":"T0","task_id":"uno","run":0,"measurable":true,"solved":true}\n'
+        '{"condition":"T0","task_id":"uno","run":1,"measurable":true,"solved":false}\n',
+        encoding="utf-8",
+    )
+
+    hecho = already_measured(log)
+
+    assert ("T0", "uno", 0) in hecho
+    assert ("T0", "uno", 1) in hecho
+    assert ("T0", "uno", 2) not in hecho
+
+
+def test_a_log_without_run_numbers_still_counts_as_the_first_run(tmp_path: Path):
+    """Las celdas ya medidas se escribieron antes de que existieran las
+    repeticiones. Reanudar sobre ellas no puede volver a medirlas: son la
+    pasada 0."""
+    log = tmp_path / "campana.jsonl"
+    log.write_text(
+        '{"condition":"T0","task_id":"uno","measurable":true,"solved":true}\n',
+        encoding="utf-8",
+    )
+
+    assert already_measured(log) == {("T0", "uno", 0)}
+
+
+def test_the_campaign_repeats_every_cell_the_requested_number_of_times(tmp_path: Path):
+    pedidas: list[tuple] = []
+
+    def measure(condition, transform_ids, task, run=0):
+        pedidas.append((condition, task.task_id, run))
+        return {"condition": condition, "task_id": task.task_id, "run": run,
+                "measurable": True, "solved": True}
+
+    run_campaign(
+        tmp_path / "repo",
+        [fake_task("uno")],
+        tmp_path / "campana.jsonl",
+        measure=measure,
+        conditions=["T0"],
+        runs=3,
+    )
+
+    assert pedidas == [("T0", "uno", 0), ("T0", "uno", 1), ("T0", "uno", 2)]
