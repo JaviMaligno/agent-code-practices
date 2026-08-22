@@ -1,4 +1,4 @@
-"""El informe que el artículo debería haber tenido delante al escribirse.
+"""El contraste que el artículo debería haber tenido delante al escribirse.
 
 Un porcentaje suelto no permite escribir una frase honesta: hace falta el
 intervalo, la comparación contra la base y, cuando no hay diferencia, qué caída
@@ -6,7 +6,7 @@ habría hecho falta para verla. Sin ese último número, "no se detectó efecto"
 "no hay efecto" se confunden, que es exactamente lo que pasó con el desglose.
 """
 
-from acp.report import Contraste, comparar
+from acp.contrasts import Contraste, comparar
 
 
 def test_a_contrast_carries_what_a_sentence_needs():
