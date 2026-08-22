@@ -23,5 +23,5 @@ for (const f of proyecto.getSourceFiles()) {
     salida.push({ fichero: ruta.split("/repo/")[1] ?? ruta, simbolo: nombre, ramas });
   }
 }
-salida.sort((a, b) => b.ramas - a.ramas);
+salida.sort((a, b) => a.ramas - b.ramas);
 console.log(JSON.stringify(salida.slice(0, 40), null, 0));

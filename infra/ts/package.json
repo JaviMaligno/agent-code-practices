@@ -1,0 +1,14 @@
+{
+  "name": "acp-ts-transforms",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A1 y el catálogo de fallos para repositorios TypeScript. Vive fuera del paquete de Python porque ts-morph no es una dependencia de Python y no tiene sentido pedirla en el pyproject.",
+  "scripts": {
+    "test": "node test-mutate.mjs"
+  },
+  "dependencies": {
+    "ts-morph": "^27.0.0",
+    "fast-glob": "^3.3.3"
+  }
+}

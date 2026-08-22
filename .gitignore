@@ -7,3 +7,4 @@ out/
 
 # Clones de trabajo y salidas del pre-flight
 candidates/
+infra/ts/node_modules/
