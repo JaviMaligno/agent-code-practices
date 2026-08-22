@@ -105,9 +105,15 @@ def cell_tree(
     # entra nada que el agente pudiera leer como pista de lo que se le hizo.
     with tempfile.TemporaryDirectory(prefix="acp-faulty-") as temporal:
         faulty = copy_tree(source, Path(temporal) / source.name)
-        target = module_path(faulty, task.module)
+        target = (
+            faulty / task.module
+            if task.patch_is_full_file
+            else module_path(faulty, task.module)
+        )
         target.write_text(
-            apply_patch(target.read_text(encoding="utf-8"), task.patch),
+            task.patch
+            if task.patch_is_full_file
+            else apply_patch(target.read_text(encoding="utf-8"), task.patch),
             encoding="utf-8",
         )
         return transform_repo(faulty, list(transform_ids), destination, manifest)
@@ -432,6 +438,24 @@ def suite_to_restore(transform_ids: list[str], tree: Path) -> Path | None:
     return guardada if guardada.is_dir() else None
 
 
+def suite_session_for(language: str):
+    """La sesión de suite que corresponde al lenguaje del repositorio.
+
+    Lo único que cambia entre las dos es cómo se instala y cómo se ejecuta; las
+    dos devuelven el mismo `dict[str, str]`, así que el oráculo, el checkpoint y
+    el resumen no distinguen lenguajes ni deberían tener que hacerlo.
+    """
+    if language == "python":
+        from acp.tasks.validate import SuiteSession
+
+        return SuiteSession
+    if language == "node":
+        from acp.node_suite import NodeSuiteSession
+
+        return NodeSuiteSession
+    raise ValueError(f"lenguaje {language!r} sin sesión de suite: python o node")
+
+
 def load_tasks(directory: Path) -> list[Task]:
     """Las tareas de un repositorio, en orden estable por su identificador."""
     tasks = [
@@ -456,6 +480,8 @@ def run_all(
     grep: bool = True,
     runs: int = 1,
     label: str = "",
+    language: str = "python",
+    package_manager: str = "npm",
 ) -> list[dict]:
     """La campaña con las piezas de verdad: contenedor, suite y modelo.
 
@@ -464,7 +490,8 @@ def run_all(
     dice la condición, no un flag de la línea de comandos.
     """
     from acp.agent.loop import solve
-    from acp.tasks.validate import SuiteSession
+
+    Sesion = suite_session_for(language)
 
     source = Path(source)
     workdir = Path(workdir)
@@ -490,7 +517,15 @@ def run_all(
         install_repo = installs_the_repo(transform_ids)
 
         def open_session(tree, tests_from=None):
-            return SuiteSession(
+            if language == "node":
+                # La sesión de Node no tiene `install_repo` ni `tests_from`: no
+                # hay paquete que instalar aparte ni suite que devolver, porque
+                # B4 todavía no está implementado para TypeScript.
+                return Sesion(
+                    repo=tree, image=image, timeout=timeout,
+                    package_manager=package_manager,
+                )
+            return Sesion(
                 repo=tree,
                 image=image,
                 timeout=timeout,
@@ -611,6 +646,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workdir", type=Path, required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--image", default="python:3.12")
+    parser.add_argument(
+        "--language", default="python", choices=("python", "node"),
+        help="qué sesión de suite usar; node instala con npm/bun y corre vitest",
+    )
+    parser.add_argument("--package-manager", default="npm", choices=("npm", "bun"))
     parser.add_argument("--tests", type=Path, default=None)
     parser.add_argument(
         "--conditions", default=None,
@@ -642,6 +682,8 @@ def main(argv: list[str] | None = None) -> int:
         grep=not args.poor,
         runs=args.runs,
         label=args.label,
+        language=args.language,
+        package_manager=args.package_manager,
     )
     medibles = [r for r in records if r["measurable"]]
     print(

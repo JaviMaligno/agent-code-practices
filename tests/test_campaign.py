@@ -660,3 +660,34 @@ def test_running_out_of_memory_stops_the_campaign_instead_of_being_logged(tmp_pa
 
     escritas = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
     assert [r["task_id"] for r in escritas] == ["uno"], "lo medido antes se conserva"
+
+
+def test_a_task_can_carry_the_whole_file_instead_of_a_diff(tmp_path: Path):
+    """Las tareas de TypeScript las produce ts-morph, que reescribe el fichero;
+    no hay un diff que aplicar y fabricarlo solo para volver a aplicarlo añade un
+    sitio donde fallar. El campo dice cuál de las dos cosas es, en vez de que el
+    aplicador lo adivine por la forma del texto."""
+    source = build(tmp_path / "repo")
+    task = Task(
+        task_id="ts-001", repo="demo", module="pkg.core", symbol="rate",
+        stratum="generic",
+        patch='"""Tarifas."""\n\n\ndef rate(value: int) -> int:\n    return 0\n',
+        patch_is_full_file=True,
+        fail_to_pass=["t::uno"],
+    )
+
+    tree = cell_tree(source, task, [], tmp_path / "cell")
+
+    assert (tree / "pkg" / "core.py").read_text(encoding="utf-8").endswith("return 0\n")
+
+
+def test_the_campaign_can_use_a_suite_that_is_not_pytest(tmp_path: Path):
+    """El repositorio TypeScript necesita otra sesión de suite —bun y vitest en
+    vez de pip y pytest— y el resto del circuito no debería enterarse: el oráculo
+    compara diccionarios, no lenguajes."""
+    from acp.campaign import suite_session_for
+
+    assert suite_session_for("python").__name__ == "SuiteSession"
+    assert suite_session_for("node").__name__ == "NodeSuiteSession"
+    with pytest.raises(ValueError):
+        suite_session_for("rust")

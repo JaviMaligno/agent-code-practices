@@ -40,6 +40,11 @@ class Task:
     # Opcional porque las tareas ya validadas se escribieron sin él, y
     # rechazarlas ahora invalidaría las celdas que ya se midieron con ellas.
     commit: str | None = None
+    # Si `patch` es el fichero completo en vez de un diff unificado. Las tareas
+    # de TypeScript las produce ts-morph, que reescribe el fichero: fabricar un
+    # diff solo para volver a aplicarlo añadiría un sitio donde fallar. El campo
+    # lo declara en vez de que el aplicador lo adivine por la forma del texto.
+    patch_is_full_file: bool = False
 
     def __post_init__(self) -> None:
         if self.stratum not in STRATA:
@@ -72,6 +77,7 @@ class Task:
             pass_to_pass=list(raw.get("pass_to_pass", [])),
             min_files_to_judge=raw.get("min_files_to_judge", 1),
             commit=raw.get("commit"),
+            patch_is_full_file=raw.get("patch_is_full_file", False),
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -90,4 +96,6 @@ class Task:
         # generaron sin él las cambiaría sin añadir información.
         if self.commit:
             salida["commit"] = self.commit
+        if self.patch_is_full_file:
+            salida["patch_is_full_file"] = True
         return salida
