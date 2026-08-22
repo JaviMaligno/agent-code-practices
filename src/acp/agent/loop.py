@@ -53,9 +53,10 @@ def solve(
     *,
     grep: bool = True,
     max_turns: int = MAX_TURNS,
+    language: str = "python",
 ) -> Trace:
     """Deja al agente trabajar sobre el árbol hasta agotar su presupuesto."""
-    caja = Toolbox(session, grep=grep)
+    caja = Toolbox(session, grep=grep, language=language)
     trace = Trace()
     mensajes: list[dict] = [
         {"role": "system", "content": SISTEMA},

@@ -545,7 +545,8 @@ def run_all(
             )
 
         def ask_agent(session, prompt):
-            return solve(session, prompt, model, grep=grep, max_turns=max_turns)
+            return solve(session, prompt, model, grep=grep, max_turns=max_turns,
+                         language=language)
 
         clean_tree = cell_tree(
             source, None, transform_ids,

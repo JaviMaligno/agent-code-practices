@@ -32,12 +32,38 @@ class ToolCall:
     seen: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
 
 
+SEARCH_INCLUDES = {
+    "python": ["*.py"],
+    # `.tsx` y `.mjs` aparecen en repositorios reales; omitirlos dejaría al
+    # agente ciego a parte del árbol sin que nada lo indique.
+    "node": ["*.ts", "*.tsx", "*.js", "*.mjs", "*.cjs"],
+}
+
+
+def search_includes(language: str) -> list[str]:
+    """En qué ficheros busca el agente, según el lenguaje del repositorio.
+
+    Devolver una lista vacía haría que no encontrara nada, y eso se lee como un
+    agente incapaz en vez de como una herramienta mal configurada: por eso un
+    lenguaje desconocido es un error y no un silencio.
+    """
+    try:
+        return list(SEARCH_INCLUDES[language])
+    except KeyError:
+        raise ValueError(
+            f"lenguaje {language!r} sin patrones de búsqueda: {sorted(SEARCH_INCLUDES)}"
+        ) from None
+
+
 class Toolbox:
     """Ejecuta las herramientas dentro del contenedor del árbol."""
 
-    def __init__(self, session, *, grep: bool = True) -> None:
+    def __init__(self, session, *, grep: bool = True, language: str = "python") -> None:
         self.session = session
         self.grep_enabled = grep
+        # El lenguaje decide en qué ficheros busca `search`. Con el valor fijado
+        # a Python, en un repositorio TypeScript el agente no encontraba nada.
+        self.language = language
         self.calls: list[ToolCall] = []
 
     # -- descripción para el modelo -------------------------------------------
@@ -142,8 +168,14 @@ class Toolbox:
         return self._shell(f"ls -la {shlex.quote(path)}"), {}
 
     def _search(self, query: str) -> tuple[str, dict]:
+        # Los `--include` van por lenguaje: fijados a '*.py' dejaban al agente
+        # ciego en un repositorio TypeScript, donde gastaba siete u ocho turnos
+        # buscando, no leía un solo fichero y se rendía. Cuatro celdas de la
+        # sonda salieron como "no lo arregló" sin que el agente viera el código.
+        includes = " ".join(f"--include='{x}'" for x in search_includes(self.language))
+        excluye = "--exclude-dir=node_modules --exclude-dir=.git"
         salida = self._shell(
-            f"grep -rn --include='*.py' {shlex.quote(query)} . | head -60"
+            f"grep -rn {includes} {excluye} {shlex.quote(query)} . | head -60"
         )
         # Cada acierto de grep enseña una línea concreta: cuenta como vista.
         vistos: dict[str, list[tuple[int, int]]] = {}
