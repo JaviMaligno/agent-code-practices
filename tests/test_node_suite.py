@@ -96,6 +96,33 @@ def test_outcomes_reads_the_report_and_not_the_exit_code(monkeypatch, tmp_path):
 
     monkeypatch.setattr(node_suite, "_run", lambda *a, **k: "")
     sesion = node_suite.NodeSuiteSession(repo=tmp_path)
-    sesion.run = lambda cmd: (0, __import__("json").dumps(informe) if "cat" in cmd else "")
+    sesion.run = lambda cmd: (0, __import__("json").dumps(informe) if "cat" in cmd else "", False)
 
     assert sesion.outcomes() == {"a.test.ts::hace algo": "passed"}
+
+
+def test_run_returns_what_the_agent_toolbox_unpacks(monkeypatch, tmp_path):
+    """`Toolbox._shell` hace `code, output, _ = session.run(...)`, así que una
+    sesión que devuelva dos valores rompe TODAS las herramientas del agente con
+    un ValueError. Y el agente no distingue eso de una herramienta que no
+    encuentra nada: gasta sus turnos recibiendo errores y se rinde, con
+    `regions_seen` a cero y sin una sola edición.
+
+    Pasó: las cuatro celdas de la sonda salieron como "no lo arregló" cuando
+    ninguna herramienta había llegado a funcionar.
+    """
+    from acp import node_suite
+
+    monkeypatch.setattr(node_suite, "_run", lambda *a, **k: "")
+    sesion = node_suite.NodeSuiteSession(repo=tmp_path)
+
+    class FalsoProceso:
+        returncode = 0
+        stdout = "salida"
+        stderr = ""
+
+    monkeypatch.setattr(node_suite.subprocess, "run", lambda *a, **k: FalsoProceso())
+
+    codigo, salida, expirado = sesion.run("ls")
+
+    assert (codigo, salida, expirado) == (0, "salida", False)

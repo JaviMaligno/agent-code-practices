@@ -93,7 +93,7 @@ class NodeSuiteSession:
         _run(self._runner.copy_command(), self.timeout)
         if self.package_manager == "bun":
             self.run("curl -fsSL https://bun.sh/install | bash")
-        codigo, salida = self.run(self._install_command())
+        codigo, salida, _ = self.run(self._install_command())
         if codigo != 0:
             self.close()
             raise RuntimeError(f"la instalación falló: {salida[-600:]}")
@@ -111,12 +111,23 @@ class NodeSuiteSession:
             return 'export PATH="$HOME/.bun/bin:$PATH" && bun install'
         return "npm ci --no-audit --no-fund || npm install --no-audit --no-fund"
 
-    def run(self, command: str) -> tuple[int, str]:
-        proceso = subprocess.run(
-            self._runner.wrap(["sh", "-lc", command]),
-            capture_output=True, text=True, timeout=self.timeout,
-        )
-        return proceso.returncode, proceso.stdout + proceso.stderr
+    def run(self, command: str) -> tuple[int, str, bool]:
+        """Un comando dentro del contenedor: código, salida y si expiró.
+
+        Los tres valores no son decoración: `Toolbox._shell` desempaqueta tres, y
+        devolver dos rompe TODAS las herramientas del agente con un ValueError
+        que él recibe como si la herramienta no hubiera encontrado nada. Cuatro
+        celdas de la sonda salieron como "no lo arregló" por esto, con cero
+        lecturas y cero ediciones.
+        """
+        try:
+            proceso = subprocess.run(
+                self._runner.wrap(["sh", "-lc", command]),
+                capture_output=True, text=True, timeout=self.timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return 124, "", True
+        return proceso.returncode, proceso.stdout + proceso.stderr, False
 
     def write(self, relative: str, content: str) -> None:
         """Deja un fichero dentro del contenedor, como hace el agente al editar."""
@@ -143,11 +154,11 @@ class NodeSuiteSession:
         """
         ejecutor = "bunx" if self.package_manager == "bun" else "npx"
         prefijo = 'export PATH="$HOME/.bun/bin:$PATH" && ' if self.package_manager == "bun" else ""
-        codigo, salida = self.run(
+        codigo, salida, _ = self.run(
             f"{prefijo}{ejecutor} vitest --run --reporter=json "
             f"--outputFile=/tmp/vitest.json --coverage.enabled=false"
         )
-        _, crudo = self.run("cat /tmp/vitest.json")
+        _, crudo, _ = self.run("cat /tmp/vitest.json")
         try:
             payload = json.loads(crudo)
         except json.JSONDecodeError as error:
