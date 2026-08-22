@@ -126,6 +126,32 @@ class ValidationReport:
 # `mod_97_10.checksum` rompe 22 tests, y declararlos todos la volvía válida.
 MAX_BROKEN_TESTS = 8
 
+# La mitad del techo de 40 turnos. Una tarea que en el árbol INTACTO ya cuesta
+# más que esto no sirve para medir una degradación: el experimento mide cuánto
+# encarece degradar, y sin margen bajo el techo el encarecimiento no cabe.
+#
+# Está aquí porque su ausencia costó dos bloques enteros. sqlglot tocó el techo
+# en 3 de 3 corridas base y el estrato de dominio de pint en 5 de 6, y los dos
+# se publicaron como "no interpretables" cuando lo que pasaba es que sus tareas
+# nunca debieron entrar. Se validaba cuántos tests rompía un fallo, jamás lo que
+# costaba arreglarlo.
+BASELINE_TURN_BUDGET = 20
+
+
+def affordable_for_baseline(turnos: Iterable[int]) -> bool:
+    """Si el árbol limpio resuelve la tarea con margen bajo el techo.
+
+    Se exige a la mediana y además que ninguna corrida toque el techo: una tarea
+    que a veces se dispara ya consume el margen donde debería verse el efecto de
+    la degradación.
+    """
+    valores = list(turnos)
+    if not valores:
+        return False
+    from statistics import median
+
+    return median(valores) <= BASELINE_TURN_BUDGET and all(v < 40 for v in valores)
+
 # El techo se cuenta sobre CASOS LÓGICOS y no sobre nodeids, porque contando
 # nodeids mide la granularidad de la suite y no lo localizado del fallo. Medido
 # sobre pint: una mutación en el convertidor logarítmico rompe 25 nodeids que son

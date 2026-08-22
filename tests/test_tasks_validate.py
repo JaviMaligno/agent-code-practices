@@ -277,3 +277,31 @@ def test_validating_a_task_checks_the_list_it_declared(monkeypatch):
     assert "task.pass_to_pass" in fuente, (
         "el validador no le pasa a compare_runs la lista declarada en la tarea"
     )
+
+
+def test_a_task_the_baseline_cannot_afford_is_rejected():
+    """La validación miraba cuántos tests rompe una tarea y nunca cuánto cuesta
+    resolverla. Así entraron tareas que agotan los 40 turnos en el árbol
+    INTACTO: sqlglot tocó el techo en 3 de 3 corridas base y el estrato de
+    dominio de pint en 5 de 6.
+
+    Una tarea así no puede medir una degradación. El experimento compara cuánto
+    encarece degradar el código, y si el árbol limpio ya está contra el techo no
+    queda margen donde el encarecimiento se note: la celda sale a cero pase lo
+    que pase, y eso se lee como un agente incapaz.
+    """
+    from acp.tasks.validate import affordable_for_baseline
+
+    assert affordable_for_baseline([9, 11, 14]) is True
+    # Rozar el techo en el árbol limpio no deja sitio para medir nada.
+    assert affordable_for_baseline([38, 40, 40]) is False
+    # Ni siquiera de vez en cuando: una de tres ya come el margen de la mitad.
+    assert affordable_for_baseline([12, 40, 15]) is False
+
+
+def test_the_affordability_margin_is_stated_not_guessed():
+    """El umbral tiene que ser un número declarado y no un criterio implícito,
+    porque de él depende qué tareas entran en la campaña."""
+    from acp.tasks.validate import BASELINE_TURN_BUDGET
+
+    assert BASELINE_TURN_BUDGET < 40, "debe dejar margen bajo el techo de turnos"
