@@ -45,8 +45,12 @@ sustituye cada anotación de tipo por `any`).
 suelo, así que no hay hueco del que caer: el 5/12 de la condición degradada no
 dice que quitar los tipos ayude, dice que la baseline no discriminaba.
 
-La misma baseline con el modelo del gateway daba 2/4. La diferencia es el
-modelo — `gpt-5.4-mini` de Azure frente a `gpt-5.4-mini-kyc-tst` del gateway —, y
-es la razón de que las cifras de la sonda no se comparen con las del resto de la
-campaña: dentro de la sonda las dos condiciones comparten modelo y son
-comparables entre sí, nada más.
+La misma baseline había dado 2/4 en una sola pasada, y llegué a atribuirlo al
+modelo: el gateway lo llama `gpt-5.4-mini-kyc-tst` y Azure `gpt-5.4-mini`. Es el
+mismo despliegue. Lo que pasó es **varianza**: las dos tareas que allí salieron
+resueltas dan 0/3 y 1/3 aquí, con los mismos turnos (10-20) en ambos sitios. El
+agente trabaja igual; estas tareas simplemente se resuelven una de cada ocho o
+diez veces, y cuatro celdas no bastan para verlo.
+
+Que es, por tercera vez en esta campaña, el mismo error: una lectura sobre cuatro
+o seis celdas que doce desmienten.
