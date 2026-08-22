@@ -35,3 +35,18 @@ Tres bloques no se pueden interpretar, y están aquí para que se vea por qué:
 el **tier alto** de python-stdnum resuelve 18/18 sin tocar nada (techo), el
 **dominio de pint** resuelve 1/6 y **sqlglot** 0/3 (suelo). Sin margen no hay
 caída que medir.
+
+## La sonda TypeScript (`campana-hono-*.jsonl`)
+
+24 celdas sobre hono: 4 tareas × 3 pasadas × 2 condiciones (T0 y `KO-A1-ts`, que
+sustituye cada anotación de tipo por `any`).
+
+**No interpretable, y se publica igual.** La baseline salió 1/12 (8%), pegada al
+suelo, así que no hay hueco del que caer: el 5/12 de la condición degradada no
+dice que quitar los tipos ayude, dice que la baseline no discriminaba.
+
+La misma baseline con el modelo del gateway daba 2/4. La diferencia es el
+modelo — `gpt-5.4-mini` de Azure frente a `gpt-5.4-mini-kyc-tst` del gateway —, y
+es la razón de que las cifras de la sonda no se comparen con las del resto de la
+campaña: dentro de la sonda las dos condiciones comparten modelo y son
+comparables entre sí, nada más.
