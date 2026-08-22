@@ -53,6 +53,20 @@ VENV="${ACP_VENV:-.venv312}"
 
 ssh_vm() { gcloud compute ssh "$NOMBRE" --project "$PROYECTO" --zone "$ZONA" --command "$1"; }
 
+# El script de arranque instala git y docker por su cuenta, y `preparar` llegaba
+# antes de que terminara: el clon moría con `git: command not found` y la VM
+# quedaba creada, vacía y sin avisar. Se espera a que las herramientas existan.
+esperar_arranque() {
+  echo "  esperando a que el arranque instale git y docker..."
+  for _ in $(seq 1 60); do
+    if ssh_vm "command -v git >/dev/null && command -v docker >/dev/null" 2>/dev/null; then
+      echo "  listo"; return 0
+    fi
+    sleep 15
+  done
+  echo "  el arranque no acabó en 15 minutos" >&2; return 1
+}
+
 case "${1:-}" in
 crear)
   gcloud compute instances create "$NOMBRE" \
@@ -87,6 +101,7 @@ ARRANQUE
   ;;
 
 preparar)
+  esperar_arranque || exit 1
   # Repo, entorno y el clon del repositorio bajo prueba.
   # libcst solo con rueda: compilarlo pide toolchain de Rust.
   #
@@ -123,7 +138,7 @@ credenciales)
   gcloud compute scp "$FICHERO_KEY" "$NOMBRE:.acp-azure-key" \
     --project "$PROYECTO" --zone "$ZONA"
   ssh_vm "chmod 600 ~/.acp-azure-key && echo 'export ACP_MODEL_BACKEND=azure' > ~/.acp-env && echo 'export AZURE_OPENAI_ENDPOINT=$ENDPOINT' >> ~/.acp-env && chmod 600 ~/.acp-env"
-  ssh_vm "cd agent-code-practices && . ~/.acp-env && .venv/bin/python -c \"
+  ssh_vm "cd agent-code-practices && . ~/.acp-env && $VENV/bin/python -c \"
 from acp.model.client import ask
 print('el modelo responde:', repr(ask('di solo: ok', model='gpt-5.4-mini', max_tokens=200)))
 \""
@@ -192,7 +207,7 @@ estado)
       [ -f \"\$f\" ] && echo \"  \$(basename \$f): \$(wc -l < \$f) celdas\"
     done
     # ps -C python3 no vale (las comillas invertidas aqui dentro las ejecuta el
-    # shell remoto): el proceso es .venv/bin/python, y no encontrarlo hacia
+    # shell remoto): el proceso es $VENV/bin/python, y no encontrarlo hacia
     # leer una campana viva como si no corriera. El patron va partido para
     # que este grep no se cuente a si mismo.
     echo \"procesos: \$(ps -eo args | grep -c 'acp[.]campaig''n')\"
