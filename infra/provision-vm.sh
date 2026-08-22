@@ -65,7 +65,7 @@ crear)
 #!/bin/bash
 set -eux
 apt-get update
-apt-get install -y git python3-venv python3-pip docker.io
+apt-get install -y git python3-venv python3-pip docker.io nodejs npm
 systemctl enable --now docker
 # El usuario que entra por ssh tiene que poder hablar con el demonio sin sudo:
 # la campaña lanza `docker` desde Python.
@@ -142,6 +142,18 @@ lanzar)
   # mismo repo y condición nombrarían igual su árbol, pedirían el mismo
   # contenedor y uno mataría el del otro a mitad de celda.
   ETIQUETA="${6:-}"
+  # Los repos de Node necesitan otra sesión de suite y otra imagen: se instala
+  # con bun y se corre vitest, no pip y pytest. El resto del circuito no cambia.
+  LENGUAJE="${7:-python}"
+  GESTOR="${8:-npm}"
+  IMAGEN="python:3.12"
+  EXTRA=""
+  if [ "$LENGUAJE" = "node" ]; then
+    IMAGEN="node:22"
+    EXTRA="--language node --package-manager $GESTOR"
+    # ts-morph vive junto al transformador y no es dependencia de Python.
+    ssh_vm "cd agent-code-practices/infra/ts && npm install --silent 2>&1 | tail -2"
+  fi
   SUF=""
   [ -n "$ETIQUETA" ] && SUF="-$ETIQUETA"
   # Una condición por proceso, con su registro y su directorio de trabajo: dos
@@ -150,11 +162,12 @@ lanzar)
   for C in ${CONDICIONES//,/ }; do
     ssh_vm "
       cd agent-code-practices && . ~/.acp-env
-      [ -d candidates/$BAJO_PRUEBA ] || git clone --quiet \$(.venv/bin/python -c \"
+      [ -d candidates/$BAJO_PRUEBA ] || git clone --quiet \$($VENV/bin/python -c \"
 import json,sys
 urls={'python-stdnum':'https://github.com/arthurdejong/python-stdnum.git',
       'pint':'https://github.com/hgrecco/pint.git',
       'sqlglot':'https://github.com/tobymao/sqlglot.git',
+      'hono':'https://github.com/honojs/hono.git',
       'holidays':'https://github.com/vacanza/holidays.git'}
 print(urls['$BAJO_PRUEBA'])\") candidates/$BAJO_PRUEBA
       mkdir -p out work-$BAJO_PRUEBA-$C$SUF logs
@@ -162,7 +175,7 @@ print(urls['$BAJO_PRUEBA'])\") candidates/$BAJO_PRUEBA
         --tasks tasks/$BAJO_PRUEBA \
         --log out/campana-$BAJO_PRUEBA-$C$SUF.jsonl \
         --workdir work-$BAJO_PRUEBA-$C$SUF \
-        --model $MODELO \
+        --model $MODELO --image $IMAGEN $EXTRA \
         --label '$ETIQUETA' \
         --conditions $C \
         --runs $PASADAS \
