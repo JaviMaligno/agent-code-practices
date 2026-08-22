@@ -228,6 +228,11 @@ BREAKDOWN: dict[str, list[str]] = {
 # eso necesita más de dos puntos. Va aparte del 2×2 y del desglose porque el
 # tamaño no es una práctica que se quite o se devuelva: mezclarla cambiaría lo
 # que significan las otras tablas.
+# La sonda TypeScript (§3.5): el mismo repositorio con las anotaciones de tipo
+# convertidas a `any`. Es A1 traducido a un lenguaje donde los tipos se
+# comprueban — borrarlas rompería la compilación, así que no sería equivalente.
+TS_PROBE: dict[str, list[str]] = {"KO-A1-ts": ["A1-ts"]}
+
 CURVE: dict[str, list[str]] = {
     "C-500": ["B5-500"],
     "C-2000": ["B5-2000"],
@@ -237,7 +242,7 @@ CURVE: dict[str, list[str]] = {
 # Todo lo que se puede pedir por la línea de comandos, por el mismo camino: un
 # desglose o una curva que corrieran por un script aparte medirían distinto sin
 # que se note.
-ALL_CONDITIONS: dict[str, list[str]] = {**CONDITIONS, **BREAKDOWN, **CURVE}
+ALL_CONDITIONS: dict[str, list[str]] = {**CONDITIONS, **BREAKDOWN, **CURVE, **TS_PROBE}
 
 
 def run_campaign(

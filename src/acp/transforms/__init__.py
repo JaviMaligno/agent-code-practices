@@ -5,6 +5,7 @@ from functools import partial
 from pathlib import Path
 
 from acp.transforms import (
+    a1_ts,
     a1_types,
     a2_names,
     a3_format,
@@ -27,6 +28,12 @@ TRANSFORMS: dict[str, Callable[[Path], TransformResult]] = {
     "B3": b3_repo_docs.apply,
     "B4": b4_tests.apply,
     "B5": b5_size.apply,
+    # La sonda TypeScript (§3.5): A1 en un lenguaje donde los tipos se
+    # comprueban. Sustituye cada anotación por `any` en vez de borrarla, porque
+    # borrarla no compila bajo `noImplicitAny` y entonces no habría programa que
+    # medir. Va aparte de "A1" porque no es la misma transformación ni actúa
+    # sobre los mismos árboles.
+    "A1-ts": a1_ts.apply,
 }
 
 # B5 no es una celda sino una curva (§6.3): el mismo código con un techo de

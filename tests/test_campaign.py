@@ -511,8 +511,8 @@ def test_the_breakdown_conditions_are_launchable_like_any_other():
     mide distinto sin que se note."""
     assert ALL_CONDITIONS["T0"] == CONDITIONS["T0"]
     assert ALL_CONDITIONS["KO-A2"] == BREAKDOWN["KO-A2"]
-    # 4 del 2×2 + 16 del desglose + 3 de la curva de tamaño.
-    assert len(ALL_CONDITIONS) == 23
+    # 4 del 2×2 + 16 del desglose + 3 de la curva + 1 de la sonda TypeScript.
+    assert len(ALL_CONDITIONS) == 24
 
 
 def test_two_tiers_of_the_same_repo_do_not_fight_over_the_same_container(tmp_path: Path):
