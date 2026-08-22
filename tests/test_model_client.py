@@ -75,3 +75,72 @@ def test_the_body_carries_the_tools_when_there_are_tools():
     assert cuerpo["tools"][0]["function"]["name"] == "leer"
     # Sin temperatura: los modelos de razonamiento de esta familia la rechazan.
     assert "temperature" not in cuerpo
+
+
+def test_a_rate_limit_is_waited_out_not_given_up_on(monkeypatch):
+    """Un 429 dice "vuelve luego", no "no puedo". Sin reintento, 544 de 795
+    celdas de una tanda se perdieron por saturar el endpoint con 28 procesos:
+    cada celda pagaba su árbol, su suite y su oráculo y moría en la primera
+    llamada al modelo.
+
+    Se espera y se reintenta, con el retardo creciendo, porque veinte procesos
+    reintentando a la vez al mismo ritmo reproducen la avalancha que causó el
+    429.
+    """
+    from acp.model import client
+
+    intentos = []
+    esperas = []
+
+    def falso_envio(peticion, timeout):
+        intentos.append(1)
+        if len(intentos) < 3:
+            raise client.RateLimited(retry_after=None)
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(client, "_send", falso_envio)
+    monkeypatch.setattr(client.time, "sleep", lambda s: esperas.append(s))
+
+    respuesta = client.complete_with_retry(object(), timeout=60)
+
+    assert respuesta["choices"][0]["message"]["content"] == "ok"
+    assert len(intentos) == 3
+    assert esperas == sorted(esperas), "el retardo tiene que crecer"
+    assert len(set(esperas)) > 1, "esperar siempre lo mismo recrea la avalancha"
+
+
+def test_it_gives_up_eventually_instead_of_hanging(monkeypatch):
+    """Reintentar sin fin dejaría una celda colgada para siempre y la campaña
+    sin avanzar; el límite convierte eso en un fallo declarado."""
+    from acp.model import client
+
+    monkeypatch.setattr(
+        client, "_send",
+        lambda p, timeout: (_ for _ in ()).throw(client.RateLimited(retry_after=None)),
+    )
+    monkeypatch.setattr(client.time, "sleep", lambda s: None)
+
+    with pytest.raises(client.ModelError):
+        client.complete_with_retry(object(), timeout=60)
+
+
+def test_it_honours_the_wait_the_server_asks_for(monkeypatch):
+    """Azure manda `Retry-After`. Ignorarlo y usar el retardo propio es volver
+    antes de tiempo y comerse otro 429."""
+    from acp.model import client
+
+    esperas = []
+    estado = {"n": 0}
+
+    def falso_envio(peticion, timeout):
+        estado["n"] += 1
+        if estado["n"] == 1:
+            raise client.RateLimited(retry_after=37)
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(client, "_send", falso_envio)
+    monkeypatch.setattr(client.time, "sleep", lambda s: esperas.append(s))
+
+    client.complete_with_retry(object(), timeout=60)
+
+    assert 37 <= esperas[0] < 45, "debe respetar el Retry-After del servidor"
