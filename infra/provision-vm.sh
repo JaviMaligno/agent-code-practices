@@ -45,6 +45,11 @@ NOMBRE="${ACP_VM_NAME:-acp-campana}"
 TIPO="${ACP_VM_TYPE:-e2-standard-8}"
 DISCO="${ACP_VM_DISK:-100GB}"
 REPO="https://github.com/JaviMaligno/agent-code-practices.git"
+# Qué intérprete corre las transformaciones NO es un detalle de entorno: pint usa
+# genéricos de PEP 695 y bajo 3.11 ese fichero no parsea, así que A2 lo saltaba y
+# dejaba el árbol a medio renombrar. Con 3.12 sale correcto. Se declara aquí para
+# que una campaña no herede por accidente el intérprete que trajera la imagen.
+VENV="${ACP_VENV:-.venv312}"
 
 ssh_vm() { gcloud compute ssh "$NOMBRE" --project "$PROYECTO" --zone "$ZONA" --command "$1"; }
 
@@ -84,17 +89,27 @@ ARRANQUE
 preparar)
   # Repo, entorno y el clon del repositorio bajo prueba.
   # libcst solo con rueda: compilarlo pide toolchain de Rust.
+  #
+  # El entorno se llama .venv312 y se construye con un Python 3.12 traído por uv,
+  # no con el del sistema: Debian 12 trae 3.11, que no parsea los genéricos de
+  # PEP 695 y hace que el transformador se salte ficheros en silencio. Antes esto
+  # se hacía a mano en cada máquina y una se quedó sin él — los cuatro procesos
+  # murieron al arrancar con 'no such file or directory'.
   ssh_vm "
     set -eux
     [ -d agent-code-practices ] || git clone $REPO
     cd agent-code-practices
     git pull --ff-only
-    python3 -m venv .venv
-    .venv/bin/pip install --quiet --upgrade pip
-    .venv/bin/pip install --quiet --only-binary :all: -e '.[dev]'
+    curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1 || true
+    export PATH=\$HOME/.local/bin:\$PATH
+    uv python install 3.12 > /dev/null 2>&1
+    \$(uv python find 3.12) -m venv .venv312
+    .venv312/bin/pip install --quiet --upgrade pip
+    .venv312/bin/pip install --quiet --only-binary :all: -e '.[dev]'
     mkdir -p candidates out
     [ -d candidates/python-stdnum ] || git clone --quiet https://github.com/arthurdejong/python-stdnum.git candidates/python-stdnum
-    .venv/bin/python -m pytest -q --ignore=tests/test_docker_integration.py 2>&1 | tail -3
+    .venv312/bin/python -V
+    .venv312/bin/python -m pytest -q --ignore=tests/test_docker_integration.py 2>&1 | tail -3
   "
   ;;
 
@@ -143,7 +158,7 @@ urls={'python-stdnum':'https://github.com/arthurdejong/python-stdnum.git',
       'holidays':'https://github.com/vacanza/holidays.git'}
 print(urls['$BAJO_PRUEBA'])\") candidates/$BAJO_PRUEBA
       mkdir -p out work-$BAJO_PRUEBA-$C$SUF logs
-      setsid nohup .venv/bin/python -m acp.campaign candidates/$BAJO_PRUEBA \
+      setsid nohup $VENV/bin/python -m acp.campaign candidates/$BAJO_PRUEBA \
         --tasks tasks/$BAJO_PRUEBA \
         --log out/campana-$BAJO_PRUEBA-$C$SUF.jsonl \
         --workdir work-$BAJO_PRUEBA-$C$SUF \
