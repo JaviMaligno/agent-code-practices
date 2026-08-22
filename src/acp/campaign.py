@@ -380,6 +380,17 @@ def measure_cell(
             return record
 
         trace = ask_agent(session, task_prompt(task, oracle.fail_to_pass))
+
+        # §5.4.5: un fallo de la pasarela no es un fallo del agente. El bucle ya
+        # lo marca en la traza; sin mirarlo aquí, una celda donde el modelo
+        # devolvió 403 se cuenta como un agente que no supo arreglar el fallo, y
+        # eso es indistinguible desde fuera. Pasó tres veces en la campaña.
+        parada = str(getattr(trace, "stopped_because", "") or "")
+        if parada.startswith("infraestructura"):
+            record["measurable"] = False
+            record["why"] = f"la celda no midió al agente: {parada}"[:400]
+            return record
+
         after = session.outcomes()
 
     arreglados = [name for name in oracle.fail_to_pass if after.get(name) == "passed"]

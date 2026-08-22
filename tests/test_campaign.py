@@ -691,3 +691,40 @@ def test_the_campaign_can_use_a_suite_that_is_not_pytest(tmp_path: Path):
     assert suite_session_for("node").__name__ == "NodeSuiteSession"
     with pytest.raises(ValueError):
         suite_session_for("rust")
+
+
+def test_a_gateway_failure_is_not_an_agent_that_failed(tmp_path: Path):
+    """§5.4.5: un fallo de la pasarela se marca aparte para descartarlo de la
+    tasa. El bucle del agente ya lo marcaba en la traza y la celda lo ignoraba,
+    así que tres celdas de la campaña publicada contaban un 403 como un agente
+    que no arregló el fallo.
+
+    Se detecta por la traza y no por el resultado, porque desde fuera un agente
+    que nunca llegó a hablar con el modelo es indistinguible de uno que lo
+    intentó y no supo.
+    """
+    source = build(tmp_path / "repo")
+    task = inject(source, "pkg.core", "rate", "invert_condition")
+    limpio = {"t::uno": "passed"}
+    roto = {"t::uno": "failed"}
+
+    class TrazaRota:
+        turns = 1
+        first_edit_turn = None
+        seen: list = []
+        prompt_tokens = 0
+        completion_tokens = 0
+        stopped_because = "infraestructura: 403: key not allowed to access model"
+
+    sesiones = iter([roto, roto])
+    record = measure_cell(
+        source, "T0", [], task,
+        workdir=tmp_path / "work",
+        open_session=lambda tree, tests_from=None: FakeSession(next(sesiones)),
+        ask_agent=lambda session, prompt: TrazaRota(),
+        clean=limpio,
+    )
+
+    assert record["measurable"] is False
+    assert "infraestructura" in record["why"]
+    assert record["solved"] is False
