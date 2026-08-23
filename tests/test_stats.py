@@ -53,3 +53,20 @@ def test_the_extremes_do_not_explode(k, n):
     lo, hi = wilson(k, n)
 
     assert 0.0 <= lo <= hi <= 1.0
+
+
+def test_not_being_able_to_check_is_not_the_same_as_absence():
+    """Un monitor que no distingue "la consulta falló" de "no hay nada" informa
+    de una VM destruida cuando lo que caducó fue el login. Pasó: las tres
+    máquinas seguían corriendo y el aviso dijo que ya no existían.
+
+    La regla es la misma que gobierna las celdas no medibles del experimento —no
+    poder medir no es un resultado— y por eso vive aquí y no en un script.
+    """
+    from acp.stats import wilson
+
+    # Cero de cero no es 0%: es que no hay datos, y el intervalo lo refleja
+    # siendo degenerado en vez de afirmar una tasa.
+    assert wilson(0, 0) == (0.0, 0.0)
+    # Cero de diez sí es una medida, y su intervalo superior no es cero.
+    assert wilson(0, 10)[1] > 0.2
